@@ -311,13 +311,14 @@ app.get('/api/v1/dashboard/summary/', requireAuth, async (req, res, next) => {
     const wherePayments = req.user.is_superuser ? '' : 'WHERE c.user_id = $1';
     const params = req.user.is_superuser ? [] : [req.user.id];
 
-    const [credits, payments] = await Promise.all([
+    const [credits, payments, activeCredits, upcomingPayments] = await Promise.all([
       pool.query(
         `
           SELECT
             COUNT(*)::int AS total,
             COUNT(*) FILTER (WHERE status = 'active')::int AS active,
-            COUNT(*) FILTER (WHERE status = 'overdue')::int AS overdue
+            COUNT(*) FILTER (WHERE status = 'overdue')::int AS overdue,
+            COUNT(*) FILTER (WHERE status = 'closed')::int AS closed
           FROM credits_credit
           ${whereCredits}
         `,
@@ -329,10 +330,69 @@ app.get('/api/v1/dashboard/summary/', requireAuth, async (req, res, next) => {
             COUNT(*)::int AS total,
             COUNT(*) FILTER (WHERE p.status = 'scheduled')::int AS scheduled,
             COUNT(*) FILTER (WHERE p.status = 'overdue')::int AS overdue,
-            COUNT(*) FILTER (WHERE p.status = 'paid')::int AS paid
+            COUNT(*) FILTER (WHERE p.status = 'paid')::int AS paid,
+            COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'paid'), 0)::text AS paid_amount,
+            COALESCE(SUM(p.amount) FILTER (WHERE p.status IN ('scheduled', 'overdue')), 0)::text AS remaining_amount
           FROM credits_payment p
           JOIN credits_credit c ON c.id = p.credit_id
           ${wherePayments}
+        `,
+        params,
+      ),
+      pool.query(
+        `
+          SELECT
+            c.id,
+            COALESCE(NULLIF(c.name, ''), b.name) AS name,
+            b.name AS bank_name,
+            c.amount::text AS amount,
+            c.status,
+            c.start_date,
+            c.term_months,
+            COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'paid'), 0)::text AS paid_amount,
+            COALESCE(SUM(p.amount) FILTER (WHERE p.status IN ('scheduled', 'overdue')), 0)::text AS remaining_amount,
+            COUNT(p.id)::int AS payments_total,
+            COUNT(p.id) FILTER (WHERE p.status = 'paid')::int AS payments_paid,
+            COUNT(p.id) FILTER (WHERE p.status = 'overdue')::int AS payments_overdue,
+            (
+              SELECT json_build_object(
+                'id', np.id,
+                'due_date', np.due_date,
+                'amount', np.amount::text,
+                'status', np.status
+              )
+              FROM credits_payment np
+              WHERE np.credit_id = c.id AND np.status IN ('scheduled', 'overdue')
+              ORDER BY np.due_date ASC NULLS LAST, np.id ASC
+              LIMIT 1
+            ) AS next_payment
+          FROM credits_credit c
+          JOIN credits_bank b ON b.id = c.bank_id
+          LEFT JOIN credits_payment p ON p.credit_id = c.id
+          ${req.user.is_superuser ? "WHERE c.status <> 'closed'" : "WHERE c.status <> 'closed' AND c.user_id = $1"}
+          GROUP BY c.id, b.name
+          ORDER BY c.start_date DESC NULLS LAST, c.id DESC
+        `,
+        params,
+      ),
+      pool.query(
+        `
+          SELECT
+            p.id,
+            p.credit_id,
+            COALESCE(NULLIF(c.name, ''), b.name) AS credit_name,
+            b.name AS bank_name,
+            p.amount::text AS amount,
+            p.due_date,
+            p.status
+          FROM credits_payment p
+          JOIN credits_credit c ON c.id = p.credit_id
+          JOIN credits_bank b ON b.id = c.bank_id
+          WHERE p.status IN ('scheduled', 'overdue')
+            AND p.due_date <= (CURRENT_DATE + INTERVAL '30 days')
+            ${req.user.is_superuser ? '' : 'AND c.user_id = $1'}
+          ORDER BY p.due_date ASC NULLS LAST, p.id ASC
+          LIMIT 30
         `,
         params,
       ),
@@ -341,6 +401,8 @@ app.get('/api/v1/dashboard/summary/', requireAuth, async (req, res, next) => {
     res.json({
       credits: credits.rows[0],
       payments: payments.rows[0],
+      active_credits: activeCredits.rows,
+      upcoming_payments: upcomingPayments.rows,
     });
   } catch (error) {
     next(error);
@@ -533,6 +595,170 @@ app.patch('/api/v1/credits/credits/:id/', requireAuth, async (req, res, next) =>
 
     const updated = await getCreditById(creditId, req.user.id, req.user.is_superuser);
     res.json(updated);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/v1/credits/credits/:id/', requireAuth, async (req, res, next) => {
+  try {
+    const creditId = parseNumber(req.params.id);
+    if (!creditId) {
+      res.status(400).json({ message: 'Некорректный ID кредита' });
+      return;
+    }
+
+    const credit = await getCreditById(creditId, req.user.id, req.user.is_superuser);
+    if (!credit) {
+      res.status(404).json({ message: 'Кредит не найден' });
+      return;
+    }
+
+    const [aggregates, paymentsResult] = await Promise.all([
+      pool.query(
+        `
+          SELECT
+            COALESCE(SUM(amount) FILTER (WHERE status = 'paid'), 0)::text AS paid_amount,
+            COALESCE(SUM(amount) FILTER (WHERE status IN ('scheduled', 'overdue')), 0)::text AS remaining_amount,
+            COUNT(*)::int AS payments_total,
+            COUNT(*) FILTER (WHERE status = 'paid')::int AS payments_paid,
+            COUNT(*) FILTER (WHERE status = 'scheduled')::int AS payments_scheduled,
+            COUNT(*) FILTER (WHERE status = 'overdue')::int AS payments_overdue
+          FROM credits_payment
+          WHERE credit_id = $1
+        `,
+        [creditId],
+      ),
+      pool.query(
+        `
+          SELECT
+            id,
+            credit_id,
+            amount::text AS amount,
+            principal_amount::text AS principal_amount,
+            interest_amount::text AS interest_amount,
+            due_date,
+            paid_date,
+            status
+          FROM credits_payment
+          WHERE credit_id = $1
+          ORDER BY due_date ASC NULLS LAST, id ASC
+        `,
+        [creditId],
+      ),
+    ]);
+
+    res.json({
+      ...credit,
+      aggregates: aggregates.rows[0],
+      payments: paymentsResult.rows,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete('/api/v1/credits/credits/:id/', requireAuth, async (req, res, next) => {
+  try {
+    const creditId = parseNumber(req.params.id);
+    if (!creditId) {
+      res.status(400).json({ message: 'Некорректный ID кредита' });
+      return;
+    }
+
+    const ownershipParams = req.user.is_superuser ? [creditId] : [creditId, req.user.id];
+    const ownershipClause = req.user.is_superuser ? '' : 'AND user_id = $2';
+
+    const result = await pool.query(
+      `DELETE FROM credits_credit WHERE id = $1 ${ownershipClause} RETURNING id`,
+      ownershipParams,
+    );
+
+    if (result.rowCount === 0) {
+      res.status(404).json({ message: 'Кредит не найден' });
+      return;
+    }
+
+    res.json({ message: 'Кредит удалён', id: result.rows[0].id });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/v1/credits/credits/:id/payments/', requireAuth, async (req, res, next) => {
+  try {
+    const creditId = parseNumber(req.params.id);
+    if (!creditId) {
+      res.status(400).json({ message: 'Некорректный ID кредита' });
+      return;
+    }
+
+    const credit = await getCreditById(creditId, req.user.id, req.user.is_superuser);
+    if (!credit) {
+      res.status(404).json({ message: 'Кредит не найден' });
+      return;
+    }
+
+    const amount = parseNumber(req.body.amount, 0);
+    const principalAmount = parseNumber(req.body.principal_amount);
+    const interestAmount = parseNumber(req.body.interest_amount);
+    const dueDate = parseDate(req.body.due_date, new Date().toISOString().slice(0, 10));
+    const paidDate = parseDate(req.body.paid_date);
+    const status = typeof req.body.status === 'string' ? req.body.status : 'scheduled';
+
+    if (amount <= 0) {
+      res.status(400).json({ message: 'Сумма платежа должна быть больше нуля' });
+      return;
+    }
+
+    const insertResult = await pool.query(
+      `
+        INSERT INTO credits_payment (
+          credit_id, amount, principal_amount, interest_amount,
+          due_date, paid_date, status, updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+        RETURNING id, credit_id, amount::text AS amount, principal_amount::text AS principal_amount,
+                  interest_amount::text AS interest_amount, due_date, paid_date, status
+      `,
+      [creditId, amount, principalAmount, interestAmount, dueDate, paidDate, status],
+    );
+
+    res.status(201).json(insertResult.rows[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete('/api/v1/credits/payments/:id/', requireAuth, async (req, res, next) => {
+  try {
+    const paymentId = parseNumber(req.params.id);
+    if (!paymentId) {
+      res.status(400).json({ message: 'Некорректный ID платежа' });
+      return;
+    }
+
+    const ownershipParams = req.user.is_superuser ? [paymentId] : [paymentId, req.user.id];
+    const ownershipClause = req.user.is_superuser ? '' : 'AND c.user_id = $2';
+
+    const result = await pool.query(
+      `
+        DELETE FROM credits_payment p
+        USING credits_credit c
+        WHERE p.credit_id = c.id
+          AND p.id = $1
+          ${ownershipClause}
+        RETURNING p.id
+      `,
+      ownershipParams,
+    );
+
+    if (result.rowCount === 0) {
+      res.status(404).json({ message: 'Платёж не найден' });
+      return;
+    }
+
+    res.json({ message: 'Платёж удалён', id: result.rows[0].id });
   } catch (error) {
     next(error);
   }
