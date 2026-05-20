@@ -1,0 +1,60 @@
+/* Dark Theme */
+:root {
+    --bs-primary: #0d6efd;
+    --bs-secondary: #6c757d;
+    --bs-success: #198754;
+    --bs-info: #0dcaf0;
+    --bs-warning: #ffc107;
+    --bs-danger: #dc3545;
+    --bs-light: #f8f9fa;
+    --bs-dark: #212529;
+    
+    --theme-bg: #212529;
+    --theme-text: #ffffff;
+    --theme-border: #495057;
+    --theme-surface: #343a40;
+    --theme-primary: #0d6efd;
+    --theme-secondary: #6c757d;
+}
+
+body {
+    background-color: var(--theme-bg);
+    color: var(--theme-text);
+}
+
+.card {
+    background-color: var(--theme-surface);
+    border-color: var(--theme-border);
+    color: var(--theme-text);
+}
+
+.navbar {
+    background-color: var(--theme-surface) !important;
+    border-bottom: 1px solid var(--theme-border);
+}
+
+.btn-primary {
+    background-color: var(--theme-primary);
+    border-color: var(--theme-primary);
+}
+
+.btn-primary:hover {
+    background-color: #0b5ed7;
+    border-color: #0a58ca;
+}
+
+.table {
+    color: var(--theme-text);
+}
+
+.form-control {
+    background-color: var(--theme-surface);
+    border-color: var(--theme-border);
+    color: var(--theme-text);
+}
+
+.form-control:focus {
+    background-color: var(--theme-surface);
+    border-color: var(--theme-primary);
+    color: var(--theme-text);
+}

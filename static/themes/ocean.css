@@ -1,0 +1,56 @@
+/* Ocean Theme for KARMAN */
+:root {
+    --bg-primary: #f0f9ff;
+    --bg-secondary: #e6f7ff;
+    --text-primary: #003a75;
+    --text-secondary: #4a90e2;
+    --navbar-bg: #0066cc;
+    --card-bg: #ffffff;
+    --card-border: #b3d9ff;
+    --btn-primary: #0066cc;
+    --btn-primary-hover: #0052a3;
+    --border-color: #b3d9ff;
+    --shadow: rgba(0, 102, 204, 0.1);
+}
+
+body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.navbar-dark {
+    background-color: var(--navbar-bg) !important;
+}
+
+.card {
+    background-color: var(--card-bg);
+    border-color: var(--card-border);
+    box-shadow: 0 2px 4px var(--shadow);
+}
+
+.btn-primary {
+    background-color: var(--btn-primary);
+    border-color: var(--btn-primary);
+}
+
+.btn-primary:hover {
+    background-color: var(--btn-primary-hover);
+    border-color: var(--btn-primary-hover);
+}
+
+.text-muted {
+    color: var(--text-secondary) !important;
+}
+
+.border {
+    border-color: var(--border-color) !important;
+}
+
+.form-control {
+    border-color: var(--border-color);
+}
+
+.form-control:focus {
+    border-color: var(--btn-primary);
+    box-shadow: 0 0 0 0.2rem rgba(0, 102, 204, 0.25);
+}

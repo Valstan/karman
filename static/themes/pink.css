@@ -1,0 +1,56 @@
+/* Pink Theme for KARMAN */
+:root {
+    --bg-primary: #fafafa;
+    --bg-secondary: #fce4ec;
+    --text-primary: #880e4f;
+    --text-secondary: #ad1457;
+    --navbar-bg: #e91e63;
+    --card-bg: #ffffff;
+    --card-border: #f8bbd9;
+    --btn-primary: #e91e63;
+    --btn-primary-hover: #c2185b;
+    --border-color: #f8bbd9;
+    --shadow: rgba(233, 30, 99, 0.1);
+}
+
+body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.navbar-dark {
+    background-color: var(--navbar-bg) !important;
+}
+
+.card {
+    background-color: var(--card-bg);
+    border-color: var(--card-border);
+    box-shadow: 0 2px 4px var(--shadow);
+}
+
+.btn-primary {
+    background-color: var(--btn-primary);
+    border-color: var(--btn-primary);
+}
+
+.btn-primary:hover {
+    background-color: var(--btn-primary-hover);
+    border-color: var(--btn-primary-hover);
+}
+
+.text-muted {
+    color: var(--text-secondary) !important;
+}
+
+.border {
+    border-color: var(--border-color) !important;
+}
+
+.form-control {
+    border-color: var(--border-color);
+}
+
+.form-control:focus {
+    border-color: var(--btn-primary);
+    box-shadow: 0 0 0 0.2rem rgba(233, 30, 99, 0.25);
+}

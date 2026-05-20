@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+frontend/dist/
+frontend_dist/
+*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Server-side runtime data
+backups/
+media/
+
+# SSL certs & keys (KEEP OFF GITHUB)
+ssl/
+*.pem
+*.key
+*.crt
+
+# Environment files (templates kept)
+.env
+.env.local
+.env.*.local
+*.env
+!*.env.*.example
+!.env.example
+
+# IDE / OS
+.idea/
+.vscode/
+.cursor-server/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Misc
+*.tar.gz
+*.sql.gz

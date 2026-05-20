@@ -1,0 +1,56 @@
+/* Forest Theme for KARMAN */
+:root {
+    --bg-primary: #fafafa;
+    --bg-secondary: #f6ffed;
+    --text-primary: #1a3d0a;
+    --text-secondary: #52c41a;
+    --navbar-bg: #2d5016;
+    --card-bg: #ffffff;
+    --card-border: #b7eb8f;
+    --btn-primary: #52c41a;
+    --btn-primary-hover: #389e0d;
+    --border-color: #b7eb8f;
+    --shadow: rgba(82, 196, 26, 0.1);
+}
+
+body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.navbar-dark {
+    background-color: var(--navbar-bg) !important;
+}
+
+.card {
+    background-color: var(--card-bg);
+    border-color: var(--card-border);
+    box-shadow: 0 2px 4px var(--shadow);
+}
+
+.btn-primary {
+    background-color: var(--btn-primary);
+    border-color: var(--btn-primary);
+}
+
+.btn-primary:hover {
+    background-color: var(--btn-primary-hover);
+    border-color: var(--btn-primary-hover);
+}
+
+.text-muted {
+    color: var(--text-secondary) !important;
+}
+
+.border {
+    border-color: var(--border-color) !important;
+}
+
+.form-control {
+    border-color: var(--border-color);
+}
+
+.form-control:focus {
+    border-color: var(--btn-primary);
+    box-shadow: 0 0 0 0.2rem rgba(82, 196, 26, 0.25);
+}

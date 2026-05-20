@@ -1,0 +1,62 @@
+/* Neon Theme for KARMAN */
+:root {
+    --bg-primary: #000000;
+    --bg-secondary: #0a0a0a;
+    --text-primary: #00ff88;
+    --text-secondary: #66ff99;
+    --navbar-bg: #000000;
+    --card-bg: #1a1a1a;
+    --card-border: #00ff88;
+    --btn-primary: #00ff88;
+    --btn-primary-hover: #00cc6a;
+    --border-color: #00ff88;
+    --shadow: rgba(0, 255, 136, 0.1);
+}
+
+body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.navbar-dark {
+    background-color: var(--navbar-bg) !important;
+}
+
+.card {
+    background-color: var(--card-bg);
+    border-color: var(--card-border);
+    box-shadow: 0 2px 4px var(--shadow);
+}
+
+.btn-primary {
+    background-color: var(--btn-primary);
+    border-color: var(--btn-primary);
+    color: #000000;
+}
+
+.btn-primary:hover {
+    background-color: var(--btn-primary-hover);
+    border-color: var(--btn-primary-hover);
+    color: #000000;
+}
+
+.text-muted {
+    color: var(--text-secondary) !important;
+}
+
+.border {
+    border-color: var(--border-color) !important;
+}
+
+.form-control {
+    background-color: var(--card-bg);
+    border-color: var(--border-color);
+    color: var(--text-primary);
+}
+
+.form-control:focus {
+    background-color: var(--card-bg);
+    border-color: var(--btn-primary);
+    box-shadow: 0 0 0 0.2rem rgba(0, 255, 136, 0.25);
+    color: var(--text-primary);
+}
