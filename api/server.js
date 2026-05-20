@@ -1,7 +1,6 @@
 const crypto = require('crypto');
 const express = require('express');
 const { Pool } = require('pg');
-const cursorModelMonitor = require('./cursorModelMonitor');
 
 const app = express();
 app.set('trust proxy', true);
@@ -687,84 +686,6 @@ app.get('/api/v1/documents/', requireAuth, async (req, res, next) => {
   }
 });
 
-app.get('/api/v1/cursor-model-reports/', requireAuth, async (req, res, next) => {
-  try {
-    const limit = parseNumber(req.query.limit, 20);
-    const reports = await cursorModelMonitor.listReports(pool, limit);
-    res.json(reports);
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get('/api/v1/cursor-model-reports/:id/', requireAuth, async (req, res, next) => {
-  try {
-    const reportId = parseNumber(req.params.id);
-    if (!reportId) {
-      res.status(400).json({ message: 'Некорректный ID отчета' });
-      return;
-    }
-
-    const report = await cursorModelMonitor.getReportById(pool, reportId);
-    if (!report) {
-      res.status(404).json({ message: 'Отчет не найден' });
-      return;
-    }
-    res.json(report);
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.delete('/api/v1/cursor-model-reports/:id/', requireAuth, async (req, res, next) => {
-  try {
-    if (!req.user.is_superuser) {
-      res.status(403).json({ message: 'Недостаточно прав' });
-      return;
-    }
-
-    const reportId = parseNumber(req.params.id);
-    if (!reportId) {
-      res.status(400).json({ message: 'Некорректный ID отчета' });
-      return;
-    }
-    const deleted = await cursorModelMonitor.deleteReportById(pool, reportId);
-    if (!deleted) {
-      res.status(404).json({ message: 'Отчет не найден' });
-      return;
-    }
-    res.json({ message: 'Отчет удален', deleted });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post('/api/v1/cursor-model-reports/run-now/', requireAuth, async (req, res, next) => {
-  try {
-    if (!req.user.is_superuser) {
-      res.status(403).json({ message: 'Недостаточно прав' });
-      return;
-    }
-    const report = await cursorModelMonitor.generateDailyReport(pool);
-    res.json(report);
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post('/api/v1/cursor-model-reports/collect-now/', requireAuth, async (req, res, next) => {
-  try {
-    if (!req.user.is_superuser) {
-      res.status(403).json({ message: 'Недостаточно прав' });
-      return;
-    }
-    const result = await cursorModelMonitor.collectAndStoreEvents(pool);
-    res.json({ message: 'Сбор завершен', ...result });
-  } catch (error) {
-    next(error);
-  }
-});
-
 app.use((error, req, res, next) => {
   console.error('API error', error);
   res.status(500).json({
@@ -772,13 +693,6 @@ app.use((error, req, res, next) => {
     detail: process.env.NODE_ENV === 'production' ? undefined : String(error.message || error),
   });
 });
-
-const shouldRunCursorModelMonitor = process.env.CURSOR_MODEL_MONITOR_ENABLED !== 'false';
-if (shouldRunCursorModelMonitor) {
-  void cursorModelMonitor.startBackgroundMonitor(pool).catch((error) => {
-    console.error('Cursor model monitor startup failed', error);
-  });
-}
 
 app.listen(port, () => {
   console.log(`KARMAN API listening on port ${port}`);

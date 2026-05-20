@@ -7,7 +7,6 @@ import {
   Form,
   Input,
   Layout,
-  List,
   Menu,
   Modal,
   Select,
@@ -19,7 +18,7 @@ import {
   message,
 } from 'antd';
 import ruRU from 'antd/locale/ru_RU';
-import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
+import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { ThemeProvider, useTheme } from './contexts/ThemeContext';
 import ThemeApplier from './components/ThemeApplier';
 import ThemeSelector from './components/ThemeSelector';
@@ -88,42 +87,6 @@ type DocumentRow = {
   expiry_date: string | null;
   issuing_authority: string | null;
   is_active: boolean;
-};
-
-type CursorModelReportSummary = {
-  id: number;
-  report_date: string;
-  title: string;
-  summary: string;
-  total_events: number;
-  period_start: string;
-  period_end: string;
-  created_at: string;
-};
-
-type CursorModelReportItem = {
-  id: number;
-  model_name: string;
-  model_provider: string | null;
-  title: string;
-  summary: string | null;
-  reason_for_newness: string | null;
-  release_date_hint: string | null;
-  availability_in_cursor: string | null;
-  source_url: string | null;
-  source_type: string;
-  is_preview: boolean;
-  preview_until: string | null;
-  price_input_per_million: string | null;
-  price_output_per_million: string | null;
-  source_published_at: string | null;
-  price_cache_write_per_million: string | null;
-  price_cache_read_per_million: string | null;
-  event_position: number;
-};
-
-type CursorModelReportDetail = CursorModelReportSummary & {
-  items: CursorModelReportItem[];
 };
 
 type AuthUser = {
@@ -560,230 +523,6 @@ const DocumentsPage: React.FC<{ loading: boolean; documents: DocumentRow[] }> = 
   </Card>
 );
 
-const CursorModelReportsPage: React.FC<{
-  loading: boolean;
-  reports: CursorModelReportSummary[];
-  onRefresh: () => Promise<void>;
-  onDelete: (id: number) => Promise<void>;
-  canDelete: boolean;
-  onCopyLink: (reportId: number) => Promise<void>;
-  onRunNow: () => Promise<void>;
-  onCollectNow: () => Promise<void>;
-}> = ({ loading, reports, onRefresh, onDelete, canDelete, onCopyLink, onRunNow, onCollectNow }) => {
-  return (
-    <Card
-      title={`Отчеты по моделям Cursor (${reports.length})`}
-      extra={
-        <Space>
-          <Button onClick={() => void onRefresh()}>Обновить</Button>
-          {canDelete && (
-            <>
-              <Button onClick={() => void onCollectNow()}>Собрать сейчас</Button>
-              <Button onClick={() => void onRunNow()}>Сформировать отчет</Button>
-            </>
-          )}
-        </Space>
-      }
-    >
-      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-        {reports.length === 0 && !loading ? (
-          <Alert message="Пока нет отчетов." type="info" />
-        ) : null}
-        {reports.map((report) => (
-          <Card
-            key={report.id}
-            title={report.title}
-            size="small"
-            extra={
-              <Space>
-                <Link to={`/cursor-model-reports/${report.id}`}>
-                  <Button size="small">Открыть</Button>
-                </Link>
-                <Button size="small" onClick={() => void onCopyLink(report.id)}>
-                  Копировать ссылку на отчет
-                </Button>
-                {canDelete && (
-                  <Button
-                    size="small"
-                    danger
-                    onClick={() => void onDelete(report.id)}
-                  >
-                    Удалить
-                  </Button>
-                )}
-              </Space>
-            }
-          >
-            <p style={{ marginTop: 0 }}>
-              Период: {new Date(report.period_start).toLocaleString('ru-RU')} —{' '}
-              {new Date(report.period_end).toLocaleString('ru-RU')}
-            </p>
-            <p>Найдено событий: {report.total_events}</p>
-            <Typography.Paragraph ellipsis={{ rows: 4 }}>{report.summary}</Typography.Paragraph>
-          </Card>
-        ))}
-        {loading && <Spin />}
-      </Space>
-    </Card>
-  );
-};
-
-const CursorModelReportDetailPage: React.FC<{
-  canDelete: boolean;
-  onDelete: (id: number) => Promise<void>;
-  onCopyLink: (reportId: number) => Promise<void>;
-}> = ({ canDelete, onDelete, onCopyLink }) => {
-  const { reportId: reportIdParam } = useParams<{ reportId: string }>();
-  const reportId = Number(reportIdParam);
-  const [report, setReport] = useState<CursorModelReportDetail | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const loadReport = useCallback(async () => {
-    if (!Number.isFinite(reportId)) {
-      setError('Некорректный ID отчета');
-      setLoading(false);
-      return;
-    }
-
-    try {
-      setLoading(true);
-      setError(null);
-      const data = await apiRequest<CursorModelReportDetail>(`/api/v1/cursor-model-reports/${reportId}/`);
-      setReport(data);
-    } catch (error) {
-      setError((error as Error).message || 'Не удалось загрузить отчет');
-      setReport(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [reportId]);
-
-  useEffect(() => {
-    void loadReport();
-  }, [loadReport]);
-
-  return (
-    <Card
-      title={report ? report.title : 'Детали отчета'}
-      extra={<Link to="/cursor-model-reports">← К списку отчетов</Link>}
-    >
-      {loading && <Spin />}
-      {error && <Alert type="error" message={error} />}
-      {!loading && !error && !report && <Alert type="warning" message="Отчет не найден" />}
-      {report && (
-        <Space direction="vertical" style={{ width: '100%' }} size="middle">
-          <Space>
-            <Button size="small" onClick={() => void onCopyLink(report.id)}>
-              Копировать ссылку на отчет
-            </Button>
-            {canDelete && (
-              <Button danger size="small" onClick={() => void onDelete(report.id)}>
-                Удалить отчет
-              </Button>
-            )}
-          </Space>
-          <p>
-            Период: {new Date(report.period_start).toLocaleString('ru-RU')} —{' '}
-            {new Date(report.period_end).toLocaleString('ru-RU')}
-          </p>
-          <p>Найдено событий: {report.total_events}</p>
-          <Typography.Paragraph>{report.summary}</Typography.Paragraph>
-          <List
-            dataSource={report.items}
-            renderItem={(item) => (
-              <List.Item key={item.id}>
-                <List.Item.Meta
-                  title={
-                    <Space wrap>
-                      <span>{item.model_name}</span>
-                      {item.model_provider && <Tag>{item.model_provider}</Tag>}
-                  {item.is_preview && (
-                    <Tag color="magenta">
-                      Preview
-                      {item.preview_until ? ` до ${item.preview_until}` : ''}
-                    </Tag>
-                  )}
-                      <span>Источник: {item.source_type}</span>
-                    </Space>
-                  }
-                  description={
-                    <>
-                      <div>{item.title}</div>
-                      {item.release_date_hint ? (
-                        <Tag color="blue" style={{ marginBottom: 6 }}>
-                          🗓 Опубликовано: {new Date(item.release_date_hint).toLocaleString('ru-RU')}
-                        </Tag>
-                      ) : item.source_published_at ? (
-                        <Tag color="blue" style={{ marginBottom: 6 }}>
-                          🗓 Опубликовано: {new Date(item.source_published_at).toLocaleString('ru-RU')}
-                        </Tag>
-                      ) : null}
-                      {item.availability_in_cursor ? (
-                        <Tag
-                          color={
-                            item.availability_in_cursor.includes('Подтверждено')
-                              ? 'green'
-                              : item.availability_in_cursor.includes('Предположительно')
-                                ? 'blue'
-                                : 'orange'
-                          }
-                          style={{ marginBottom: 6 }}
-                        >
-                          {item.availability_in_cursor.includes('Cursor') ? '✅ ' : '⚠️ '}
-                          {item.availability_in_cursor}
-                        </Tag>
-                      ) : null}
-                      {item.reason_for_newness ? (
-                        <Tag
-                          color={item.reason_for_newness.includes('preview/тестовая') ? 'orange' : 'blue'}
-                          style={{ marginBottom: 6 }}
-                        >
-                          🧠 {item.reason_for_newness}
-                        </Tag>
-                      ) : null}
-                      {item.summary && <div>{item.summary}</div>}
-                      {(item.price_input_per_million || item.price_output_per_million) && (
-                        <Space wrap>
-                          {item.price_input_per_million ? (
-                            <Tag color="green" style={{ marginBottom: 6 }}>
-                              💰 Вход: {item.price_input_per_million}
-                            </Tag>
-                          ) : null}
-                          {item.price_output_per_million ? (
-                            <Tag color="green" style={{ marginBottom: 6 }}>
-                              💰 Выход: {item.price_output_per_million}
-                            </Tag>
-                          ) : null}
-                          {item.price_cache_write_per_million ? (
-                            <Tag color="cyan" style={{ marginBottom: 6 }}>
-                              📦 Cache write: {item.price_cache_write_per_million}
-                            </Tag>
-                          ) : null}
-                          {item.price_cache_read_per_million ? (
-                            <Tag color="geekblue" style={{ marginBottom: 6 }}>
-                              📦 Cache read: {item.price_cache_read_per_million}
-                            </Tag>
-                          ) : null}
-                        </Space>
-                      )}
-                      {item.source_url ? (
-                        <a href={item.source_url} target="_blank" rel="noopener noreferrer">
-                          Открыть источник
-                        </a>
-                      ) : null}
-                    </>
-                  }
-                />
-              </List.Item>
-            )}
-          />
-        </Space>
-      )}
-    </Card>
-  );
-};
-
 const LoginPage: React.FC<{ onLoggedIn: () => Promise<AuthUser | null> }> = ({ onLoggedIn }) => {
   const [loading, setLoading] = useState(false);
 
@@ -833,7 +572,6 @@ const Shell: React.FC = () => {
   const [payments, setPayments] = useState<PaymentRow[]>([]);
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
-  const [cursorModelReports, setCursorModelReports] = useState<CursorModelReportSummary[]>([]);
   const [loadingData, setLoadingData] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const authOk = currentUser !== null;
@@ -866,13 +604,11 @@ const Shell: React.FC = () => {
         apiRequest<DocumentRow[]>('/api/v1/documents/'),
         apiRequest<DashboardSummary>('/api/v1/dashboard/summary/'),
       ]);
-      const reportsData = await apiRequest<CursorModelReportSummary[]>('/api/v1/cursor-model-reports/?limit=50').catch(() => []);
       setBanks(banksData);
       setCredits(creditsData);
       setPayments(paymentsData);
       setDocuments(documentsData);
       setSummary(summaryData);
-      setCursorModelReports(reportsData);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
         setCurrentUser(null);
@@ -881,7 +617,6 @@ const Shell: React.FC = () => {
         setPayments([]);
         setDocuments([]);
         setSummary(null);
-        setCursorModelReports([]);
         return;
       }
       setLoadError((error as Error).message || 'Ошибка загрузки данных');
@@ -889,49 +624,6 @@ const Shell: React.FC = () => {
       setLoadingData(false);
     }
   }, [authOk]);
-
-  const deleteCursorModelReport = useCallback(async (reportId: number) => {
-    try {
-      await apiRequest(`/api/v1/cursor-model-reports/${reportId}/`, { method: 'DELETE' });
-      message.success('Отчет удален');
-      await loadAllData();
-    } catch (error) {
-      message.error((error as Error).message || 'Не удалось удалить отчет');
-    }
-  }, [loadAllData]);
-
-  const runCursorModelReportNow = useCallback(async () => {
-    try {
-      await apiRequest('/api/v1/cursor-model-reports/run-now/', { method: 'POST' });
-      message.success('Отчет сформирован и отправлен');
-      await loadAllData();
-    } catch (error) {
-      message.error((error as Error).message || 'Не удалось сформировать отчет');
-    }
-  }, [loadAllData]);
-
-  const collectCursorModelDataNow = useCallback(async () => {
-    try {
-      const result = await apiRequest<{ message: string; total: number; inserted: number }>(
-        '/api/v1/cursor-model-reports/collect-now/',
-        { method: 'POST' },
-      );
-      message.success(`Сбор завершен: добавлено ${result.inserted} новых записей`);
-      await loadAllData();
-    } catch (error) {
-      message.error((error as Error).message || 'Не удалось выполнить сбор');
-    }
-  }, [loadAllData]);
-
-  const copyReportLink = useCallback(async (reportId: number) => {
-    try {
-      const link = `${window.location.origin}/cursor-model-reports/${reportId}`;
-      await navigator.clipboard.writeText(link);
-      message.success('Ссылка скопирована');
-    } catch {
-      message.error('Не удалось скопировать ссылку');
-    }
-  }, []);
 
   useEffect(() => {
     let active = true;
@@ -973,7 +665,6 @@ const Shell: React.FC = () => {
       setPayments([]);
       setDocuments([]);
       setSummary(null);
-      setCursorModelReports([]);
     }
   };
 
@@ -1028,14 +719,13 @@ const Shell: React.FC = () => {
             theme="dark"
             mode="horizontal"
             style={{ background: '#0b2a5a', color: '#ffffff' }}
-            selectedKeys={[location.pathname.startsWith('/cursor-model-reports') ? '/cursor-model-reports' : location.pathname]}
+            selectedKeys={[location.pathname]}
             items={[
               { key: '/dashboard', label: <Link to="/dashboard">Панель</Link> },
               { key: '/credits', label: <Link to="/credits">Кредиты</Link> },
               { key: '/payments', label: <Link to="/payments">Платежи</Link> },
               { key: '/banks', label: <Link to="/banks">Банки</Link> },
               { key: '/documents', label: <Link to="/documents">Документы</Link> },
-              { key: '/cursor-model-reports', label: <Link to="/cursor-model-reports">Отчеты Cursor</Link> },
             ]}
           />
         )}
@@ -1051,31 +741,6 @@ const Shell: React.FC = () => {
             <Route path="/payments" element={<PaymentsPage loading={loadingData} payments={payments} onReload={loadAllData} />} />
             <Route path="/banks" element={<BanksPage loading={loadingData} banks={banks} />} />
             <Route path="/documents" element={<DocumentsPage loading={loadingData} documents={documents} />} />
-            <Route
-              path="/cursor-model-reports"
-              element={
-                <CursorModelReportsPage
-                  loading={loadingData}
-                  reports={cursorModelReports}
-                  onRefresh={loadAllData}
-                  onDelete={deleteCursorModelReport}
-                  canDelete={Boolean(currentUser?.is_superuser)}
-                  onCopyLink={copyReportLink}
-                  onRunNow={runCursorModelReportNow}
-                  onCollectNow={collectCursorModelDataNow}
-                />
-              }
-            />
-            <Route
-              path="/cursor-model-reports/:reportId"
-              element={
-                <CursorModelReportDetailPage
-                  canDelete={Boolean(currentUser?.is_superuser)}
-                  onDelete={deleteCursorModelReport}
-                  onCopyLink={copyReportLink}
-                />
-              }
-            />
             <Route path="/login" element={authOk ? <Navigate to="/dashboard" replace /> : <LoginPage onLoggedIn={refreshAuth} />} />
             <Route path="*" element={<Navigate to={authOk ? '/dashboard' : '/login'} replace />} />
           </Routes>
