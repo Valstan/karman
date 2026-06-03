@@ -39,10 +39,10 @@ export async function createBank(input: BankCreateInput): Promise<number> {
     .insert(creditsBank)
     .values({
       name: input.name,
-      address: input.address ?? null,
-      phone: input.phone ?? null,
-      email: input.email ?? null,
-      website: input.website ?? null,
+      address: input.address ?? '',
+      phone: input.phone ?? '',
+      email: input.email ?? '',
+      website: input.website ?? '',
     })
     .returning({ id: creditsBank.id });
   return created!.id;
@@ -52,10 +52,10 @@ export async function updateBank(input: BankUpdateInput): Promise<boolean> {
   const { id, ...fields } = input;
   const patch: Record<string, unknown> = {};
   if (fields.name !== undefined) patch.name = fields.name;
-  if (fields.address !== undefined) patch.address = fields.address ?? null;
-  if (fields.phone !== undefined) patch.phone = fields.phone ?? null;
-  if (fields.email !== undefined) patch.email = fields.email ?? null;
-  if (fields.website !== undefined) patch.website = fields.website ?? null;
+  if (fields.address !== undefined) patch.address = fields.address ?? '';
+  if (fields.phone !== undefined) patch.phone = fields.phone ?? '';
+  if (fields.email !== undefined) patch.email = fields.email ?? '';
+  if (fields.website !== undefined) patch.website = fields.website ?? '';
 
   if (Object.keys(patch).length === 0) {
     return false;

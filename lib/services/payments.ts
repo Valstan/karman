@@ -79,8 +79,9 @@ export async function createPayment(user: SessionUser, input: PaymentCreateInput
     .values({
       creditId: input.creditId,
       amount: input.amount,
-      principalAmount: input.principalAmount ?? null,
-      interestAmount: input.interestAmount ?? null,
+      // principal/interest в БД NOT NULL — при отсутствии пишем '0.00'.
+      principalAmount: input.principalAmount ?? '0.00',
+      interestAmount: input.interestAmount ?? '0.00',
       dueDate: input.dueDate,
       paidDate: input.paidDate ?? null,
       status: input.status,
@@ -96,8 +97,9 @@ export async function updatePayment(user: SessionUser, input: PaymentUpdateInput
 
   const patch: Record<string, unknown> = {};
   if (input.amount !== undefined) patch.amount = input.amount;
-  if (input.principalAmount !== undefined) patch.principalAmount = input.principalAmount;
-  if (input.interestAmount !== undefined) patch.interestAmount = input.interestAmount;
+  // principal/interest в БД NOT NULL — null из формы превращаем в '0.00'.
+  if (input.principalAmount !== undefined) patch.principalAmount = input.principalAmount ?? '0.00';
+  if (input.interestAmount !== undefined) patch.interestAmount = input.interestAmount ?? '0.00';
   if (input.dueDate !== undefined) patch.dueDate = input.dueDate;
   if (input.paidDate !== undefined) patch.paidDate = input.paidDate;
   if (input.status !== undefined) patch.status = input.status;

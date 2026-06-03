@@ -5,7 +5,7 @@ export const PAYMENT_TYPES = ['annuity', 'differentiated', 'other'] as const;
 export const CREDIT_STATUSES = ['active', 'overdue', 'closed'] as const;
 
 export const creditCreateSchema = z.object({
-  name: z.string().trim().max(255).optional().default(''),
+  name: z.string().trim().max(200).optional().default(''),
   description: z.string().trim().max(2000).optional().default(''),
   bankId: z.coerce.number().int().positive('Выберите банк'),
   amount: money,

@@ -5,6 +5,13 @@ import { documentsDocument } from '@/lib/db/schema';
 import { ownership, type SessionUser } from '@/lib/auth/rbac';
 import type { DocumentCreateInput, DocumentUpdateInput } from '@/lib/validation/document';
 
+/**
+ * documents_document.category_id — NOT NULL FK на documents_documentcategory.
+ * Категории документов пока НЕ моделируются в новом UI; до появления выбора
+ * категории все новые документы пишутся в «Прочее» (id=8 в боевой БД).
+ */
+const DEFAULT_DOCUMENT_CATEGORY_ID = 8;
+
 export type DocumentListItem = {
   id: number;
   title: string;
@@ -38,13 +45,15 @@ export async function createDocument(user: SessionUser, input: DocumentCreateInp
     .insert(documentsDocument)
     .values({
       title: input.title,
+      description: input.description ?? '',
       documentType: input.documentType ?? '',
       documentNumber: input.documentNumber ?? '',
       issueDate: input.issueDate ?? null,
       expiryDate: input.expiryDate ?? null,
-      issuingAuthority: input.issuingAuthority ?? null,
+      issuingAuthority: input.issuingAuthority ?? '',
       isActive: input.isActive ?? true,
       userId: user.id,
+      categoryId: DEFAULT_DOCUMENT_CATEGORY_ID,
     })
     .returning({ id: documentsDocument.id });
   return created!.id;
@@ -54,11 +63,12 @@ export async function updateDocument(user: SessionUser, input: DocumentUpdateInp
   const { id, ...fields } = input;
   const patch: Record<string, unknown> = {};
   if (fields.title !== undefined) patch.title = fields.title;
+  if (fields.description !== undefined) patch.description = fields.description ?? '';
   if (fields.documentType !== undefined) patch.documentType = fields.documentType ?? '';
   if (fields.documentNumber !== undefined) patch.documentNumber = fields.documentNumber ?? '';
   if (fields.issueDate !== undefined) patch.issueDate = fields.issueDate ?? null;
   if (fields.expiryDate !== undefined) patch.expiryDate = fields.expiryDate ?? null;
-  if (fields.issuingAuthority !== undefined) patch.issuingAuthority = fields.issuingAuthority ?? null;
+  if (fields.issuingAuthority !== undefined) patch.issuingAuthority = fields.issuingAuthority ?? '';
   if (fields.isActive !== undefined) patch.isActive = fields.isActive;
 
   if (Object.keys(patch).length === 0) {

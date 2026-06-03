@@ -171,8 +171,10 @@ export async function createCredit(user: SessionUser, input: CreditCreateInput):
           schedule.map((s) => ({
             creditId,
             amount: s.amount,
-            principalAmount: s.principalAmount,
-            interestAmount: s.interestAmount,
+            // principal/interest в БД NOT NULL; для типа «other» график их не
+            // считает (null) → пишем '0.00' (разбивка не определена).
+            principalAmount: s.principalAmount ?? '0.00',
+            interestAmount: s.interestAmount ?? '0.00',
             dueDate: s.dueDate,
             status: s.status,
           })),
@@ -213,11 +215,21 @@ export async function updateCredit(user: SessionUser, input: CreditUpdateInput):
 }
 
 export async function deleteCredit(user: SessionUser, id: number): Promise<boolean> {
-  const result = await db
-    .delete(creditsCredit)
-    .where(and(eq(creditsCredit.id, id), ownership(user, creditsCredit.userId)))
-    .returning({ id: creditsCredit.id });
-  return result.length > 0;
+  // FK credits_payment.credit_id — БЕЗ ON DELETE CASCADE (Django каскадит в коде),
+  // поэтому сначала удаляем платежи, затем кредит — в одной транзакции.
+  return db.transaction(async (tx) => {
+    const [owned] = await tx
+      .select({ id: creditsCredit.id })
+      .from(creditsCredit)
+      .where(and(eq(creditsCredit.id, id), ownership(user, creditsCredit.userId)))
+      .limit(1);
+    if (!owned) {
+      return false;
+    }
+    await tx.delete(creditsPayment).where(eq(creditsPayment.creditId, id));
+    await tx.delete(creditsCredit).where(eq(creditsCredit.id, id));
+    return true;
+  });
 }
 
 /**
@@ -248,8 +260,8 @@ export async function regenerateSchedule(user: SessionUser, id: number): Promise
         schedule.map((s) => ({
           creditId: id,
           amount: s.amount,
-          principalAmount: s.principalAmount,
-          interestAmount: s.interestAmount,
+          principalAmount: s.principalAmount ?? '0.00',
+          interestAmount: s.interestAmount ?? '0.00',
           dueDate: s.dueDate,
           status: s.status,
         })),
