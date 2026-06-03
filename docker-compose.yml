@@ -1,0 +1,24 @@
+# Локальная PostgreSQL для разработки на Windows (боевая БД недоступна с dev-машины).
+# Запуск:  docker compose up -d
+# Сброс:   docker compose down -v   (удаляет данные, bootstrap.sql применится заново)
+services:
+  db:
+    image: postgres:16
+    container_name: karman-db
+    environment:
+      POSTGRES_USER: karman
+      POSTGRES_PASSWORD: karman
+      POSTGRES_DB: karman_db
+    ports:
+      - '5432:5432'
+    volumes:
+      - karman-pgdata:/var/lib/postgresql/data
+      - ./scripts/bootstrap.sql:/docker-entrypoint-initdb.d/00-bootstrap.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U karman -d karman_db']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  karman-pgdata:

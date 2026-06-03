@@ -1,136 +1,82 @@
-# Operations
+# Эксплуатация KARMAN
 
-## Работа с проектом локально
+## Локальная разработка (Windows / без боевой БД)
 
-- Frontend:
+```bash
+cp .env.example .env.local
+docker compose up -d        # PostgreSQL + схема + сид из scripts/bootstrap.sql
+npm install
+npm run dev                 # http://localhost:3000  (вход: admin / admin123)
+```
 
-  ```bash
-  cd /home/valstan/karman/frontend
-  npm install
-  npm run dev
-  ```
+Сброс локальной БД: `docker compose down -v && docker compose up -d`.
 
-- API:
+## Проверки перед деплоем
 
-  ```bash
-  cd /home/valstan/karman/api
-  npm install
-  npm run dev
-  ```
+```bash
+npm run build       # сборка + типы
+npm run test        # юнит-тесты (график платежей, пароли, деньги)
+```
 
-- Production build:
+## Сверка схемы с боевой БД (обязательно перед первым прод-деплоем)
 
-  ```bash
-  cd /home/valstan/karman/frontend
-  npm run build
-  ```
+`lib/db/schema.ts` написана по фактическим колонкам из старого API. Перед продом сверить с реальной БД:
 
-## Рекомендуемый деплой
+```bash
+# на машине с доступом к КЛОНУ/ДАМПУ боевой БД:
+DATABASE_URL=postgres://... npm run db:pull       # генерирует схему из реальной БД
+# сравнить с lib/db/schema.ts и привести в соответствие при расхождениях
+```
 
-- Сборка SPA:
+## База данных и миграции
 
-  ```bash
-  /home/valstan/karman/scripts/build_spa.sh
-  ```
+- Боевая БД создана исторически (Django). Таблицы уже существуют — **baseline-миграцию нельзя
+  выполнять как DDL** на проде.
+- Порядок при первом внедрении миграций:
+  1. `npm run db:generate` — сгенерировать baseline `0000` из схемы.
+  2. На проде пометить `0000` применённой **без выполнения DDL**: вставить её запись в служебную
+     таблицу `drizzle.__drizzle_migrations` (hash из `lib/db/migrations/meta/_journal.json`).
+     Предварительно проверить весь поток на клоне БД.
+  3. Все последующие изменения — только в `0001+`, они и применяются `npm run db:migrate`.
 
-- Деплой SPA:
+## Деплой (сервер, единый процесс Next.js)
 
-  ```bash
-  /home/valstan/karman/scripts/deploy_spa.sh
-  ```
+Первичная настройка:
 
-- Деплой и перезапуск API:
+```bash
+sudo cp scripts/karman.service /etc/systemd/system/karman.service
+sudo tee /etc/karman.env >/dev/null <<'EOF'
+SESSION_SECRET=<openssl rand -base64 48>
+DATABASE_URL=postgres:///karman_db?host=/var/run/postgresql
+EOF
+sudo systemctl daemon-reload && sudo systemctl enable --now karman
+sudo systemctl disable --now karman-api      # старый Express-сервис больше не нужен
 
-  ```bash
-  /home/valstan/karman/scripts/deploy_api.sh
-  /home/valstan/karman/scripts/restart_api.sh
-  ```
+# nginx: взять за основу scripts/nginx.karman.conf (единый proxy_pass на :3000,
+# обязателен проброс X-Forwarded-Proto). Затем:
+sudo nginx -t && sudo systemctl reload nginx
+```
 
-- Проверки сервисов:
+Регулярный деплой:
 
-  ```bash
-  sudo systemctl status karman-api --no-pager
-  sudo systemctl status nginx --no-pager
-  ```
+```bash
+scripts/deploy.sh           # git pull → npm ci → build → (migrate) → restart → healthcheck
+```
 
-- Переменные Cursor-монитора (фоновый сбор):
+## Здоровье и логи
 
-  ```bash
-  sudo nano /etc/systemd/system/karman-api.env
-  ```
+```bash
+curl -sS http://127.0.0.1:3000/api/health      # {"status":"ok"}
+sudo systemctl status karman --no-pager
+sudo journalctl -u karman -f
+```
 
-  Значения по умолчанию, которые уже есть в `/etc/systemd/system/karman-api.env`:
+## SSL
 
-  - `CURSOR_MODEL_COLLECTION_INTERVAL_MS=18000000`
-  - `CURSOR_MODEL_REPORT_INTERVAL_MS=86400000`
-  - `CURSOR_MODEL_RETENTION_DAYS=7`
-  - `CURSOR_MODEL_REPORT_HOUR_UTC=9`
-  - `CURSOR_MODEL_MONITOR_ENABLED=true`
-  - `CURSOR_MODEL_TELEGRAM_BOT_TOKEN=<токен>`
-  - `CURSOR_MODEL_TELEGRAM_CHAT_ID=<chat_id>`
+TLS — через certbot (как раньше). Проверка автопродления: `scripts/check_ssl_renewal.sh`.
 
-  После изменения переменных:
+## Примечания по миграции со старого стека
 
-  ```bash
-  sudo systemctl restart karman-api
-  ```
-
-## Nginx и SSL
-
-- Проверить конфиг:
-
-  ```bash
-  sudo nginx -t
-  ```
-
-- Применить изменения:
-
-  ```bash
-  sudo systemctl reload nginx
-  ```
-
-- Проверить сертификат/renew:
-
-  ```bash
-  /home/valstan/karman/scripts/check_ssl_renewal.sh
-  ```
-
-  При ручном продлении:
-
-  ```bash
-  sudo certbot renew --cert-name 4ce93c2b59f9.vps.myjino.ru --nginx --non-interactive
-  sudo systemctl reload nginx
-  ```
-
-## Проверки работоспособности
-
-- Базовая доступность:
-
-  ```bash
-  curl -IL https://4ce93c2b59f9.vps.myjino.ru/
-  curl -IL https://4ce93c2b59f9.vps.myjino.ru/dashboard
-  ```
-
-- API health и данные:
-
-  ```bash
-  curl -sS https://4ce93c2b59f9.vps.myjino.ru/api/health
-  curl -sS https://4ce93c2b59f9.vps.myjino.ru/api/v1/dashboard/summary/
-  ```
-
-- Проверка входа (замените учётные данные):
-
-  ```bash
-  curl -i -X POST "https://4ce93c2b59f9.vps.myjino.ru/api/v1/auth/login" \
-    -H "Content-Type: application/json" \
-    --data '{"username":"admin","password":"admin123"}'
-  ```
-
-## Памятка по привилегиям
-
-- Проверка режима `sudo` выполнена как `sudo -n true` — на текущем окружении пароль не требуется.
-- Зафиксируй это в рабочей памяти сессии: изменения, требующие `sudo`, можно выполнять без ввода пароля.
-
-## Сессии разработки с нейросетью
-
-- Продолжение ведения проекта между сессиями описано в `docs/AI_SESSION_CONTINUITY.md`.
+- Формат сессии изменён (JWT вместо самописного HMAC), cookie переименован в `karman_session_v2` —
+  при первом заходе потребуется повторный вход.
+- `SESSION_SECRET` обязателен в production: без него сервис намеренно не стартует.
