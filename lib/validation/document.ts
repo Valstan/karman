@@ -2,12 +2,13 @@ import { z } from 'zod';
 import { optionalDateString } from './common';
 
 export const documentCreateSchema = z.object({
-  title: z.string().trim().min(1, 'Введите название').max(255),
-  documentType: z.string().trim().max(50).optional().default(''),
+  title: z.string().trim().min(1, 'Введите название').max(200),
+  description: z.string().trim().max(2000).optional().default(''),
+  documentType: z.string().trim().max(20).optional().default(''),
   documentNumber: z.string().trim().max(100).optional().default(''),
   issueDate: optionalDateString,
   expiryDate: optionalDateString,
-  issuingAuthority: z.string().trim().max(255).optional().nullable(),
+  issuingAuthority: z.string().trim().max(200).optional().nullable(),
   isActive: z.coerce.boolean().optional().default(true),
 });
 
