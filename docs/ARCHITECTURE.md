@@ -1,55 +1,58 @@
-# Project architecture (KARMAN)
+# Архитектура KARMAN
 
-## Ключевая идея
+## Обзор
 
-Проект — это монолитный SPA frontend + отдельный REST API на одном сервере:
+Единое приложение **Next.js (App Router)**: фронтенд и бэкенд в одном TypeScript-проекте,
+один процесс за nginx. PostgreSQL — через **Drizzle ORM**.
 
-- `frontend/` — исходники React SPA (TypeScript, Vite, Ant Design)
-- `api/` — backend на Node.js (Express + PostgreSQL)
-- `frontend_dist/` — собранный bundle для продакшена
-- `nginx` — раздаёт SPA и проксирует API
+```
+Браузер → nginx (TLS, :443) → Next.js (node, 127.0.0.1:3000) → PostgreSQL (unix-socket)
+```
 
-## Runtime graph
+## Слои
 
-1. Браузер клиента обращается к домену проекта.
-2. `nginx`:
-   - отдает статические файлы из `frontend_dist/`
-   - для SPA-роутов делает fallback на `index.html`
-   - все запросы по `/api/*` переадресует на `127.0.0.1:8080`
-3. `api/server.js` обрабатывает `/api/v1/*` и работает с БД `karman_db`.
+- `app/` — маршруты App Router.
+  - `(auth)/login` — страница входа (вне гарда).
+  - `(app)/*` — защищённые страницы (дашборд, кредиты, банки, документы). Гард в `(app)/layout.tsx`.
+  - `api/auth/{login,logout}`, `api/health` — Route Handlers (Node runtime).
+- `proxy.ts` — Edge-гард (Next 16 «proxy», ранее middleware): дешёвая проверка JWT, редиректы.
+- `lib/db/` — `schema.ts` (Drizzle, отражает существующие таблицы), `client.ts` (пул pg).
+- `lib/auth/` — `password.ts` (Django pbkdf2), `jwt.ts` (jose, Edge-safe), `session.ts` (cookie),
+  `current-user.ts` (`getCurrentUser` + БД, обёрнут в `cache()`), `rbac.ts` (`ownership`).
+- `lib/services/` — доступ к данным на **чтение** (вызывается из RSC).
+- `lib/actions/` — **мутации** (Server Actions): auth → validate (Zod) → service → `revalidatePath`.
+- `lib/validation/` — Zod-схемы. `lib/schedule`/`money`/`dates` — чистая бизнес-логика.
 
-## Аутентификация и сессии
+## Поток данных
 
-- Пользовательские учётки лежат в таблице `auth_user`.
-- Вход: `POST /api/v1/auth/login`.
-- При успешном входе формируется подписанный cookie-сессионный токен `karman_session` (HttpOnly).
-- Проверка сессии: `GET /api/v1/auth/me`, `GET /api/v1/auth/check/`.
-- Выход: `POST /api/v1/auth/logout`.
+- **Чтение:** серверный компонент страницы вызывает `lib/services/*` напрямую (без клиентского fetch).
+- **Запись:** клиентская форма (react-hook-form) → Server Action в `lib/actions/*` →
+  Zod-валидация → сервис (Drizzle) → `revalidatePath('/', 'layout')` → `router.refresh()`.
 
-## Основные API-группы
+## Аутентификация и доступ
 
-- `dashboard`: `/api/v1/dashboard/summary/`
-- `banks`: `/api/v1/credits/banks/`
-- `credits`: `/api/v1/credits/credits/` (GET/POST/PATCH)
-- `payments`: `/api/v1/credits/payments/` (GET/PATCH)
-- `documents`: `/api/v1/documents/`
-- `health`: `/api/health`
+- Пароли: `verifyDjangoPassword` (pbkdf2_sha256 / pbkdf2_sha1) — совместимость с историческими хешами.
+- Сессия: JWT (HS256, `jose`) в HttpOnly-cookie `karman_session_v2`, срок 14 дней.
+- Гард в два слоя: `proxy.ts` (Edge, без БД) + `(app)/layout.tsx` (`getCurrentUser`, ловит `is_active`).
+- Фильтрация по владельцу: `ownership(user, column)` — для superuser фильтр снимается.
+  Владение платежом — через join к `credits_credit.user_id` (на `credits_payment` нет `user_id`).
 
-## Data model (ядро)
+## Данные
 
-- `auth_user` — пользователи
-- `credits_bank` — банки / МФО
-- `credits_credit` — кредиты (основная карточка)
-- `credits_payment` — платежи по кредитам
-- `documents_document` — документы пользователя
+Таблицы (исторически от Django): `auth_user`, `credits_bank`, `credits_credit`,
+`credits_payment`, `documents_document`. Денежные поля (`numeric`) читаются **строками**
+(конвенция против float-дрейфа). Даты — строками `YYYY-MM-DD`.
 
-## Ограничения и риски
+## Новый функционал
 
-- Нету отдельного слоя валидации/сериализации DTO на backend.
-- Нет миграционного менеджера в репозитории для управления схемой БД.
-- `frontend_dist/` и конфиги nginx лучше держать в синхронизированном состоянии с текущими путями приложения.
-- Для стабильности прав доступа критично сохранять логику фильтрации по владельцу в SQL-запросах.
+- **Автогенерация графика** (`lib/services/schedule.ts`): аннуитет/дифференцированный/нулевая
+  ставка, математика в копейках, последний платёж добирает округление. Перегенерация не трогает
+  оплаченные платежи.
+- **CRUD банков** (общий справочник; удаление блокируется при наличии кредитов) и **документов**.
+- **Графики дашборда** (Recharts): статусы кредитов, остаток по банкам.
 
-## Что стоит учесть дальше
+## Ограничения
 
-- Для расширения командной работы с проектом полезно держать живой документ сессий (`docs/AI_SESSION_CONTINUITY.md`).
+- Схема `lib/db/schema.ts` написана по фактическим колонкам и **должна быть сверена** с боевой
+  БД через `npm run db:pull` на клоне перед прод-деплоем (см. OPERATIONS.md).
+- Файлового хранилища для документов нет — только метаданные.

@@ -1,0 +1,27 @@
+# systemd-юнит KARMAN (единое приложение Next.js, standalone-сборка).
+# Установка:
+#   sudo cp scripts/karman.service /etc/systemd/system/karman.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now karman
+# Старый karman-api.service (порт 8080) больше не нужен:
+#   sudo systemctl disable --now karman-api
+[Unit]
+Description=KARMAN (Next.js)
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=valstan
+WorkingDirectory=/home/valstan/karman
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOSTNAME=127.0.0.1
+# SESSION_SECRET и DATABASE_URL — в env-файле (обязательны!):
+#   SESSION_SECRET=<openssl rand -base64 48>
+#   DATABASE_URL=postgres:///karman_db?host=/var/run/postgresql
+EnvironmentFile=/etc/karman.env
+ExecStart=/usr/bin/node .next/standalone/server.js
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
