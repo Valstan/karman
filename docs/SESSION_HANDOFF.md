@@ -5,24 +5,23 @@
 
 **Status:** ACTIVE
 **Updated:** 2026-06-03
-**Branch:** refactor/nextjs-migration
-**Прод:** старый стек (ещё не задеплоен новый) — деплой ждёт сверки схемы БД и мержа PR #3
+**Branch:** main
+**Прод:** старый стек (ещё не задеплоен новый) — деплой ждёт сверки схемы БД. **PR #3 СМЕРЖЕН в main** (`27761cc`).
 
 ---
 
 ## Текущая нитка
 
-Глубокий рефакторинг KARMAN: перевод со связки «React/Vite SPA + Express + остатки Django»
-на **единое приложение Next.js 16 (App Router) + TypeScript + Drizzle ORM + Tailwind/shadcn**.
-Код готов и на GitHub (PR #3), но **на прод ещё не выкачен**.
+Глубокий рефакторинг KARMAN завершён и **смержен в `main`**: перевод со связки
+«React/Vite SPA + Express + остатки Django» на **единое приложение Next.js 16 (App Router) +
+TypeScript + Drizzle ORM + Tailwind/shadcn**. Осталось выкатить на прод.
 
 ## Следующий шаг
 
-1. **Ревью и мерж PR #3** — https://github.com/Valstan/karman/pull/3 (ветка `refactor/nextjs-migration`).
-2. **Перед прод-деплоем — сверить схему БД** (КРИТично): на клоне/дампе боевой БД выполнить
+1. **Перед прод-деплоем — сверить схему БД** (КРИТично): на клоне/дампе боевой БД выполнить
    `DATABASE_URL=... npm run db:pull` и привести `lib/db/schema.ts` в соответствие (схема писалась
    вручную по колонкам из старого `api/server.js`, реальную БД с dev-машины не видели).
-3. **Деплой** (см. `docs/OPERATIONS.md`): `scripts/deploy.sh`; переключить systemd на
+2. **Деплой** (см. `docs/OPERATIONS.md`): `scripts/deploy.sh`; переключить systemd на
    `scripts/karman.service`, nginx — на `scripts/nginx.karman.conf` (проброс `X-Forwarded-Proto`);
    задать `SESSION_SECRET` в `/etc/karman.env`; отключить старый `karman-api.service`.
 
@@ -31,7 +30,7 @@
 - **План:** `C:\Users\valstan\.claude\plans\declarative-frolicking-dewdrop.md` (утверждён).
 - **Связанные коммиты сессии:** `1c84327` каркас Next.js · `a9603c3` Drizzle · `3149108` auth ·
   `ad752a2` логика/сервисы/действия/тесты · `fb46af0` UI · `239a28c` очистка legacy + деплой/доки.
-- **Открытые PR:** #3 (рефакторинг, ждёт ревью/мержа — это **код-PR**, не авто-мёрджить).
+- **Открытые PR:** нет (PR #3 смержен squash'ем в `main` = `27761cc`).
 - **Открытые вопросы для пользователя:** нет.
 
 ## Failed approaches (этой нитки)
