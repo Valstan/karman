@@ -7,6 +7,12 @@ frontend/dist/
 frontend_dist/
 *.tsbuildinfo
 
+# Next.js
+.next/
+out/
+next-env.d.ts
+.vercel
+
 # Logs
 logs/
 *.log
