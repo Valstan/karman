@@ -17,9 +17,15 @@ import { DocumentFormDialog } from './document-form-dialog';
 import { ConfirmDialog } from './confirm-dialog';
 import { deleteDocumentAction } from '@/lib/actions/documents';
 import { formatDate } from '@/lib/format';
-import type { DocumentListItem } from '@/lib/services/documents';
+import type { DocumentListItem, DocumentCategoryOption } from '@/lib/services/documents';
 
-export function DocumentsTable({ documents }: { documents: DocumentListItem[] }) {
+export function DocumentsTable({
+  documents,
+  categories,
+}: {
+  documents: DocumentListItem[];
+  categories: DocumentCategoryOption[];
+}) {
   const router = useRouter();
 
   async function remove(id: number) {
@@ -38,6 +44,7 @@ export function DocumentsTable({ documents }: { documents: DocumentListItem[] })
         <TableHeader>
           <TableRow>
             <TableHead>Название</TableHead>
+            <TableHead>Категория</TableHead>
             <TableHead>Тип</TableHead>
             <TableHead>Номер</TableHead>
             <TableHead>Выдан</TableHead>
@@ -49,7 +56,7 @@ export function DocumentsTable({ documents }: { documents: DocumentListItem[] })
         <TableBody>
           {documents.length === 0 && (
             <TableRow>
-              <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
+              <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
                 Документов пока нет.
               </TableCell>
             </TableRow>
@@ -57,6 +64,7 @@ export function DocumentsTable({ documents }: { documents: DocumentListItem[] })
           {documents.map((doc) => (
             <TableRow key={doc.id}>
               <TableCell className="font-medium">{doc.title}</TableCell>
+              <TableCell>{doc.categoryName || '—'}</TableCell>
               <TableCell>{doc.documentType || '—'}</TableCell>
               <TableCell>{doc.documentNumber || '—'}</TableCell>
               <TableCell>{formatDate(doc.issueDate)}</TableCell>
@@ -70,6 +78,7 @@ export function DocumentsTable({ documents }: { documents: DocumentListItem[] })
                 <div className="flex items-center justify-end gap-1">
                   <DocumentFormDialog
                     document={doc}
+                    categories={categories}
                     trigger={
                       <Button size="icon" variant="ghost" title="Редактировать">
                         <Pencil className="h-4 w-4" />

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, type ReactNode } from 'react';
-import { useForm } from 'react-hook-form';
+import { useForm, Controller } from 'react-hook-form';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import {
@@ -15,8 +15,15 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { createDocumentAction, updateDocumentAction } from '@/lib/actions/documents';
-import type { DocumentListItem } from '@/lib/services/documents';
+import type { DocumentListItem, DocumentCategoryOption } from '@/lib/services/documents';
 
 type FormValues = {
   title: string;
@@ -26,6 +33,7 @@ type FormValues = {
   expiryDate: string;
   issuingAuthority: string;
   isActive: boolean;
+  categoryId: string;
 };
 
 function defaults(doc?: DocumentListItem): FormValues {
@@ -37,14 +45,17 @@ function defaults(doc?: DocumentListItem): FormValues {
     expiryDate: doc?.expiryDate ?? '',
     issuingAuthority: doc?.issuingAuthority ?? '',
     isActive: doc?.isActive ?? true,
+    categoryId: doc ? String(doc.categoryId) : '',
   };
 }
 
 export function DocumentFormDialog({
   trigger,
+  categories,
   document,
 }: {
   trigger: ReactNode;
+  categories: DocumentCategoryOption[];
   document?: DocumentListItem;
 }) {
   const router = useRouter();
@@ -54,11 +65,17 @@ export function DocumentFormDialog({
   const {
     register,
     handleSubmit,
+    control,
     reset,
     formState: { isSubmitting },
   } = useForm<FormValues>({ defaultValues: defaults(document) });
 
   async function onSubmit(values: FormValues) {
+    if (!values.categoryId) {
+      toast.error('Выберите категорию');
+      return;
+    }
+
     const result = isEdit
       ? await updateDocumentAction({ id: document!.id, ...values })
       : await createDocumentAction(values);
@@ -91,6 +108,27 @@ export function DocumentFormDialog({
           <div className="grid gap-2">
             <Label htmlFor="title">Название</Label>
             <Input id="title" required {...register('title')} />
+          </div>
+          <div className="grid gap-2">
+            <Label>Категория</Label>
+            <Controller
+              control={control}
+              name="categoryId"
+              render={({ field }) => (
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Выберите категорию" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {categories.map((category) => (
+                      <SelectItem key={category.id} value={String(category.id)}>
+                        {category.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="grid gap-2">
