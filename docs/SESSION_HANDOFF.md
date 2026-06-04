@@ -5,66 +5,70 @@
 
 **Status:** ACTIVE
 **Updated:** 2026-06-04
-**Branch:** docs/session-2026-06-04 (PR с доками); код — в `main`
-**Прод:** **НОВЫЙ Next.js стек ЗАДЕПЛОЕН и обслуживает** (`78de2c3`) на
-`4ce93c2b59f9.vps.myjino.ru`. Старый `karman-api` отключён (`inactive/disabled`).
+**Branch:** chore/handoff-2026-06-04 (PR с доками); код — в `main`
+**Прод:** `e598c33` (#7, категории документов) на `4ce93c2b59f9.vps.myjino.ru`, `karman.service`
+активен, health ok. **`#8` (напоминания) смержен в `main`, но НА ПРОД НЕ ВЫКАЧЕН** — прод на
+один коммит позади.
 
 ---
 
 ## Текущая нитка
 
-Новый единый Next.js-стек **выкачен в прод** (катовер 2026-06-04). Перед деплоем сверена
-схема с боевой БД (`pg_dump --schema-only`) и устранены расхождения, которые ломали бы INSERT'ы
-(bigint-identity, NOT NULL без дефолтов, недостающие колонки, ручной FK-каскад). Деплой проверен
-end-to-end (health 200, редиректы гарда, login-форма доходит до БД). Ждём **приёмочный тест
-пользователя**: вход с реальными кредами + проверка, что дашборд/банки/кредиты/платежи показывают
-данные.
+Прошлый low-priority backlog закрыт полностью. За сессию:
+1. **Категории документов в UI** (#7) — выбор категории в форме, хардкод `category_id=8` понижен
+   до fallback. **Задеплоено на прод.**
+2. **Чистка старого сервиса** — удалены `/etc/systemd/system/karman-api.env` и `karman-api.service`
+   (прежний `SESSION_SECRET` лежал в обоих). Сделано на сервере.
+3. **Напоминания об истекающих документах** (#8) — карточка на дашборде + бейдж срока в таблице.
+   **В `main`, на прод НЕ выкачено.**
 
 ## Следующий шаг
 
-1. **Дождаться результата входа пользователя** на https://4ce93c2b59f9.vps.myjino.ru.
-   Если данные/вход не в порядке — откат (2 команды, БД-данные/схему НЕ меняли, менялись только
-   роль+nginx):
+1. **Задеплоить `#8` на прод** (прод сейчас на `#7`):
    ```bash
-   sudo cp /home/valstan/karman/nginx_backups/karman.20260604_004212.pre-nextjs.bak /etc/nginx/sites-available/karman
-   sudo nginx -t && sudo systemctl reload nginx && sudo systemctl enable --now karman-api
+   ssh karman 'cd karman && bash scripts/deploy.sh'   # git pull → npm ci → build → restart → health
    ```
-2. **Смержить doc-PR этой сессии** (OPERATIONS + handoff + mailbox).
-3. Регулярные деплои далее: `scripts/deploy.sh` (`git pull → npm ci → build → restart → health`).
+   Миграций нет → `db:migrate` пропустится. После — проверить health и дашборд.
+2. Затем выбрать новую задачу из идей (см. «Не забыть»): загрузка сканов документов или
+   поиск/фильтр по таблицам.
 
 ## Контекст
 
-- **План:** отдельного файла нет (рефакторинг-план выполнен и смержен ранее, PR #3).
-- **Связанные коммиты сессии:** `78de2c3` готовность к деплою (схема+сервисы+build-фиксы, PR #5).
-  Деплой — действиями на сервере (не в git): роль `karman_app`, `/etc/karman.env`,
-  `karman.service`, nginx → :3000.
-- **Открытые PR:** doc-PR этой сессии (OPERATIONS/handoff/mailbox); основной код (#5) смержен.
-- **Открытые вопросы для пользователя:** результат приёмочного входа в прод.
+- **План:** отдельного файла нет.
+- **Связанные коммиты сессии:** `e598c33` категории документов (#7, **задеплоено**);
+  `b9a0b84` напоминания об истекающих документах (#8, в `main`, **НЕ задеплоено**).
+- **Открытые PR:** handoff-PR этой сессии (только доки). Код (#7, #8) уже смержен.
+- **Открытые вопросы для пользователя:** нет.
 
 ## Прод-инфра (как устроено сейчас)
 
 - Сервис: `karman.service` (systemd, `User=valstan`) → `node .next/standalone/server.js` на
-  `127.0.0.1:3000`, `enabled`, `Restart=on-failure`. Env — `/etc/karman.env` (root:root 600):
-  `SESSION_SECRET` (свежий) + `DATABASE_URL=postgres://karman_app:<pwd>@/karman_db?host=/var/run/postgresql`.
-- БД-роль приложения: `karman_app` (LOGIN, пароль, гранты SELECT/INSERT/UPDATE/DELETE +
-  sequences). Документированный peer-сокет под `valstan` НЕ работает (pg_hba требует пароль).
-- nginx: единый `location / → :3000` на :80 и :443 (SSL Let's Encrypt сохранён). Бэкап старого
-  конфига — `nginx_backups/karman.20260604_004212.pre-nextjs.bak`.
-- Бэкап БД перед деплоем: `backups/karman_db_predeploy_20260604_003404.sql.gz`.
+  `127.0.0.1:3000`. Env — `/etc/karman.env` (root:root 600): `SESSION_SECRET` + `DATABASE_URL`
+  (роль `karman_app`, пароль, сокет `/var/run/postgresql`). nginx → :3000 на :80/:443.
+- **SSH-доступ настроен в этой сессии** (раньше с dev-машины его НЕ было): алиас `ssh karman`
+  → `4ce93c2b59f9.vps.myjino.ru:49366`, `User=valstan`, ключ `~/.ssh/id_ed25519_karman_deploy`.
+  Passwordless sudo для `valstan` (`/etc/sudoers.d/valstan`). Деплой/обслуживание теперь идут
+  отсюда командой `ssh karman '…'`.
+- Бэкапы (перед прошлым катовером): nginx `nginx_backups/karman.20260604_004212.pre-nextjs.bak`,
+  БД `backups/karman_db_predeploy_20260604_003404.sql.gz`.
 
 ## Failed approaches (этой нитки)
 
-- **Документированный `DATABASE_URL` (peer-сокет под `valstan`)** — на боевом сервере pg_hba
-  требует пароль → не сработал. Решение: отдельная login-роль `karman_app` с паролем.
-- **`information_schema` с самодельным quoting'ом** дал пустой `column_default` (ложно «нет
-  дефолтов у id») — авторитетный источник для сверки только `pg_dump --schema-only`.
-- **`ff-merge` на сервере удалил трекнутые `static/`, `nginx_backups/`** — `nginx_backups/`
-  пришлось `mkdir -p` перед бэкапом. `frontend_dist/` был untracked → уцелел.
+- **Старый `SESSION_SECRET` лежал в ДВУХ местах**, не только в env-файле: ещё и строкой
+  `Environment=SESSION_SECRET=…` прямо внутри `karman-api.service`. Чистка env-файла без удаления
+  unit'а оставила бы секрет. Урок: при выводе systemd-сервиса из эксплуатации грепать секрет по
+  всему `/etc/systemd/`, а не только удалять `EnvironmentFile`.
+- **Фичи по документам нельзя проверить локально** (на dev-машине нет Postgres) — SQL-предикат
+  `expiringDocuments` проверен read-only (`SELECT … make_interval`) прямо на боевой БД через
+  `ssh karman` + psql. Дёшево и снимает риск до деплоя.
 
 ## Не забыть (low-priority)
 
-- Категории документов не моделируются в UI: новые документы пишутся в «Прочее» (`category_id=8`).
-  Когда появится выбор категории — убрать хардкод в `lib/services/documents.ts`.
-- Старый env старого сервиса `/etc/systemd/system/karman-api.env` содержит прежний SESSION_SECRET
-  (сервис отключён) — можно вычистить при желании.
-- При первом заходе на новый стек все пользователи разлогинятся (cookie `karman_session_v2`).
+- **`#8` (напоминания) не задеплоен** — при следующем `scripts/deploy.sh` прод догонит `main`.
+- Таблица `documents_document` сейчас **пуста (0 записей)** — эффект фич по документам (категории,
+  бейджи срока, карточка дашборда) виден только после внесения реальных документов.
+- Идеи для следующих задач:
+  - **Загрузка сканов документов** — колонки `front_image`/`back_image`/`additional_files` в схеме
+    есть, но UI их не использует; нужно решить хранилище файлов (ФС сервера / старая Django MEDIA).
+  - **Поиск/фильтр по таблицам** документов и кредитов (quality-of-life при росте записей).
+- При первом заходе на новый стек пользователи разлогинились (cookie `karman_session_v2`) — инфо.
