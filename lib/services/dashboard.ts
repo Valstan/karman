@@ -1,8 +1,14 @@
 import 'server-only';
 import { and, asc, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
-import { creditsBank, creditsCredit, creditsPayment } from '@/lib/db/schema';
+import {
+  creditsBank,
+  creditsCredit,
+  creditsPayment,
+  documentsDocument,
+} from '@/lib/db/schema';
 import { ownership, type SessionUser } from '@/lib/auth/rbac';
+import { DOCUMENT_EXPIRY_SOON_DAYS } from '@/lib/constants';
 import type { CreditStatus, PaymentStatus } from '@/lib/db/schema';
 
 export type ActiveCreditCard = {
@@ -31,6 +37,13 @@ export type UpcomingPayment = {
   status: PaymentStatus;
 };
 
+export type ExpiringDocument = {
+  id: number;
+  title: string;
+  documentType: string;
+  expiryDate: string;
+};
+
 export type DashboardData = {
   creditsByStatus: { total: number; active: number; overdue: number; closed: number };
   payments: {
@@ -43,6 +56,7 @@ export type DashboardData = {
   };
   activeCredits: ActiveCreditCard[];
   upcomingPayments: UpcomingPayment[];
+  expiringDocuments: ExpiringDocument[];
   perBank: { bankName: string; remaining: string }[];
 };
 
@@ -173,6 +187,26 @@ export async function getDashboard(user: SessionUser): Promise<DashboardData> {
     creditName: rawCreditName?.trim() ? rawCreditName : r.bankName,
   }));
 
+  // Документы с истекающим (или истёкшим) сроком действия.
+  const expiringDocuments: ExpiringDocument[] = await db
+    .select({
+      id: documentsDocument.id,
+      title: documentsDocument.title,
+      documentType: documentsDocument.documentType,
+      expiryDate: sql<string>`${documentsDocument.expiryDate}`,
+    })
+    .from(documentsDocument)
+    .where(
+      and(
+        ownership(user, documentsDocument.userId),
+        eq(documentsDocument.isActive, true),
+        sql`${documentsDocument.expiryDate} IS NOT NULL`,
+        sql`${documentsDocument.expiryDate} <= (CURRENT_DATE + make_interval(days => ${DOCUMENT_EXPIRY_SOON_DAYS}))`,
+      ),
+    )
+    .orderBy(asc(documentsDocument.expiryDate), asc(documentsDocument.id))
+    .limit(30);
+
   // Экспозиция по банкам (остаток к погашению).
   const perBank = await db
     .select({
@@ -198,6 +232,7 @@ export async function getDashboard(user: SessionUser): Promise<DashboardData> {
     },
     activeCredits,
     upcomingPayments,
+    expiringDocuments,
     perBank: perBank.filter((b) => Number(b.remaining) > 0),
   };
 }

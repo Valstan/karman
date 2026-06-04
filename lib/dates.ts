@@ -25,3 +25,18 @@ export function todayStr(): string {
   const dd = String(now.getDate()).padStart(2, '0');
   return `${now.getFullYear()}-${mm}-${dd}`;
 }
+
+function parseUtcMs(dateStr: string): number {
+  const [y, m, d] = dateStr.split('-').map(Number) as [number, number, number];
+  return Date.UTC(y, m - 1, d);
+}
+
+/** Целое число дней между двумя `YYYY-MM-DD` (toStr − fromStr), без таймзонных сдвигов. */
+export function daysBetween(fromStr: string, toStr: string): number {
+  return Math.round((parseUtcMs(toStr) - parseUtcMs(fromStr)) / 86_400_000);
+}
+
+/** Сколько дней осталось до `dateStr` от сегодня (отрицательное — дата в прошлом). */
+export function daysUntil(dateStr: string, today: string = todayStr()): number {
+  return daysBetween(today, dateStr);
+}

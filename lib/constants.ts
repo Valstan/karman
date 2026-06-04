@@ -1,6 +1,10 @@
 import type { CreditStatus, PaymentStatus, PaymentType } from '@/lib/db/schema';
+import { daysUntil } from '@/lib/dates';
 
 type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'outline';
+
+/** Документ считается «истекающим скоро», если до конца срока ≤ этого числа дней. */
+export const DOCUMENT_EXPIRY_SOON_DAYS = 30;
 
 export const CREDIT_STATUS_LABELS: Record<CreditStatus, string> = {
   active: 'Активен',
@@ -50,4 +54,22 @@ export function paymentStatusVariant(status: string): BadgeVariant {
 
 export function paymentTypeLabel(type: string): string {
   return PAYMENT_TYPE_LABELS[type as PaymentType] ?? type;
+}
+
+/**
+ * Бейдж срока действия документа по дате `expiryDate` (`YYYY-MM-DD`).
+ * Возвращает `null`, если срока нет или до него далеко (> DOCUMENT_EXPIRY_SOON_DAYS).
+ */
+export function documentExpiryBadge(
+  expiryDate: string | null | undefined,
+  today?: string,
+): { label: string; variant: BadgeVariant } | null {
+  if (!expiryDate) return null;
+  const left = daysUntil(expiryDate, today);
+  if (left < 0) return { label: 'Просрочен', variant: 'destructive' };
+  if (left === 0) return { label: 'Истекает сегодня', variant: 'destructive' };
+  if (left <= DOCUMENT_EXPIRY_SOON_DAYS) {
+    return { label: `Истекает через ${left} дн.`, variant: 'outline' };
+  }
+  return null;
 }
