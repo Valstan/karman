@@ -10,6 +10,7 @@ import {
   creditStatusVariant,
   paymentStatusLabel,
   paymentStatusVariant,
+  documentExpiryBadge,
 } from '@/lib/constants';
 
 function StatCard({ title, value, hint }: { title: string; value: string; hint?: string }) {
@@ -118,6 +119,41 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Документы — истекающий срок (30 дней)</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2">
+          {data.expiringDocuments.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              Документов с истекающим сроком нет.
+            </p>
+          )}
+          {data.expiringDocuments.map((doc) => {
+            const badge = documentExpiryBadge(doc.expiryDate);
+            return (
+              <Link
+                key={doc.id}
+                href="/documents"
+                className="flex items-center justify-between rounded-md border p-2.5 transition-colors hover:bg-accent"
+              >
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium">{doc.title}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {doc.documentType ? `${doc.documentType} · ` : ''}до {formatDate(doc.expiryDate)}
+                  </div>
+                </div>
+                {badge && (
+                  <Badge variant={badge.variant} className="ml-3 shrink-0">
+                    {badge.label}
+                  </Badge>
+                )}
+              </Link>
+            );
+          })}
+        </CardContent>
+      </Card>
     </div>
   );
 }

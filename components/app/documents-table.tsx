@@ -16,6 +16,7 @@ import {
 import { DocumentFormDialog } from './document-form-dialog';
 import { ConfirmDialog } from './confirm-dialog';
 import { deleteDocumentAction } from '@/lib/actions/documents';
+import { documentExpiryBadge } from '@/lib/constants';
 import { formatDate } from '@/lib/format';
 import type { DocumentListItem, DocumentCategoryOption } from '@/lib/services/documents';
 
@@ -68,7 +69,17 @@ export function DocumentsTable({
               <TableCell>{doc.documentType || '—'}</TableCell>
               <TableCell>{doc.documentNumber || '—'}</TableCell>
               <TableCell>{formatDate(doc.issueDate)}</TableCell>
-              <TableCell>{formatDate(doc.expiryDate)}</TableCell>
+              <TableCell>
+                <div className="flex items-center gap-2">
+                  <span>{formatDate(doc.expiryDate)}</span>
+                  {(() => {
+                    const badge = documentExpiryBadge(doc.expiryDate);
+                    return badge ? (
+                      <Badge variant={badge.variant}>{badge.label}</Badge>
+                    ) : null;
+                  })()}
+                </div>
+              </TableCell>
               <TableCell>
                 <Badge variant={doc.isActive ? 'default' : 'secondary'}>
                   {doc.isActive ? 'Действует' : 'Недействителен'}
