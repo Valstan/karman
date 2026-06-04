@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { Pencil, Trash2 } from 'lucide-react';
+import { Pencil, Trash2, Image as ImageIcon, Paperclip } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -50,6 +50,7 @@ export function DocumentsTable({
             <TableHead>Номер</TableHead>
             <TableHead>Выдан</TableHead>
             <TableHead>Действует до</TableHead>
+            <TableHead>Сканы</TableHead>
             <TableHead>Статус</TableHead>
             <TableHead className="text-right">Действия</TableHead>
           </TableRow>
@@ -57,7 +58,7 @@ export function DocumentsTable({
         <TableBody>
           {documents.length === 0 && (
             <TableRow>
-              <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
+              <TableCell colSpan={9} className="h-24 text-center text-muted-foreground">
                 Документов пока нет.
               </TableCell>
             </TableRow>
@@ -78,6 +79,46 @@ export function DocumentsTable({
                       <Badge variant={badge.variant}>{badge.label}</Badge>
                     ) : null;
                   })()}
+                </div>
+              </TableCell>
+              <TableCell>
+                <div className="flex items-center gap-2">
+                  {doc.hasFront && (
+                    <a
+                      href={`/api/documents/${doc.id}/file/front`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Лицевая сторона"
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      <ImageIcon className="h-4 w-4" />
+                    </a>
+                  )}
+                  {doc.hasBack && (
+                    <a
+                      href={`/api/documents/${doc.id}/file/back`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Оборотная сторона"
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      <ImageIcon className="h-4 w-4" />
+                    </a>
+                  )}
+                  {doc.hasAdditional && (
+                    <a
+                      href={`/api/documents/${doc.id}/file/additional`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Доп. файл"
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      <Paperclip className="h-4 w-4" />
+                    </a>
+                  )}
+                  {!doc.hasFront && !doc.hasBack && !doc.hasAdditional && (
+                    <span className="text-muted-foreground">—</span>
+                  )}
                 </div>
               </TableCell>
               <TableCell>
