@@ -79,6 +79,17 @@ sudo nginx -t && sudo systemctl reload nginx
 scripts/deploy.sh           # git pull → npm ci → build → (migrate) → restart → healthcheck
 ```
 
+## Медиа-каталог (сканы документов)
+
+- Пользовательские сканы хранятся на ФС в `MEDIA_ROOT` (env; по умолчанию `<cwd>/media` =
+  `/home/valstan/karman/media`). Каталог **gitignored** — переживает `git pull`/build,
+  должен быть writable для пользователя сервиса (`valstan`). В БД хранится только относительный
+  путь вида `documents/<userId>/<docId>/<slot>-<token>.<ext>`.
+- **Бэкап:** каталог `media/` не входит в git и не восстановится из репозитория — включить его
+  в регулярный бэкап вместе с дампом БД, иначе ссылки в БД будут указывать на отсутствующие файлы.
+- Отдаются файлы только через авторизованный route `/api/documents/[id]/file/[slot]`
+  (проверка владельца), напрямую через nginx — нет.
+
 ## Здоровье и логи
 
 ```bash
