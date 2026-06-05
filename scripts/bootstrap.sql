@@ -59,16 +59,29 @@ CREATE TABLE IF NOT EXISTS credits_payment (
   updated_at       TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS documents_documentcategory (
+  id          SERIAL PRIMARY KEY,
+  name        VARCHAR(100) NOT NULL,
+  description VARCHAR(2000) NOT NULL DEFAULT '',
+  icon        VARCHAR(50) NOT NULL DEFAULT '',
+  created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS documents_document (
   id                SERIAL PRIMARY KEY,
   title             VARCHAR(255) NOT NULL,
+  description       VARCHAR(2000) NOT NULL DEFAULT '',
   document_type     VARCHAR(50) NOT NULL DEFAULT '',
   document_number   VARCHAR(100) NOT NULL DEFAULT '',
   issue_date        DATE,
   expiry_date       DATE,
   issuing_authority VARCHAR(255),
+  front_image       VARCHAR(100),
+  back_image        VARCHAR(100),
+  additional_files  VARCHAR(100),
   is_active         BOOLEAN NOT NULL DEFAULT TRUE,
   user_id           INTEGER NOT NULL REFERENCES auth_user(id),
+  category_id       INTEGER NOT NULL REFERENCES documents_documentcategory(id),
   created_at        TIMESTAMPTZ DEFAULT NOW(),
   updated_at        TIMESTAMPTZ DEFAULT NOW()
 );
@@ -108,5 +121,20 @@ INSERT INTO credits_payment (credit_id, amount, principal_amount, interest_amoun
   (2, 31700, 25000, 6700, '2026-07-10', NULL, 'scheduled'),
   (2, 31400, 25000, 6400, '2026-08-10', NULL, 'scheduled');
 
-INSERT INTO documents_document (title, document_type, document_number, issue_date, issuing_authority, is_active, user_id)
-VALUES ('Паспорт РФ', 'passport', '1234 567890', '2015-03-12', 'ОУФМС', TRUE, 1);
+-- Категории документов (id=8 «Прочее» — запасная категория, как в боевой БД).
+INSERT INTO documents_documentcategory (id, name) VALUES
+  (1, 'Паспорт'),
+  (2, 'Водительские права'),
+  (3, 'СНИЛС'),
+  (4, 'ИНН'),
+  (5, 'Полис ОМС'),
+  (6, 'Загранпаспорт'),
+  (7, 'Свидетельство'),
+  (8, 'Прочее');
+-- SERIAL не двигается при явных id — подвинем последовательность, чтобы будущие вставки не конфликтовали.
+SELECT setval('documents_documentcategory_id_seq', (SELECT MAX(id) FROM documents_documentcategory));
+
+INSERT INTO documents_document (title, document_type, document_number, issue_date, expiry_date, issuing_authority, is_active, user_id, category_id)
+VALUES
+  ('Паспорт РФ', 'passport', '1234 567890', '2015-03-12', NULL, 'ОУФМС', TRUE, 1, 1),
+  ('Водительское удостоверение', 'license', '99 ББ 123456', '2020-07-01', '2030-07-01', 'ГИБДД', TRUE, 1, 2);
