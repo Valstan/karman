@@ -1,9 +1,9 @@
 import Link from 'next/link';
-import { Plus } from 'lucide-react';
+import { Download, Plus } from 'lucide-react';
 import { requireUser } from '@/lib/auth/current-user';
 import { listCredits } from '@/lib/services/credits';
 import { listBanks } from '@/lib/services/banks';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import { CreditFormDialog } from '@/components/app/credit-form-dialog';
 import { CreditsTable } from '@/components/app/credits-table';
 
@@ -16,14 +16,21 @@ export default async function CreditsPage() {
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Кредиты</h1>
-        <CreditFormDialog
-          banks={bankOptions}
-          trigger={
-            <Button disabled={bankOptions.length === 0}>
-              <Plus className="mr-1 h-4 w-4" /> Новый кредит
-            </Button>
-          }
-        />
+        <div className="flex items-center gap-2">
+          {credits.length > 0 && (
+            <a href="/api/export/credits" className={buttonVariants({ variant: 'outline' })}>
+              <Download className="mr-1 h-4 w-4" /> Экспорт CSV
+            </a>
+          )}
+          <CreditFormDialog
+            banks={bankOptions}
+            trigger={
+              <Button disabled={bankOptions.length === 0}>
+                <Plus className="mr-1 h-4 w-4" /> Новый кредит
+              </Button>
+            }
+          />
+        </div>
       </div>
 
       {bankOptions.length === 0 && (

@@ -1,9 +1,9 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { Check, Pencil, Plus, Trash2 } from 'lucide-react';
+import { Check, Download, Pencil, Plus, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
   Table,
@@ -58,14 +58,24 @@ export function PaymentScheduleTable({
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">График платежей</h2>
-        <PaymentFormDialog
-          creditId={creditId}
-          trigger={
-            <Button size="sm" variant="outline">
-              <Plus className="mr-1 h-4 w-4" /> Платёж
-            </Button>
-          }
-        />
+        <div className="flex items-center gap-2">
+          {payments.length > 0 && (
+            <a
+              href={`/api/export/credits/${creditId}/payments`}
+              className={buttonVariants({ size: 'sm', variant: 'outline' })}
+            >
+              <Download className="mr-1 h-4 w-4" /> CSV
+            </a>
+          )}
+          <PaymentFormDialog
+            creditId={creditId}
+            trigger={
+              <Button size="sm" variant="outline">
+                <Plus className="mr-1 h-4 w-4" /> Платёж
+              </Button>
+            }
+          />
+        </div>
       </div>
 
       <div className="rounded-lg border">

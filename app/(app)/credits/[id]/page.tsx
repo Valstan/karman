@@ -6,9 +6,11 @@ import { getCreditDetail } from '@/lib/services/credits';
 import { listBanks } from '@/lib/services/banks';
 import { CreditActions } from '@/components/app/credit-actions';
 import { PaymentScheduleTable } from '@/components/app/payment-schedule-table';
+import { EarlyRepaymentCalculator } from '@/components/app/early-repayment-calculator';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { formatDate, formatMoney, formatPercent } from '@/lib/format';
+import { fromKopecks, toKopecks } from '@/lib/money';
 import { creditStatusLabel, creditStatusVariant, paymentTypeLabel } from '@/lib/constants';
 
 function Info({ label, value }: { label: string; value: string }) {
@@ -43,6 +45,15 @@ export default async function CreditDetailPage({
   }
 
   const bankOptions = banks.map((b) => ({ id: b.id, name: b.name }));
+
+  // Данные для калькулятора досрочного погашения: остаток тела = Σ principal по
+  // неоплаченным платежам, ближайший платёж задаёт текущий взнос и дату старта.
+  const unpaid = detail.payments.filter((p) => p.status !== 'paid');
+  const remainingPrincipal = fromKopecks(
+    unpaid.reduce((acc, p) => acc + toKopecks(p.principalAmount ?? '0'), 0),
+  );
+  const nextPayment = unpaid[0];
+  const showCalculator = Boolean(nextPayment) && toKopecks(remainingPrincipal) > 0;
 
   return (
     <div className="flex flex-col gap-6">
@@ -103,6 +114,15 @@ export default async function CreditDetailPage({
           </CardContent>
         </Card>
       </div>
+
+      {showCalculator && nextPayment && (
+        <EarlyRepaymentCalculator
+          remainingPrincipal={remainingPrincipal}
+          annualRatePercent={detail.interestRate}
+          monthlyPayment={nextPayment.amount}
+          nextDueDate={nextPayment.dueDate}
+        />
+      )}
 
       <PaymentScheduleTable creditId={detail.id} payments={detail.payments} />
     </div>
