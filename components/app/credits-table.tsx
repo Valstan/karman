@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Search } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -21,6 +21,8 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { formatDate, formatMoney, formatPercent } from '@/lib/format';
+import { rankMatches } from '@/lib/search/tiered-search';
+import { HighlightedText } from './highlighted-text';
 import {
   CREDIT_STATUS_LABELS,
   creditStatusLabel,
@@ -35,19 +37,18 @@ export function CreditsTable({ credits }: { credits: CreditListItem[] }) {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<string>('all');
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return credits.filter((credit) => {
-      if (status !== 'all' && credit.status !== status) return false;
-      if (q) {
-        const haystack = [credit.name, credit.bankName].join(' ').toLowerCase();
-        if (!haystack.includes(q)) return false;
-      }
-      return true;
-    });
+  // Многоуровневый поиск (#035): substring → subsequence → fuzzy, RU↔EN, подсветка.
+  const { matches, layoutConverted } = useMemo(() => {
+    const byStatus = credits.filter((c) => status === 'all' || c.status === status);
+    return rankMatches(query, byStatus, (c) => [c.name, c.bankName]);
   }, [credits, query, status]);
 
+  const firstFuzzyIndex = matches.findIndex((m) => m.isFuzzy);
+
   const isFiltered = query.trim() !== '' || status !== 'all';
+
+  const rangesFor = (matchIndex: number, field: number) =>
+    matches[matchIndex]?.highlights.find((h) => h.field === field)?.ranges;
 
   return (
     <div className="flex flex-col gap-3">
@@ -76,6 +77,12 @@ export function CreditsTable({ credits }: { credits: CreditListItem[] }) {
         </Select>
       </div>
 
+      {layoutConverted && (
+        <p className="text-sm text-muted-foreground">
+          В набранной раскладке ничего не нашлось — раскладка исправлена автоматически (RU↔EN).
+        </p>
+      )}
+
       <div className="rounded-lg border">
         <Table>
           <TableHeader>
@@ -90,31 +97,42 @@ export function CreditsTable({ credits }: { credits: CreditListItem[] }) {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {filtered.length === 0 && (
+            {matches.length === 0 && (
               <TableRow>
                 <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
                   {isFiltered ? 'Ничего не найдено.' : 'Кредитов пока нет.'}
                 </TableCell>
               </TableRow>
             )}
-            {filtered.map((credit) => (
-              <TableRow key={credit.id}>
-                <TableCell className="font-medium">
-                  <Link href={`/credits/${credit.id}`} className="hover:underline">
-                    {credit.name}
-                  </Link>
-                </TableCell>
-                <TableCell>{credit.bankName}</TableCell>
-                <TableCell className="text-right">{formatMoney(credit.amount)}</TableCell>
-                <TableCell className="text-right">{formatPercent(credit.interestRate)}</TableCell>
-                <TableCell>{paymentTypeLabel(credit.paymentType)}</TableCell>
-                <TableCell>{formatDate(credit.startDate)}</TableCell>
-                <TableCell>
-                  <Badge variant={creditStatusVariant(credit.status)}>
-                    {creditStatusLabel(credit.status)}
-                  </Badge>
-                </TableCell>
-              </TableRow>
+            {matches.map(({ item: credit, isFuzzy }, index) => (
+              <Fragment key={credit.id}>
+                {isFuzzy && index === firstFuzzyIndex && (
+                  <TableRow className="hover:bg-transparent">
+                    <TableCell colSpan={7} className="py-1.5 text-xs text-muted-foreground">
+                      Похожие (неточное совпадение):
+                    </TableCell>
+                  </TableRow>
+                )}
+                <TableRow>
+                  <TableCell className="font-medium">
+                    <Link href={`/credits/${credit.id}`} className="hover:underline">
+                      <HighlightedText text={credit.name} ranges={rangesFor(index, 0)} />
+                    </Link>
+                  </TableCell>
+                  <TableCell>
+                    <HighlightedText text={credit.bankName} ranges={rangesFor(index, 1)} />
+                  </TableCell>
+                  <TableCell className="text-right">{formatMoney(credit.amount)}</TableCell>
+                  <TableCell className="text-right">{formatPercent(credit.interestRate)}</TableCell>
+                  <TableCell>{paymentTypeLabel(credit.paymentType)}</TableCell>
+                  <TableCell>{formatDate(credit.startDate)}</TableCell>
+                  <TableCell>
+                    <Badge variant={creditStatusVariant(credit.status)}>
+                      {creditStatusLabel(credit.status)}
+                    </Badge>
+                  </TableCell>
+                </TableRow>
+              </Fragment>
             ))}
           </TableBody>
         </Table>
