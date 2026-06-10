@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Pencil, Trash2, Image as ImageIcon, Paperclip, Search } from 'lucide-react';
 import { toast } from 'sonner';
@@ -27,6 +27,8 @@ import { ConfirmDialog } from './confirm-dialog';
 import { deleteDocumentAction } from '@/lib/actions/documents';
 import { documentExpiryBadge } from '@/lib/constants';
 import { formatDate } from '@/lib/format';
+import { rankMatches } from '@/lib/search/tiered-search';
+import { HighlightedText } from './highlighted-text';
 import type { DocumentListItem, DocumentCategoryOption } from '@/lib/services/documents';
 
 type StatusFilter = 'all' | 'active' | 'inactive';
@@ -43,27 +45,27 @@ export function DocumentsTable({
   const [status, setStatus] = useState<StatusFilter>('all');
   const [categoryId, setCategoryId] = useState<string>('all');
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return documents.filter((doc) => {
+  // Многоуровневый поиск (#035): substring → subsequence → fuzzy, RU↔EN, подсветка.
+  const { matches, layoutConverted } = useMemo(() => {
+    const preFiltered = documents.filter((doc) => {
       if (status === 'active' && !doc.isActive) return false;
       if (status === 'inactive' && doc.isActive) return false;
       if (categoryId !== 'all' && String(doc.categoryId) !== categoryId) return false;
-      if (q) {
-        const haystack = [
-          doc.title,
-          doc.documentType,
-          doc.documentNumber,
-          doc.issuingAuthority ?? '',
-          doc.categoryName ?? '',
-        ]
-          .join(' ')
-          .toLowerCase();
-        if (!haystack.includes(q)) return false;
-      }
       return true;
     });
+    return rankMatches(query, preFiltered, (doc) => [
+      doc.title,
+      doc.categoryName,
+      doc.documentType,
+      doc.documentNumber,
+      doc.issuingAuthority,
+    ]);
   }, [documents, query, status, categoryId]);
+
+  const firstFuzzyIndex = matches.findIndex((m) => m.isFuzzy);
+
+  const rangesFor = (matchIndex: number, field: number) =>
+    matches[matchIndex]?.highlights.find((h) => h.field === field)?.ranges;
 
   async function remove(id: number) {
     const result = await deleteDocumentAction(id);
@@ -114,6 +116,12 @@ export function DocumentsTable({
         </Select>
       </div>
 
+      {layoutConverted && (
+        <p className="text-sm text-muted-foreground">
+          В набранной раскладке ничего не нашлось — раскладка исправлена автоматически (RU↔EN).
+        </p>
+      )}
+
       <div className="rounded-lg border">
         <Table>
           <TableHeader>
@@ -130,19 +138,47 @@ export function DocumentsTable({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {filtered.length === 0 && (
+            {matches.length === 0 && (
               <TableRow>
                 <TableCell colSpan={9} className="h-24 text-center text-muted-foreground">
                   {isFiltered ? 'Ничего не найдено.' : 'Документов пока нет.'}
                 </TableCell>
               </TableRow>
             )}
-            {filtered.map((doc) => (
-              <TableRow key={doc.id}>
-                <TableCell className="font-medium">{doc.title}</TableCell>
-                <TableCell>{doc.categoryName || '—'}</TableCell>
-                <TableCell>{doc.documentType || '—'}</TableCell>
-                <TableCell>{doc.documentNumber || '—'}</TableCell>
+            {matches.map(({ item: doc, isFuzzy }, index) => (
+              <Fragment key={doc.id}>
+                {isFuzzy && index === firstFuzzyIndex && (
+                  <TableRow className="hover:bg-transparent">
+                    <TableCell colSpan={9} className="py-1.5 text-xs text-muted-foreground">
+                      Похожие (неточное совпадение):
+                    </TableCell>
+                  </TableRow>
+                )}
+              <TableRow>
+                <TableCell className="font-medium">
+                  <HighlightedText text={doc.title} ranges={rangesFor(index, 0)} />
+                </TableCell>
+                <TableCell>
+                  {doc.categoryName ? (
+                    <HighlightedText text={doc.categoryName} ranges={rangesFor(index, 1)} />
+                  ) : (
+                    '—'
+                  )}
+                </TableCell>
+                <TableCell>
+                  {doc.documentType ? (
+                    <HighlightedText text={doc.documentType} ranges={rangesFor(index, 2)} />
+                  ) : (
+                    '—'
+                  )}
+                </TableCell>
+                <TableCell>
+                  {doc.documentNumber ? (
+                    <HighlightedText text={doc.documentNumber} ranges={rangesFor(index, 3)} />
+                  ) : (
+                    '—'
+                  )}
+                </TableCell>
                 <TableCell>{formatDate(doc.issueDate)}</TableCell>
                 <TableCell>
                   <div className="flex items-center gap-2">
@@ -224,6 +260,7 @@ export function DocumentsTable({
                   </div>
                 </TableCell>
               </TableRow>
+              </Fragment>
             ))}
           </TableBody>
         </Table>
