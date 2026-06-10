@@ -1,0 +1,31 @@
+# Гейты качества KARMAN (#027 gate-replaced autonomy): typecheck + vitest + build.
+# Зелёный CI — предпосылка авто-мержа PR. Lint-гейта нет (ESLint не настроен).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    env:
+      # build не ходит в БД (страницы динамические, пул ленивый) — заглушки на случай
+      # чтения env на уровне модулей.
+      DATABASE_URL: postgres://ci:ci@127.0.0.1:5432/ci_dummy
+      SESSION_SECRET: ci-dummy-secret-not-used-in-prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test
+      - run: npm run build
