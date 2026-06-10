@@ -36,6 +36,10 @@ ssl/
 !*.env.*.example
 !.env.example
 
+# Claude Code: общий слой (commands/settings.json) коммитим, машинно-локальное — нет
+.claude/settings.local.json
+.claude/*.lock
+
 # IDE / OS
 .idea/
 .vscode/
