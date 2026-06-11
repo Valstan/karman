@@ -3,50 +3,46 @@
 > Sticky-note для непрерывности между сессиями KARMAN. Перезаписывается через
 > `/close_session` — историю смотри через `git log --follow -- docs/SESSION_HANDOFF.md`.
 
-**Status:** IDLE
-**Updated:** 2026-06-10
-**Branch:** main (PR #15 и #16 смержены; всё в проде)
-**Прод:** `d60a0b5` (= main) на `4ce93c2b59f9.vps.myjino.ru`, health ok (деплой 2026-06-10
-через новый `scripts/deploy_remote.sh` — отвязанный запуск + опрос лога, отработал штатно).
+**Status:** ACTIVE
+**Updated:** 2026-06-11
+**Branch:** main (PR #18 и #19 смержены)
+**Прод:** `328ddb0` через **CI-artifact** (`releases/328ddb0…`, симлинк `current`), health ok.
+redis+memcached погашены (disable, не purge). Деплой теперь — workflow `deploy-prod.yml`
+на push в main; on-box build удалён.
 
 ---
 
 ## Текущая нитка
 
-_Нет — задачи сессии закрыты._ Сессия разгребла 6 директив brain одним заходом:
-
-1. **Батч конфигов (PR #15):** `/obriv` (#021), autonomy-гейты #027 (`.claude/settings.json`
-   `defaultMode: auto` + узкие allow/deny, `CLAUDE.md` с чертой #025), **CI заведён**
-   (`.github/workflows/ci.yml`: typecheck+vitest+build на PR — раньше CI не было),
-   `.gitignore` для `.claude/`, память #032/#033 (`/start` синкается ДО чтения handoff;
-   `docs/PENDING_FOLLOWUPS.md` с метками старения), `scripts/deploy_remote.sh`.
-2. **#035 tiered search Ф0+Ф1 (PR #16):** shared-модуль `lib/search/tiered-search.ts`
-   (нормализация, многотокен AND, substring→subsequence→fuzzy, RU↔EN, подсветка) + подключение
-   в таблицы кредитов/документов/банков. Ф2/Ф3 — в PENDING_FOLLOWUPS.
-3. **Probe прод-бокса** (консолидация серверов): цифры в
-   `mailbox/to-brain/2026-06-10-prod-box-probe-results.md`. Находки: Cursor-monitor на проде
-   НЕ крутится; redis+memcached — остатки старого стека (кандидаты на отключение, спросить
-   владельца/brain); build пока on-box.
-4. **3 письма brain** в `mailbox/to-brain/2026-06-10-*` (батч-ack, probe, план #035).
+**Миграция на Бокс 1 (мандат brain 06-11, KARMAN едет первым).** Наша Ф3-часть готова:
+CI-artifact-деплой работает (PR #18, боевой прогон зелёный), redis/memcached погашены,
+ответы brain отправлены (PR #19: домен не нужен — техдомен Бокса 1; env → #008 при переезде).
+**Ждём сигнал Мозга после Ф0–Ф2** (снапшот, слот на Боксе 1, перенос media+БД).
 
 ## Следующий шаг
 
-Активной нитки нет. На выбор новой сессии: пункты из `docs/PENDING_FOLLOWUPS.md`
-(канонический список с метками старения — смотреть туда, не сюда); живая проверка
-tiered search на проде; вопрос владельцу про отключение redis/memcached на проде.
+1. Проверить почту brain (`../brain_matrica/mailboxes/KARMAN/from-brain/` — читать с диска,
+   без pull) — пришёл ли сигнал Ф1/Ф2 со слотом Бокса 1.
+2. Если сигнал есть — смена deploy-target: vars `DEPLOY_SSH_HOST`/`DEPLOY_SSH_PORT`,
+   `DEPLOY_APP_PORT`→3002 (`gh variable set …`), pubkey `karman-ci-deploy` юзеру `valstan`
+   на Боксе 1, env → `/etc/karman/karman.env` (#008), затем `workflow_dispatch` деплой + смок.
+   Baseline-DDL на новом боксе НЕ выполнять (детали — в PENDING_FOLLOWUPS).
+3. Если сигнала нет — свободная задача: #036 knip+depcheck (`docs/PENDING_FOLLOWUPS.md`).
 
 ## Контекст
 
-- **План:** -
-- **Связанные коммиты сессии:** `4796f4e` (PR #15, батч директив), `d60a0b5` (PR #16, поиск #035).
+- **План:** `../brain_matrica/docs/plans/server-migration-playbook.md` (роли: Мозг — данные,
+  мы — deploy-target).
+- **Связанные коммиты сессии:** `328ddb0` (PR #18, CI-artifact-деплой), `31c7ecb` (PR #19,
+  ack brain + followups).
 - **Открытые PR:** нет.
-- **Открытые вопросы для пользователя:** из письма по #035 — подсветка жёлтым ок? fuzzy-группа
-  «похожие» ок? (не блокируют, реализовано по дефолтам MatricaRMZ); redis/memcached на проде —
-  отключать?
+- **Открытые вопросы для пользователя:** нет.
+
+## Failed approaches (этой нитки)
+
+_Не было._
 
 ## Не забыть (low-priority)
 
-Канонический список — `docs/PENDING_FOLLOWUPS.md` (#033, с метками старения). Витрина:
-- #035 остаток: Ф2 комбобоксы, Ф3 серверный поиск + `pg_trgm` (когда объём вырастет).
-- Завести ESLint — lint-гейта нет (не объявлять зелёным!).
-- Бэкап `media/` на проде; множественные доп. файлы документа; превью-миниатюры сканов.
+Канонический список — `docs/PENDING_FOLLOWUPS.md`. Витрина: #036 knip; смена deploy-target
+по сигналу Мозга; ESLint-гейт; бэкап `media/`; #035 Ф2/Ф3.
