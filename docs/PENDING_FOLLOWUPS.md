@@ -32,6 +32,20 @@
 
 ## Тех-долг / инфра
 
+- **#036 deadcode-гигиена: knip + depcheck** — директива brain 06-10 (recommend, ack отправлен
+  06-11): `npm run deadcode` (knip с Next-entrypoints `page.tsx`/`route.ts`/`proxy.ts` +
+  depcheck), первый полный LLM-триаж по #028, дальше ежемесячная дельта. Вероятный улов —
+  остатки Vite/Express-эпохи (`frontend/`, `api/`?). Report-only, не авто-удалять.
+  `added: 2026-06-11` `snoozed: 0` `last-touch: 2026-06-11` `decay: fresh`
+- **Квартальный стратегический самоосмотр** — директива brain 06-10: раз в квартал отдельная
+  сессия → письмо to-brain с рефакторинг-предложениями (с грубой стоимостью) и фич-идеями
+  владельцу. **Первый — Q3 2026 (авг–сен).**
+  `added: 2026-06-11` `snoozed: 0` `last-touch: 2026-06-11` `decay: fresh`
+- **Смена deploy-target на Бокс 1 (по сигналу Мозга)** — править vars `DEPLOY_SSH_HOST/PORT`,
+  `DEPLOY_APP_PORT`→3002, pubkey karman-ci-deploy на бокс, env → `/etc/karman/karman.env` (#008),
+  DATABASE_URL → `karman_db`/`karman_app`. Данные (media+дамп) переносит Мозг; baseline-DDL
+  на новом боксе НЕ выполнять. Ждём Ф0–Ф2 Мозга.
+  `added: 2026-06-11` `snoozed: 0` `last-touch: 2026-06-11` `decay: fresh`
 - **Завести ESLint (lint-гейт)** — гейтов #027 сейчас три (typecheck/test/build), lint отсутствует
   в принципе. Поднять `eslint-config-next` + `--max-warnings 0` в `npm run lint`, добавить в CI.
   `added: 2026-06-10` `snoozed: 0` `last-touch: 2026-06-10` `decay: fresh`
