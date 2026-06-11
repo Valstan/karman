@@ -1,9 +1,9 @@
-# systemd-юнит KARMAN (единое приложение Next.js, standalone-сборка).
+# systemd-юнит KARMAN (единое приложение Next.js, standalone-артефакт из CI).
+# Деплой кладёт релизы в /home/valstan/karman/releases/<sha> и переключает
+# симлинк /home/valstan/karman/current (см. .github/workflows/deploy-prod.yml).
 # Установка:
 #   sudo cp scripts/karman.service /etc/systemd/system/karman.service
 #   sudo systemctl daemon-reload && sudo systemctl enable --now karman
-# Старый karman-api.service (порт 8080) больше не нужен:
-#   sudo systemctl disable --now karman-api
 [Unit]
 Description=KARMAN (Next.js)
 After=network.target postgresql.service
@@ -11,15 +11,17 @@ After=network.target postgresql.service
 [Service]
 Type=simple
 User=valstan
-WorkingDirectory=/home/valstan/karman
+WorkingDirectory=/home/valstan/karman/current
 Environment=NODE_ENV=production
 Environment=PORT=3000
 Environment=HOSTNAME=127.0.0.1
+# Сканы документов живут вне релиз-директорий и переживают деплои.
+Environment=MEDIA_ROOT=/home/valstan/karman/media
 # SESSION_SECRET и DATABASE_URL — в env-файле (обязательны!):
 #   SESSION_SECRET=<openssl rand -base64 48>
 #   DATABASE_URL=postgres:///karman_db?host=/var/run/postgresql
 EnvironmentFile=/etc/karman.env
-ExecStart=/usr/bin/node .next/standalone/server.js
+ExecStart=/usr/bin/node server.js
 Restart=on-failure
 RestartSec=3
 

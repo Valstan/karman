@@ -1,35 +1,21 @@
 #!/usr/bin/env bash
-# Запуск деплоя KARMAN на проде с локальной машины — единая smoke-гейтнутая команда.
+# Деплой KARMAN: триггер CI-artifact-воркфлоу (.github/workflows/deploy-prod.yml)
+# и ожидание результата. Сборка идёт в GitHub Actions, на прод уезжает готовый
+# standalone-артефакт — on-box `next build` больше не выполняется (мандат brain
+# 2026-06-11, подготовка к общему Боксу 1).
 #
-# SSH к хосту нестабилен (рвёт соединение во время next build), поэтому деплой
-# запускается ОТВЯЗАННО (setsid + nohup-семантика): обрыв ssh не убивает билд.
-# Затем скрипт опрашивает лог до строки «Деплой завершён.» (она печатается только
-# после успешного curl /api/health внутри deploy.sh — это и есть smoke-гейт).
+# Обычно воркфлоу запускается сам на push в main; этот скрипт — для ручного
+# повторного деплоя (например, после ручного применения миграций).
 #
 # Использование: bash scripts/deploy_remote.sh
 set -euo pipefail
 
-SSH_HOST="karman"
-LOG="/tmp/karman_deploy.log"
+echo "Запускаю workflow deploy-prod..."
+gh workflow run deploy-prod.yml
 
-echo "Запускаю деплой отвязанно на ${SSH_HOST}..."
-ssh "$SSH_HOST" "cd karman && setsid bash scripts/deploy.sh >${LOG} 2>&1 </dev/null & echo LAUNCHED:\$!"
-
-# Опрос лога: до 10 минут (60 × 10 с).
-for i in $(seq 1 60); do
-  sleep 10
-  out=$(ssh "$SSH_HOST" "tail -5 ${LOG}" 2>/dev/null || echo "(ssh-обрыв, попробую ещё)")
-  echo "--- опрос ${i} ---"
-  echo "$out"
-  if echo "$out" | grep -q "Деплой завершён."; then
-    echo "OK: деплой завершён, health-check пройден."
-    exit 0
-  fi
-  if echo "$out" | grep -qE "^npm ERR|Error:|error Command failed"; then
-    echo "FAIL: в логе деплоя ошибка — смотри ${LOG} на хосте." >&2
-    exit 1
-  fi
-done
-
-echo "TIMEOUT: деплой не подтвердился за 10 минут — проверь ${LOG} на хосте вручную." >&2
-exit 1
+# gh не возвращает id запущенного run — подождать регистрации и взять свежий.
+sleep 5
+RUN_ID=$(gh run list --workflow=deploy-prod.yml --limit 1 --json databaseId -q '.[0].databaseId')
+echo "Run: ${RUN_ID} — жду завершения..."
+gh run watch "$RUN_ID" --exit-status
+echo "OK: деплой завершён, smoke в CI пройден."

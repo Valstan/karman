@@ -73,16 +73,21 @@ sudo systemctl disable --now karman-api      # старый Express-сервис
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-Регулярный деплой:
+Регулярный деплой — **CI-artifact** (`.github/workflows/deploy-prod.yml`): push в main
+собирает standalone-бандл в GitHub Actions, по SSH кладёт его в
+`/home/valstan/karman/releases/<sha>`, переключает симлинк `current`, рестартит сервис и
+гонит smoke. On-box `next build` запрещён (мандат brain 2026-06-11 — на общем боксе мешает
+соседям). Ручной повторный запуск: `bash scripts/deploy_remote.sh` (gh workflow run + watch).
 
-```bash
-scripts/deploy.sh           # git pull → npm ci → build → (migrate) → restart → healthcheck
-```
+Миграции standalone-бандл не несёт: новые `lib/db/migrations/*.sql` применяются вручную
+ДО деплоя (push с новой миграцией CI-guard роняет; после ручного применения — деплой через
+`workflow_dispatch`). Смена deploy-target (миграция на Бокс 1) = правка repo-vars
+`DEPLOY_SSH_HOST` / `DEPLOY_SSH_PORT` / `DEPLOY_APP_PORT` + secret `SSH_PRIVATE_KEY`.
 
 ## Медиа-каталог (сканы документов)
 
-- Пользовательские сканы хранятся на ФС в `MEDIA_ROOT` (env; по умолчанию `<cwd>/media` =
-  `/home/valstan/karman/media`). Каталог **gitignored** — переживает `git pull`/build,
+- Пользовательские сканы хранятся на ФС в `MEDIA_ROOT` (env в systemd-юните;
+  `/home/valstan/karman/media` — вне релиз-директорий, переживает деплои).
   должен быть writable для пользователя сервиса (`valstan`). В БД хранится только относительный
   путь вида `documents/<userId>/<docId>/<slot>-<token>.<ext>`.
 - **Бэкап:** каталог `media/` не входит в git и не восстановится из репозитория — включить его

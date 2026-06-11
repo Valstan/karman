@@ -1,0 +1,162 @@
+name: Deploy to production
+
+# CI-artifact-деплой (мандат brain 2026-06-11, подготовка к Боксу 1): сборка едет
+# в GitHub Actions, на прод по SSH уезжает готовый standalone-артефакт + рестарт
+# systemd-сервиса. On-box `next build` запрещён — на общем боксе он мешает соседям
+# (а на текущем tiny уже рвал SSH).
+#
+# Требуется:
+#   secrets.SSH_PRIVATE_KEY  — приватная часть изолированного ключа karman-ci-deploy
+#   vars.DEPLOY_SSH_HOST     — <hex>.vps.myjino.ru (myjino ротирует — потому в vars)
+#   vars.DEPLOY_SSH_PORT     — внешний ssh-порт
+#   vars.DEPLOY_APP_PORT     — порт приложения (сейчас 3000; на Боксе 1 → 3002)
+#
+# Смена deploy-target при миграции = правка трёх vars, код не трогаем.
+
+on:
+  push:
+    branches: [main]
+    # docs/почта/markdown/инфра не меняют прод-артефакт — не гоняем пересборку зря.
+    # paths-ignore срабатывает, только если ВСЕ изменённые файлы под паттернами.
+    paths-ignore:
+      - 'docs/**'
+      - 'mailbox/**'
+      - '**.md'
+      - '.github/**'
+      - '.claude/**'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      # Предохранитель миграций: standalone-бандл не несёт drizzle-kit, поэтому
+      # миграции применяет разработчик вручную на проде ДО деплоя (psql/db:migrate
+      # с машины разработчика). CI лишь проверяет, что коммит не вносит новых
+      # .sql-миграций. workflow_dispatch = «уже применил» → guard пропускается.
+      - name: Migration guard
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          set -e
+          NEW=$(git diff --name-only --diff-filter=A HEAD~1 HEAD -- 'lib/db/migrations/*.sql' || true)
+          if [ -n "$NEW" ]; then
+            echo "::error::Коммит вносит новые миграции. Примени их на проде вручную, затем запусти деплой через workflow_dispatch."
+            echo "$NEW"
+            exit 1
+          fi
+          echo "Новых миграций в коммите нет — деплой продолжается."
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build (standalone)
+        env:
+          # build не ходит в БД (страницы динамические, пул ленивый) — заглушки
+          # на случай чтения env на уровне модулей (как в ci.yml).
+          DATABASE_URL: postgres://ci:ci@127.0.0.1:5432/ci_dummy
+          SESSION_SECRET: ci-dummy-secret-not-used-in-prod
+        run: npm run build
+
+      - name: Assemble standalone bundle
+        run: |
+          set -e
+          if [ ! -f .next/standalone/server.js ]; then
+            echo "::error::server.js не найден в .next/standalone"
+            find .next/standalone -maxdepth 3 -name server.js || true
+            exit 1
+          fi
+          cp -r .next/static .next/standalone/.next/static
+          if [ -d public ]; then cp -r public .next/standalone/public; fi
+          tar czf karman-app.tgz -C .next/standalone .
+          echo "bundle: $(du -h karman-app.tgz | cut -f1)"
+
+      - name: Setup SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          DEPLOY_SSH_HOST: ${{ vars.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_PORT: ${{ vars.DEPLOY_SSH_PORT }}
+        run: |
+          set -e
+          if [ -z "$SSH_PRIVATE_KEY" ] || [ -z "$DEPLOY_SSH_HOST" ] || [ -z "$DEPLOY_SSH_PORT" ]; then
+            echo "::error::Заданы не все: secrets.SSH_PRIVATE_KEY / vars.DEPLOY_SSH_HOST / vars.DEPLOY_SSH_PORT"
+            exit 1
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519_karman_ci
+          chmod 600 ~/.ssh/id_ed25519_karman_ci
+          ssh-keyscan -p "$DEPLOY_SSH_PORT" -H "$DEPLOY_SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          cat > ~/.ssh/config <<CFG
+          Host karman
+            HostName $DEPLOY_SSH_HOST
+            Port $DEPLOY_SSH_PORT
+            User valstan
+            IdentityFile ~/.ssh/id_ed25519_karman_ci
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+            ServerAliveInterval 30
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Ship artifact + restart
+        run: |
+          set -e
+          scp -q karman-app.tgz karman:/tmp/karman-app.tgz
+          ssh karman 'bash -s' "${{ github.sha }}" <<'REMOTE'
+          set -e
+          SHA="$1"
+          BASE=/home/valstan/karman
+          REL="$BASE/releases/$SHA"
+          rm -rf "$REL"; mkdir -p "$REL"
+          tar xzf /tmp/karman-app.tgz -C "$REL"
+          rm -f /tmp/karman-app.tgz
+          ln -sfn "$REL" "$BASE/current"
+          sudo systemctl restart karman
+          # держим последние 5 релизов
+          ls -1dt "$BASE"/releases/*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf
+          echo "deployed $SHA"
+          REMOTE
+
+      # #011 smoke: health + корень (307 → логин без сессии — норма).
+      - name: Smoke check
+        env:
+          APP_PORT: ${{ vars.DEPLOY_APP_PORT || '3000' }}
+        run: |
+          set -e
+          ssh karman 'bash -s' "$APP_PORT" <<'REMOTE'
+          set -e
+          PORT="$1"
+          sleep 5   # дать сервису подняться после restart
+          fail=0
+          check() {
+            path="$1"; expected="$2"
+            status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "http://127.0.0.1:$PORT$path" || true)
+            echo "local $path → $status (ожидалось: $expected)"
+            case " $expected " in
+              *" $status "*) ;;
+              *) echo "::error::local $path = $status, ожидалось одно из: $expected"; fail=1 ;;
+            esac
+          }
+          check "/api/health" "200"
+          check "/"           "200 307"
+          exit $fail
+          REMOTE
+
+      - name: On failure — журналы прода
+        if: failure()
+        run: |
+          ssh karman "sudo systemctl status karman --no-pager -l" 2>&1 || true
+          ssh karman "sudo journalctl -u karman -n 80 --no-pager" 2>&1 || true
