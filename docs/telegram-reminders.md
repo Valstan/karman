@@ -23,10 +23,44 @@
 TELEGRAM_BOT_TOKEN=<токен от @BotFather>
 TELEGRAM_BOT_USERNAME=<имя_бота_без_@>
 REMINDERS_INTERNAL_SECRET=<openssl rand -base64 48>
+# Только если api.telegram.org заблокирован (см. ниже) — иначе НЕ задавать:
+TELEGRAM_API_BASE=https://<relay-host>
 ```
 
 Веб-приложение НЕ падает без них (ядро самодостаточно) — фича напоминаний просто
 выключена: эндпоинты вернут 401, воркер простаивает с логом.
+
+## ⚠️ RKN блокирует api.telegram.org на проде (myjino, РФ)
+
+На текущем прод-боксе IP Telegram заблокированы (TCP :443 в таймаут; DNS и общий
+egress живые — проверка: `curl -m10 https://api.telegram.org/botX/getMe` → таймаут,
+`curl https://www.google.com` → 200). И отправка (`sendMessage`), и опрос
+(`getUpdates`) ходят на `api.telegram.org` → оба не работают напрямую.
+
+**Решение — relay вне блока.** IP Cloudflare в РФ не блокируются, поэтому подойдёт
+бесплатный Cloudflare Worker, проксирующий запросы на Telegram:
+
+```js
+// Cloudflare Worker: проксирует /bot<token>/<method> на api.telegram.org
+export default {
+  async fetch(req) {
+    const url = new URL(req.url);
+    const target = 'https://api.telegram.org' + url.pathname + url.search;
+    return fetch(target, { method: req.method, headers: req.headers, body: req.body });
+  },
+};
+```
+
+Задеплоить (workers.dev URL вида `https://karman-tg.<sub>.workers.dev`), затем на проде:
+
+```
+TELEGRAM_API_BASE=https://karman-tg.<sub>.workers.dev   # в /etc/karman.env
+sudo systemctl restart karman-reminders karman
+```
+
+Код читает `TELEGRAM_API_BASE` и в воркере, и в Next-клиенте; реле прозрачно
+проксирует `/bot<token>/<method>`. Защитить Worker от посторонних можно по желанию
+(секретный путь/заголовок) — токен и так в URL только между нами и реле по HTTPS.
 
 ## Применить миграцию (вручную, ДО деплоя)
 

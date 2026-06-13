@@ -11,6 +11,9 @@ const TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const SECRET = process.env.REMINDERS_INTERNAL_SECRET || '';
 const PORT = process.env.PORT || '3000';
 const BASE = process.env.APP_BASE_URL || `http://127.0.0.1:${PORT}`;
+// База Bot API: на проде (РФ, IP Telegram заблокированы RKN) указывает на relay
+// вне блока (Cloudflare Worker и т.п.). По умолчанию — прямой api.telegram.org.
+const TG_API = (process.env.TELEGRAM_API_BASE || 'https://api.telegram.org').replace(/\/+$/, '');
 const DISPATCH_INTERVAL_MS = Number(process.env.REMINDERS_DISPATCH_INTERVAL_MS || 25000);
 const POLL_TIMEOUT_S = 25;
 
@@ -48,7 +51,7 @@ async function startPollLoop() {
   let offset = 0;
   for (;;) {
     try {
-      const url = `https://api.telegram.org/bot${TOKEN}/getUpdates?timeout=${POLL_TIMEOUT_S}&offset=${offset}`;
+      const url = `${TG_API}/bot${TOKEN}/getUpdates?timeout=${POLL_TIMEOUT_S}&offset=${offset}`;
       const res = await fetch(url, { signal: AbortSignal.timeout((POLL_TIMEOUT_S + 10) * 1000) });
       if (res.status === 409) {
         log('getUpdates 409 (конфликт: webhook/другой поллер?) — пауза 30с');
