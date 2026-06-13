@@ -12,6 +12,7 @@ const NAV = [
   { href: '/credits', label: 'Кредиты' },
   { href: '/banks', label: 'Банки' },
   { href: '/documents', label: 'Документы' },
+  { href: '/reminders', label: 'Напоминания' },
   { href: '/settings', label: 'Настройки' },
 ] as const;
 
