@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
 import { checkInternalBearer } from '@/lib/telegram/config';
+import { dispatchDueReminders } from '@/lib/services/reminder-dispatch';
 
 // Диспетчер напоминаний — вызывается воркером по таймеру (Bearer-секрет).
-// P0: скелет. Due-scan/отправка/пересчёт next_fire_at — P1
-// (lib/services/reminder-dispatch.ts), с advisory-lock и идемпотентным claim слота.
+// proxy.ts не трогает /api/* → защищаемся сами. Single-flight advisory-lock +
+// идемпотентный claim слота внутри dispatchDueReminders.
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
@@ -12,5 +13,11 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
-  return NextResponse.json({ scanned: 0, sent: 0, failed: 0, deferred: 0, note: 'p0-skeleton' });
+  try {
+    const result = await dispatchDueReminders();
+    return NextResponse.json(result);
+  } catch (error) {
+    console.error('[reminders/dispatch] error', error);
+    return NextResponse.json({ error: 'dispatch failed' }, { status: 500 });
+  }
 }
