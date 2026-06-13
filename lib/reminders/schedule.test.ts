@@ -103,6 +103,25 @@ describe('computeNextFire — окончания', () => {
   });
 });
 
+describe('computeNextFire — daily с далёким якорем (дайджест)', () => {
+  const spec: ScheduleSpec = {
+    kind: 'recurring',
+    freq: 'daily',
+    interval: 1,
+    startDate: '2020-01-01',
+    time: '10:00',
+  };
+
+  it('перематывает к настоящему (не упирается в MAX_OCCURRENCES)', () => {
+    // 05:00Z = 08:00 МСК 14-го → сегодня 10:00 МСК = 07:00Z.
+    expect(computeNextFire(spec, '2026-06-14T05:00:00.000Z', 0)).toBe('2026-06-14T07:00:00.000Z');
+  });
+
+  it('после сегодняшнего 10:00 → завтра', () => {
+    expect(computeNextFire(spec, '2026-06-14T08:00:00.000Z', 0)).toBe('2026-06-15T07:00:00.000Z');
+  });
+});
+
 describe('computeNextFire — dates', () => {
   const spec: ScheduleSpec = {
     kind: 'dates',

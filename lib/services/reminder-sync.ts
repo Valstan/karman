@@ -40,8 +40,9 @@ export async function reconcileDomainReminders(): Promise<void> {
   const now = new Date().toISOString();
   for (const userId of userIds) {
     const [existing] = await db
-      .select({ id: reminder.id })
+      .select({ id: reminder.id, nextFireAt: reminderSchedule.nextFireAt })
       .from(reminder)
+      .leftJoin(reminderSchedule, eq(reminderSchedule.reminderId, reminder.id))
       .where(
         and(
           eq(reminder.userId, userId),
@@ -51,7 +52,15 @@ export async function reconcileDomainReminders(): Promise<void> {
       )
       .limit(1);
     if (existing) {
-      continue; // спека стабильна — не трогаем (сохраняем прогресс/паузу)
+      // Дайджест ежедневный и бессрочный — next_fire не должен быть null. Чиним, если так
+      // (напр. после исправления движка). Иначе не трогаем — сохраняем прогресс/паузу.
+      if (existing.nextFireAt === null) {
+        await db
+          .update(reminderSchedule)
+          .set({ nextFireAt: computeNextFire(DIGEST_SPEC, now, 0) })
+          .where(eq(reminderSchedule.reminderId, existing.id));
+      }
+      continue;
     }
     const [created] = await db
       .insert(reminder)
