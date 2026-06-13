@@ -5,6 +5,7 @@ import { reminder, reminderDelivery, reminderSchedule, telegramLink } from '@/li
 import { sendMessage } from '@/lib/telegram/client';
 import { buildReminderKeyboard } from '@/lib/telegram/keyboards';
 import { renderReminderText } from '@/lib/reminders/render';
+import { computeNextFire } from '@/lib/reminders/schedule';
 import type { ScheduleSpec } from '@/lib/reminders/types';
 
 // Произвольная константа advisory-lock — единственный диспетчер за раз (single-flight
@@ -19,14 +20,6 @@ export type DispatchResult = {
   skipped: number;
   locked?: boolean;
 };
-
-/** Следующее срабатывание после fire. P1: разовое → null. Повторы (rrule/dates/relative) — P3. */
-function computeNextFire(spec: ScheduleSpec): string | null {
-  if (spec.kind === 'oneoff') {
-    return null;
-  }
-  return null; // TODO(P3): rrule / dates / relative
-}
 
 async function tryLock(): Promise<boolean> {
   const res = await db.execute<{ locked: boolean }>(
@@ -54,6 +47,7 @@ export async function dispatchDueReminders(): Promise<DispatchResult> {
         reminderId: reminderSchedule.reminderId,
         nextFireAt: reminderSchedule.nextFireAt,
         spec: reminderSchedule.spec,
+        fireCount: reminderSchedule.fireCount,
         userId: reminder.userId,
         title: reminder.title,
         body: reminder.bodyTemplate,
@@ -103,7 +97,7 @@ export async function dispatchDueReminders(): Promise<DispatchResult> {
 
       if (!link?.chatId || !link.isActive) {
         await markDelivery(deliveryId, 'skipped', 'Telegram не привязан');
-        await advance(row.scheduleId, row.spec);
+        await advance(row.scheduleId, row.spec, fireSlot, row.fireCount);
         skipped += 1;
         continue;
       }
@@ -126,7 +120,7 @@ export async function dispatchDueReminders(): Promise<DispatchResult> {
             sentAt: new Date().toISOString(),
           })
           .where(eq(reminderDelivery.id, deliveryId));
-        await advance(row.scheduleId, row.spec);
+        await advance(row.scheduleId, row.spec, fireSlot, row.fireCount);
         sent += 1;
       } else if (res.kind === 'rate_limited') {
         // Бэкофф: оставляем pending, прерываем батч — добьём на следующем тике.
@@ -140,7 +134,7 @@ export async function dispatchDueReminders(): Promise<DispatchResult> {
           await db.update(telegramLink).set({ isActive: false }).where(eq(telegramLink.id, link.id));
         }
         await markDelivery(deliveryId, 'failed', res.description);
-        await advance(row.scheduleId, row.spec);
+        await advance(row.scheduleId, row.spec, fireSlot, row.fireCount);
         failed += 1;
       }
     }
@@ -158,13 +152,20 @@ async function markDelivery(id: number, status: 'failed' | 'skipped', error: str
     .where(eq(reminderDelivery.id, id));
 }
 
-async function advance(scheduleId: number, spec: ScheduleSpec): Promise<void> {
+async function advance(
+  scheduleId: number,
+  spec: ScheduleSpec,
+  firedSlotIso: string,
+  oldFireCount: number,
+): Promise<void> {
+  const newCount = oldFireCount + 1;
   await db
     .update(reminderSchedule)
     .set({
-      nextFireAt: computeNextFire(spec),
+      // Следующее срабатывание строго после только что сработавшего слота.
+      nextFireAt: computeNextFire(spec, firedSlotIso, newCount),
       lastFiredAt: new Date().toISOString(),
-      fireCount: sql`${reminderSchedule.fireCount} + 1`,
+      fireCount: newCount,
     })
     .where(eq(reminderSchedule.id, scheduleId));
 }
