@@ -13,5 +13,3 @@ export async function currentUserOrNull(): Promise<SessionUser | null> {
 export function revalidateAll(): void {
   revalidatePath('/', 'layout');
 }
-
-export const NOT_AUTHED: ActionResult<never> = { ok: false, error: 'Требуется авторизация' };

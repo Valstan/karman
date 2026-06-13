@@ -33,8 +33,6 @@ const MIME_TO_EXT: Record<string, string> = {
   'application/pdf': 'pdf',
 };
 
-export const ACCEPT_ATTR = '.jpg,.jpeg,.png,.webp,.pdf';
-
 export type FileValidationError = 'type' | 'size' | 'empty';
 
 /** Расширение по mime или null, если тип не разрешён. */
