@@ -3,7 +3,7 @@
  * Чистые типы — без `server-only`, можно импортировать из схемы, сервисов и тестов.
  */
 
-export type ReminderSourceType = 'freeform' | 'payment' | 'document';
+export type ReminderSourceType = 'freeform' | 'payment' | 'document' | 'digest';
 export type ReminderPriority = 'normal' | 'high';
 export type ReminderStatus = 'active' | 'paused' | 'done' | 'archived';
 export type DeliveryStatus = 'pending' | 'sent' | 'failed' | 'skipped';
