@@ -32,3 +32,21 @@ export function utcToMoscowLocal(utc: string | Date): string {
   const ms = (typeof utc === 'string' ? new Date(utc) : utc).getTime() + MOSCOW_OFFSET_MINUTES * 60_000;
   return new Date(ms).toISOString().slice(0, 16);
 }
+
+/** ISO-инстант + N часов (для snooze «+1 час»). Чистая, тестируемая. */
+export function addHoursIso(fromIso: string, hours: number): string {
+  return new Date(new Date(fromIso).getTime() + hours * 3_600_000).toISOString();
+}
+
+/**
+ * Следующий московский день в `hhmm` (МСК) как UTC-инстант (для snooze «завтра 09:00»).
+ * Корректно переносит конец месяца/года через Date.UTC.
+ */
+export function moscowNextDayAtIso(fromIso: string, hhmm: string): string {
+  const datePart = utcToMoscowLocal(fromIso).slice(0, 10);
+  const y = Number(datePart.slice(0, 4));
+  const m = Number(datePart.slice(5, 7));
+  const d = Number(datePart.slice(8, 10));
+  const next = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+  return moscowLocalToUtcIso(`${next}T${hhmm}`);
+}

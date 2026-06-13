@@ -1,12 +1,14 @@
 import 'server-only';
 import { linkChatByCode } from '@/lib/services/telegram-link';
-import { answerCallbackQuery, sendMessage } from './client';
-import type { TgMessage, TgUpdate } from './types';
+import { applyReminderCallback } from '@/lib/services/reminder-actions';
+import { parseCallbackData } from '@/lib/reminders/callback';
+import { answerCallbackQuery, editMessageReplyMarkup, sendMessage } from './client';
+import type { TgCallbackQuery, TgMessage, TgUpdate } from './types';
 
 /**
  * Транспорт-агностичная обработка входящего Telegram-апдейта. Вызывается из
- * /api/telegram/ingest (воркер реле). В P0: привязка `/start <code>` и справка;
- * действия кнопок (callback_query) реализует P2.
+ * /api/telegram/ingest (воркер реле): привязка `/start <code>`, справка и
+ * действия кнопок (callback_query → done/snooze с RBAC и идемпотентностью).
  */
 export async function handleUpdate(update: TgUpdate): Promise<void> {
   if (update.message?.text) {
@@ -14,10 +16,22 @@ export async function handleUpdate(update: TgUpdate): Promise<void> {
     return;
   }
   if (update.callback_query) {
-    await answerCallbackQuery({
-      callbackQueryId: update.callback_query.id,
-      text: 'Действия кнопок появятся в следующем обновлении.',
-    });
+    await handleCallback(update.callback_query);
+  }
+}
+
+async function handleCallback(cq: TgCallbackQuery): Promise<void> {
+  const parsed = parseCallbackData(cq.data ?? '');
+  if (!parsed) {
+    await answerCallbackQuery({ callbackQueryId: cq.id, text: 'Неизвестное действие' });
+    return;
+  }
+  const chatId = cq.message?.chat.id ?? cq.from.id;
+  const outcome = await applyReminderCallback(parsed, chatId, cq.id);
+  await answerCallbackQuery({ callbackQueryId: cq.id, text: outcome.answer });
+  if (outcome.clearKeyboard && cq.message) {
+    // Гасим кнопки, чтобы нельзя было нажать повторно (подтверждение — в тосте выше).
+    await editMessageReplyMarkup({ chatId, messageId: cq.message.message_id });
   }
 }
 

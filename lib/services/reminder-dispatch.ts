@@ -3,6 +3,7 @@ import { and, eq, isNotNull, lte, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { reminder, reminderDelivery, reminderSchedule, telegramLink } from '@/lib/db/schema';
 import { sendMessage } from '@/lib/telegram/client';
+import { buildReminderKeyboard } from '@/lib/telegram/keyboards';
 import { renderReminderText } from '@/lib/reminders/render';
 import type { ScheduleSpec } from '@/lib/reminders/types';
 
@@ -108,7 +109,12 @@ export async function dispatchDueReminders(): Promise<DispatchResult> {
       }
 
       const text = renderReminderText(row.title, row.body);
-      const res = await sendMessage({ chatId: link.chatId, text, disableNotification: row.silent });
+      const res = await sendMessage({
+        chatId: link.chatId,
+        text,
+        disableNotification: row.silent,
+        replyMarkup: buildReminderKeyboard(deliveryId),
+      });
 
       if (res.ok) {
         await db
