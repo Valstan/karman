@@ -1,4 +1,4 @@
-import { moscowLocalToUtcIso } from './time';
+import { moscowLocalToUtcIso, utcToMoscowLocal } from './time';
 import type { ScheduleSpec } from './types';
 
 /**
@@ -39,47 +39,56 @@ function weekday(v: Ymd): number {
   return new Date(ymdToTime(v)).getUTCDay();
 }
 
-/** Московские даты серии (ascending, ограниченно MAX_OCCURRENCES). */
-function recurringDates(spec: Extract<ScheduleSpec, { kind: 'recurring' }>): Ymd[] {
+const DAY_MS = 86_400_000;
+
+/**
+ * Московские даты серии (ascending). Перематывает к `notBefore` (дата ≈ afterIso),
+ * иначе при далёком startDate серия из MAX_OCCURRENCES не дотягивала бы до настоящего
+ * (баг: дайджест с якорем 2020 → next_fire null). С notBefore окно всегда у «сейчас».
+ */
+function recurringDates(spec: Extract<ScheduleSpec, { kind: 'recurring' }>, notBefore: Ymd): Ymd[] {
   const start = parseYmd(spec.startDate);
   const interval = Math.max(1, spec.interval);
+  const startT = ymdToTime(start);
+  const nbT = ymdToTime(notBefore);
   const out: Ymd[] = [];
 
   if (spec.freq === 'daily') {
-    let cur = start;
+    const k = nbT > startT ? Math.floor((nbT - startT) / DAY_MS / interval) : 0;
+    let cur = addDays(start, k * interval);
     for (let i = 0; i < MAX_OCCURRENCES; i++) {
-      out.push(cur);
+      if (ymdToTime(cur) >= startT) out.push(cur);
       cur = addDays(cur, interval);
     }
   } else if (spec.freq === 'weekly') {
     const weekdays = (spec.weekdays?.length ? spec.weekdays : [weekday(start)]).slice().sort((a, b) => a - b);
-    // Понедельник недели старта (Пн=0..Вс=6 от getUTCDay, где Вс=0).
-    const mondayOffset = (weekday(start) + 6) % 7;
-    let weekMonday = addDays(start, -mondayOffset);
+    const startMonday = addDays(start, -((weekday(start) + 6) % 7));
+    const nbMonday = addDays(notBefore, -((weekday(notBefore) + 6) % 7));
+    const blocks = Math.max(0, Math.floor((ymdToTime(nbMonday) - ymdToTime(startMonday)) / (7 * interval * DAY_MS)));
+    let weekMonday = addDays(startMonday, blocks * 7 * interval);
     for (let w = 0; w < MAX_OCCURRENCES && out.length < MAX_OCCURRENCES; w++) {
       for (const wd of weekdays) {
-        const date = addDays(weekMonday, (wd + 6) % 7); // смещение от понедельника
-        if (ymdToTime(date) >= ymdToTime(start)) {
-          out.push(date);
-        }
+        const date = addDays(weekMonday, (wd + 6) % 7);
+        if (ymdToTime(date) >= startT) out.push(date);
       }
       weekMonday = addDays(weekMonday, 7 * interval);
     }
     out.sort((a, b) => ymdToTime(a) - ymdToTime(b));
   } else if (spec.freq === 'monthly') {
     const day = spec.monthday ?? start.d;
-    for (let i = 0; i < MAX_OCCURRENCES; i++) {
+    const monthsElapsed = (notBefore.y - start.y) * 12 + (notBefore.m - start.m);
+    const i0 = monthsElapsed > 0 ? Math.floor(monthsElapsed / interval) : 0;
+    for (let i = i0; i < i0 + MAX_OCCURRENCES; i++) {
       const total = start.m - 1 + interval * i;
       const y = start.y + Math.floor(total / 12);
       const m = (total % 12) + 1;
       const cand: Ymd = { y, m, d: Math.min(day, daysInMonth(y, m)) };
-      if (ymdToTime(cand) >= ymdToTime(start)) {
-        out.push(cand);
-      }
+      if (ymdToTime(cand) >= startT) out.push(cand);
     }
   } else {
     // yearly
-    for (let i = 0; i < MAX_OCCURRENCES; i++) {
+    const i0 = notBefore.y > start.y ? Math.floor((notBefore.y - start.y) / interval) : 0;
+    for (let i = i0; i < i0 + MAX_OCCURRENCES; i++) {
       const y = start.y + interval * i;
       out.push({ y, m: start.m, d: Math.min(start.d, daysInMonth(y, start.m)) });
     }
@@ -89,7 +98,7 @@ function recurringDates(spec: Extract<ScheduleSpec, { kind: 'recurring' }>): Ymd
 }
 
 /** Список московских wall-clock 'YYYY-MM-DDTHH:MM' по спеке (ascending). */
-function localCandidates(spec: ScheduleSpec): string[] {
+function localCandidates(spec: ScheduleSpec, notBefore: Ymd): string[] {
   switch (spec.kind) {
     case 'oneoff':
       return [spec.at];
@@ -100,7 +109,7 @@ function localCandidates(spec: ScheduleSpec): string[] {
         .sort();
     }
     case 'recurring':
-      return recurringDates(spec).map((v) => `${ymdToStr(v)}T${spec.time}`);
+      return recurringDates(spec, notBefore).map((v) => `${ymdToStr(v)}T${spec.time}`);
     case 'relative':
       return []; // P4 — доменная привязка
   }
@@ -117,8 +126,10 @@ export function computeNextFire(
   }
   const untilMs = end?.type === 'until' ? Date.parse(moscowLocalToUtcIso(`${end.until}T23:59`)) : null;
   const afterMs = Date.parse(afterIso);
+  // Перемотка серии к «сейчас» (буфер −3 дня) — см. recurringDates.
+  const notBefore = addDays(parseYmd(utcToMoscowLocal(afterIso).slice(0, 10)), -3);
 
-  for (const local of localCandidates(spec)) {
+  for (const local of localCandidates(spec, notBefore)) {
     const utc = moscowLocalToUtcIso(local);
     const ms = Date.parse(utc);
     if (ms <= afterMs) {
