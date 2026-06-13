@@ -4,8 +4,9 @@ import { db } from '@/lib/db/client';
 import { reminder, reminderDelivery, reminderSchedule, telegramLink } from '@/lib/db/schema';
 import { sendMessage } from '@/lib/telegram/client';
 import { buildReminderKeyboard } from '@/lib/telegram/keyboards';
-import { renderReminderText } from '@/lib/reminders/render';
 import { computeNextFire } from '@/lib/reminders/schedule';
+import { reconcileDomainReminders } from '@/lib/services/reminder-sync';
+import { renderReminderMessage } from '@/lib/services/reminder-render';
 import type { ScheduleSpec } from '@/lib/reminders/types';
 
 // Произвольная константа advisory-lock — единственный диспетчер за раз (single-flight
@@ -41,6 +42,13 @@ export async function dispatchDueReminders(): Promise<DispatchResult> {
     return { scanned: 0, sent: 0, failed: 0, skipped: 0, locked: true };
   }
   try {
+    // Синхронизируем доменные авто-напоминания (платежи/документы) с текущими данными.
+    try {
+      await reconcileDomainReminders();
+    } catch (error) {
+      console.error('[reminders/dispatch] reconcile error', error);
+    }
+
     const due = await db
       .select({
         scheduleId: reminderSchedule.id,
@@ -51,6 +59,8 @@ export async function dispatchDueReminders(): Promise<DispatchResult> {
         userId: reminder.userId,
         title: reminder.title,
         body: reminder.bodyTemplate,
+        sourceType: reminder.sourceType,
+        sourceId: reminder.sourceId,
         silent: reminder.silent,
       })
       .from(reminderSchedule)
@@ -102,10 +112,22 @@ export async function dispatchDueReminders(): Promise<DispatchResult> {
         continue;
       }
 
-      const text = renderReminderText(row.title, row.body);
+      // Доменные напоминания: подстановка из живой строки + проверка актуальности.
+      const msg = await renderReminderMessage({
+        sourceType: row.sourceType,
+        sourceId: row.sourceId,
+        title: row.title,
+        body: row.body,
+      });
+      if (!msg.valid) {
+        await markDelivery(deliveryId, 'skipped', 'источник неактуален (оплачен/удалён)');
+        await advance(row.scheduleId, row.spec, fireSlot, row.fireCount);
+        skipped += 1;
+        continue;
+      }
       const res = await sendMessage({
         chatId: link.chatId,
-        text,
+        text: msg.text,
         disableNotification: row.silent,
         replyMarkup: buildReminderKeyboard(deliveryId),
       });
