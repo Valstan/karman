@@ -20,8 +20,8 @@ jobs:
       DATABASE_URL: postgres://ci:ci@127.0.0.1:5432/ci_dummy
       SESSION_SECRET: ci-dummy-secret-not-used-in-prod
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
