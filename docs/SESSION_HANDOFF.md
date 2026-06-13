@@ -4,45 +4,57 @@
 > `/close_session` — историю смотри через `git log --follow -- docs/SESSION_HANDOFF.md`.
 
 **Status:** ACTIVE
-**Updated:** 2026-06-11
-**Branch:** main (PR #18 и #19 смержены)
-**Прод:** `328ddb0` через **CI-artifact** (`releases/328ddb0…`, симлинк `current`), health ok.
-redis+memcached погашены (disable, не purge). Деплой теперь — workflow `deploy-prod.yml`
-на push в main; on-box build удалён.
+**Updated:** 2026-06-14
+**Branch:** main
+**Прод:** `ea70fbe` на tiny (`4ce93c2b59f9.vps.myjino.ru`), health ok. Подсистема напоминаний
+живёт: воркер `karman-reminders.service` (long-poll + dispatch), реле `karman-tg` (обход RKN),
+дайджест жильца №17 сработает завтра 10:00 МСК. Миграция на Бокс 1 — **заморожена** (HOLD brain 06-12).
 
 ---
 
 ## Текущая нитка
 
-**Миграция на Бокс 1 (мандат brain 06-11, KARMAN едет первым).** Наша Ф3-часть готова:
-CI-artifact-деплой работает (PR #18, боевой прогон зелёный), redis/memcached погашены,
-ответы brain отправлены (PR #19: домен не нужен — техдомен Бокса 1; env → #008 при переезде).
-**Ждём сигнал Мозга после Ф0–Ф2** (снапшот, слот на Боксе 1, перенос media+БД).
+**Система напоминаний KARMAN → Telegram — построена и в проде (P0–P4a), проверена end-to-end.**
+Гибкое расписание (разово/день/неделя/месяц/год + интервал + окончание), доставка в Telegram
+через Cloudflare-реле `karman-tg` (прямой api.telegram.org заблокирован RKN с РФ-бокса),
+интерактивные кнопки (Готово/Отложить → запись в БД), ежедневный дайджест по платежам/просрочкам/
+документам. Привязка чата жильца №17 сделана. Осталась **необязательная** P5 (богатый контент:
+картинки/вложения/опросы) + P3-хвосты (тихие часы, рабочие дни, календарь, произвольные даты, cron).
 
 ## Следующий шаг
 
-1. Проверить почту brain (`../brain_matrica/mailboxes/KARMAN/from-brain/` — читать с диска,
-   без pull) — пришёл ли сигнал Ф1/Ф2 со слотом Бокса 1.
-2. Если сигнал есть — смена deploy-target: vars `DEPLOY_SSH_HOST`/`DEPLOY_SSH_PORT`,
-   `DEPLOY_APP_PORT`→3002 (`gh variable set …`), pubkey `karman-ci-deploy` юзеру `valstan`
-   на Боксе 1, env → `/etc/karman/karman.env` (#008), затем `workflow_dispatch` деплой + смок.
-   Baseline-DDL на новом боксе НЕ выполнять (детали — в PENDING_FOLLOWUPS).
-3. Если сигнала нет — свободная задача: #036 knip+depcheck (`docs/PENDING_FOLLOWUPS.md`).
+1. **Глянуть первую сводку** — завтра ~10:00 МСК жильцу №17 придёт дайджест. Если что — логи:
+   `ssh karman "journalctl -u karman-reminders -n 50"`. Операционка — `docs/telegram-reminders.md`.
+2. Удалить тестовое напоминание «Тест KARMAN» (reminder id 1, выполнено) — в разделе Напоминания
+   или `delete from reminder where id=1` (это прод-данные — но строка тестовая, мной созданная).
+3. Свободная работа: **P5** напоминаний (`docs/PENDING_FOLLOWUPS.md`) или P3-хвосты — по желанию владельца.
 
 ## Контекст
 
-- **План:** `../brain_matrica/docs/plans/server-migration-playbook.md` (роли: Мозг — данные,
-  мы — deploy-target).
-- **Связанные коммиты сессии:** `328ddb0` (PR #18, CI-artifact-деплой), `31c7ecb` (PR #19,
-  ack brain + followups).
-- **Открытые PR:** нет.
-- **Открытые вопросы для пользователя:** нет.
+- **План:** `C:\Users\Valstan\.claude\plans\soft-yawning-balloon.md` (фазы P0–P5).
+- **Связанные коммиты сессии (10 PR #21–#30):** `09a5ab9` HOLD-ack · `4ed40eb` #036 deadcode ·
+  `2eb98bf` CI v5 · `e8c6097` P0 · `f3d66a7` P1 · `7fde625` P2 · `2e3529c` relay/RKN-fix ·
+  `d014dba` P3 · `637655a`+`ea70fbe` P4a дайджест+fix.
+- **Прод-инфра напоминаний:** новый юнит `karman-reminders.service` (воркер `reminders-worker.mjs`);
+  env в `/etc/karman.env`: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME=karman_org_bot`,
+  `REMINDERS_INTERNAL_SECRET`, `TELEGRAM_API_BASE=https://karman-tg.zubazeirot.workers.dev`.
+  Миграция `0001_telegram_reminders.sql` применена вручную (5 таблиц).
+- **Открытые PR:** нет (все смержены). **Открытые вопросы для пользователя:** нет.
 
 ## Failed approaches (этой нитки)
 
-_Не было._
+- **Прямой `api.telegram.org` с прод-бокса** — заблокирован RKN (TCP :443 таймаут). Решение —
+  реле `karman-tg` (Cloudflare) + конфигурируемый `TELEGRAM_API_BASE`.
+- **Напоминание на каждый платёж** — у владельца 71 просрочка → флуд 71 сообщение/день.
+  Переделано в один ежедневный дайджест.
+- **Якорь повтора в далёком прошлом (2020) + генерация от startDate** — давало `next_fire=null`
+  (не дотягивало до настоящего). Движок теперь перематывает серию к «сейчас».
+- **Строить фичи до проверки внешней доставки** — токен пришёл в конце, RKN всплыл после 4 фаз.
+  Урок (ушёл в to-brain): сетевую пробу до зависимости делать первым шагом.
 
 ## Не забыть (low-priority)
 
-Канонический список — `docs/PENDING_FOLLOWUPS.md`. Витрина: #036 knip; смена deploy-target
-по сигналу Мозга; ESLint-гейт; бэкап `media/`; #035 Ф2/Ф3.
+Канонический список — `docs/PENDING_FOLLOWUPS.md`. Витрина: P5 напоминаний (картинки/опросы);
+P3-хвосты (тихие часы/рабочие дни/календарь/cron); настройки дайджеста per-user; удалить тестовое
+напоминание id 1; #036 ежемесячный `npm run deadcode`; миграция на Бокс 1 заморожена; ESLint;
+бэкап `media/`; квартальный самоосмотр Q3 2026.
