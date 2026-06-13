@@ -8,7 +8,11 @@ import type { SendMessageParams, TgInlineKeyboard, TgResult } from './types';
  * /api/telegram/ingest — здесь getUpdates нет намеренно.
  */
 
-const API_BASE = 'https://api.telegram.org';
+// База Bot API. По умолчанию api.telegram.org, НО на прод-боксе (myjino, РФ) IP
+// Telegram заблокированы RKN — там TELEGRAM_API_BASE указывает на relay вне блока
+// (напр. Cloudflare Worker). Реле проксирует /bot<token>/<method> на api.telegram.org.
+// См. docs/telegram-reminders.md.
+const API_BASE = (process.env.TELEGRAM_API_BASE || 'https://api.telegram.org').replace(/\/+$/, '');
 
 type TgApiEnvelope<T> = {
   ok: boolean;
