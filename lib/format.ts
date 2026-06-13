@@ -18,14 +18,6 @@ export function formatMoney(value: string | number | null | undefined): string {
   return Number.isFinite(n) ? moneyFormatter.format(n) : '—';
 }
 
-export function formatNumber(value: string | number | null | undefined): string {
-  if (value === null || value === undefined || value === '') {
-    return '—';
-  }
-  const n = Number(value);
-  return Number.isFinite(n) ? numberFormatter.format(n) : '—';
-}
-
 /** 'YYYY-MM-DD' → 'DD.MM.YYYY' (без таймзонных конверсий). */
 export function formatDate(value: string | null | undefined): string {
   if (!value) {

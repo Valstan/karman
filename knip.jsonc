@@ -1,0 +1,25 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema-jsonc.json",
+
+  // #036 dead-code-гигиена (директива brain 06-10). Сканер даёт КАНДИДАТОВ, не
+  // вердикты: триаж по #028 (git-история символа → жив/мёртв/спящая фича),
+  // report-only, никогда не авто-удалять. Next-conventions (app/**/page.tsx,
+  // route.ts, layout.tsx, proxy.ts, instrumentation.ts) и конфиги
+  // (next/vitest/drizzle/postcss/tailwind) распознаёт встроенный next-плагин.
+
+  // Экспорт, использованный ВНУТРИ своего же файла, — не мёртвый код, а лишь
+  // переэкспонированный (export-keyword избыточен): значение живо. Не шумим этим;
+  // ловим только символы, не используемые НИГДЕ, включая собственный файл.
+  "ignoreExportsUsedInFile": true,
+
+  // Ложные «неиспользуемые зависимости»:
+  //  server-only — рантайм-страж server/client-границы, поставляется самим Next
+  //                (импорт резолвится транзитивно, в package.json его нет намеренно).
+  //  depcheck    — CLI второго сканера, вызывается из scripts/deadcode.mjs, не импортируется.
+  "ignoreDependencies": ["server-only", "depcheck"],
+
+  // components/ui/** — вендоренная библиотека shadcn/ui (копии компонентов под
+  // `npx shadcn add`), не наш рукописный код: неиспользуемое там — библиотечная
+  // поверхность, не цель гигиены. Наши компоненты живут в components/app/**.
+  "ignore": ["components/ui/**"]
+}
