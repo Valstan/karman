@@ -23,25 +23,32 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { cn } from '@/lib/utils';
 import { createReminderAction, updateReminderAction } from '@/lib/actions/reminders';
+import {
+  specToFormValues,
+  WEEKDAY_LABELS,
+  WEEKDAY_ORDER,
+  type ReminderFormValues,
+} from '@/lib/reminders/spec-display';
 import type { ReminderListItem } from '@/lib/services/reminders';
 
-type FormValues = {
-  title: string;
-  body: string;
-  at: string;
-  priority: 'normal' | 'high';
-  silent: boolean;
-};
-
-function defaults(reminder?: ReminderListItem): FormValues {
-  return {
+function defaults(reminder?: ReminderListItem): ReminderFormValues {
+  const base: ReminderFormValues = {
     title: reminder?.title ?? '',
     body: reminder?.body ?? '',
-    at: reminder?.at ?? '',
+    at: '',
     priority: reminder?.priority ?? 'normal',
     silent: reminder?.silent ?? false,
+    repeat: 'none',
+    interval: 1,
+    weekdays: [],
+    monthday: '',
+    endType: 'never',
+    endN: '',
+    endUntil: '',
   };
+  return { ...base, ...specToFormValues(reminder?.spec ?? null) };
 }
 
 export function ReminderFormDialog({
@@ -58,14 +65,33 @@ export function ReminderFormDialog({
     register,
     handleSubmit,
     control,
+    watch,
     reset,
     formState: { isSubmitting },
-  } = useForm<FormValues>({ defaultValues: defaults(reminder) });
+  } = useForm<ReminderFormValues>({ defaultValues: defaults(reminder) });
 
-  async function onSubmit(values: FormValues) {
+  const repeat = watch('repeat');
+  const endType = watch('endType');
+
+  async function onSubmit(v: ReminderFormValues) {
+    const payload = {
+      title: v.title,
+      body: v.body,
+      at: v.at,
+      priority: v.priority,
+      silent: v.silent,
+      repeat: v.repeat,
+      interval: Number(v.interval) || 1,
+      weekdays: v.repeat === 'weekly' ? v.weekdays : [],
+      ...(v.repeat === 'monthly' && v.monthday ? { monthday: Number(v.monthday) } : {}),
+      endType: v.endType,
+      ...(v.endType === 'afterN' && v.endN ? { endN: Number(v.endN) } : {}),
+      ...(v.endType === 'until' && v.endUntil ? { endUntil: v.endUntil } : {}),
+    };
+
     const result = isEdit
-      ? await updateReminderAction({ id: reminder!.id, ...values })
-      : await createReminderAction(values);
+      ? await updateReminderAction({ id: reminder!.id, ...payload })
+      : await createReminderAction(payload);
 
     if (!result.ok) {
       toast.error(result.error);
@@ -85,7 +111,7 @@ export function ReminderFormDialog({
       }}
     >
       <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{isEdit ? 'Редактировать напоминание' : 'Новое напоминание'}</DialogTitle>
         </DialogHeader>
@@ -96,12 +122,144 @@ export function ReminderFormDialog({
           </div>
           <div className="grid gap-2">
             <Label htmlFor="body">Текст (необязательно)</Label>
-            <Textarea id="body" rows={3} {...register('body')} />
+            <Textarea id="body" rows={2} {...register('body')} />
           </div>
           <div className="grid gap-2">
-            <Label htmlFor="at">Когда напомнить (МСК)</Label>
+            <Label htmlFor="at">Когда / начало (МСК)</Label>
             <Input id="at" type="datetime-local" required {...register('at')} />
           </div>
+
+          <div className="grid gap-2">
+            <Label>Повтор</Label>
+            <Controller
+              control={control}
+              name="repeat"
+              render={({ field }) => (
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Не повторять</SelectItem>
+                    <SelectItem value="daily">Каждый день</SelectItem>
+                    <SelectItem value="weekly">Каждую неделю</SelectItem>
+                    <SelectItem value="monthly">Каждый месяц</SelectItem>
+                    <SelectItem value="yearly">Каждый год</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+            />
+          </div>
+
+          {repeat !== 'none' && (
+            <div className="flex items-center gap-2">
+              <Label htmlFor="interval" className="whitespace-nowrap">
+                Каждые
+              </Label>
+              <Input
+                id="interval"
+                type="number"
+                min={1}
+                max={366}
+                className="w-20"
+                {...register('interval')}
+              />
+              <span className="text-sm text-muted-foreground">
+                {repeat === 'daily' && 'дн.'}
+                {repeat === 'weekly' && 'нед.'}
+                {repeat === 'monthly' && 'мес.'}
+                {repeat === 'yearly' && 'г.'}
+              </span>
+            </div>
+          )}
+
+          {repeat === 'weekly' && (
+            <div className="grid gap-2">
+              <Label>Дни недели</Label>
+              <Controller
+                control={control}
+                name="weekdays"
+                render={({ field }) => (
+                  <div className="flex flex-wrap gap-1">
+                    {WEEKDAY_ORDER.map((d) => {
+                      const active = field.value.includes(d);
+                      return (
+                        <button
+                          key={d}
+                          type="button"
+                          onClick={() =>
+                            field.onChange(
+                              active ? field.value.filter((x) => x !== d) : [...field.value, d],
+                            )
+                          }
+                          className={cn(
+                            'rounded-md border px-2.5 py-1 text-sm',
+                            active
+                              ? 'border-primary bg-primary text-primary-foreground'
+                              : 'text-muted-foreground hover:bg-accent',
+                          )}
+                        >
+                          {WEEKDAY_LABELS[d]}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              />
+              <p className="text-xs text-muted-foreground">
+                Если не выбрать — по дню недели из даты начала.
+              </p>
+            </div>
+          )}
+
+          {repeat === 'monthly' && (
+            <div className="flex items-center gap-2">
+              <Label htmlFor="monthday" className="whitespace-nowrap">
+                Число месяца
+              </Label>
+              <Input
+                id="monthday"
+                type="number"
+                min={1}
+                max={31}
+                className="w-20"
+                placeholder="из даты"
+                {...register('monthday')}
+              />
+              <span className="text-xs text-muted-foreground">31 → последний день короткого месяца</span>
+            </div>
+          )}
+
+          {repeat !== 'none' && (
+            <div className="grid gap-2">
+              <Label>Окончание</Label>
+              <div className="flex items-center gap-2">
+                <Controller
+                  control={control}
+                  name="endType"
+                  render={({ field }) => (
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <SelectTrigger className="w-44">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="never">Никогда</SelectItem>
+                        <SelectItem value="afterN">После N раз</SelectItem>
+                        <SelectItem value="until">До даты</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+                {endType === 'afterN' && (
+                  <Input type="number" min={1} className="w-24" placeholder="N" {...register('endN')} />
+                )}
+                {endType === 'until' && (
+                  <Input type="date" className="w-44" {...register('endUntil')} />
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-4">
             <div className="grid gap-2">
               <Label>Приоритет</Label>
@@ -115,7 +273,7 @@ export function ReminderFormDialog({
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="normal">Обычный</SelectItem>
-                      <SelectItem value="high">Важный (без тихих часов)</SelectItem>
+                      <SelectItem value="high">Важный</SelectItem>
                     </SelectContent>
                   </Select>
                 )}
@@ -126,6 +284,7 @@ export function ReminderFormDialog({
               Без звука
             </label>
           </div>
+
           <DialogFooter>
             <Button type="submit" disabled={isSubmitting}>
               {isSubmitting ? 'Сохранение…' : isEdit ? 'Сохранить' : 'Создать'}

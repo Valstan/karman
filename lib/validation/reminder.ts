@@ -1,9 +1,9 @@
 import { z } from 'zod';
+import { optionalDateString } from './common';
 
 /**
- * Валидация freeform-напоминаний (P1). Расписание v1 — разовое: момент `at`
- * в московском wall-clock 'YYYY-MM-DDTHH:MM' (datetime-local из формы). Повторы и
- * привязка к событиям — P3/P4.
+ * Валидация напоминаний. `at` — московский момент 'YYYY-MM-DDTHH:MM' (datetime-local):
+ * для разового — когда сработает; для повтора — якорь серии (дата старта + время).
  */
 
 const localDateTime = z
@@ -16,9 +16,17 @@ export const reminderCreateSchema = z.object({
   at: localDateTime,
   priority: z.enum(['normal', 'high']).default('normal'),
   silent: z.coerce.boolean().optional().default(false),
+  // Расписание:
+  repeat: z.enum(['none', 'daily', 'weekly', 'monthly', 'yearly']).default('none'),
+  interval: z.coerce.number().int().min(1).max(366).default(1),
+  weekdays: z.array(z.coerce.number().int().min(0).max(6)).optional().default([]),
+  monthday: z.coerce.number().int().min(1).max(31).optional(),
+  endType: z.enum(['never', 'afterN', 'until']).default('never'),
+  endN: z.coerce.number().int().min(1).max(1000).optional(),
+  endUntil: optionalDateString,
 });
 
-export const reminderUpdateSchema = reminderCreateSchema.partial().extend({
+export const reminderUpdateSchema = reminderCreateSchema.extend({
   id: z.coerce.number().int().positive(),
 });
 

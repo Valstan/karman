@@ -27,16 +27,31 @@ type ScheduleSpecBase = {
   tz?: string;
 };
 
+/** Частота повтора. */
+export type RecurFreq = 'daily' | 'weekly' | 'monthly' | 'yearly';
+
 /**
  * Спецификация расписания (jsonb в reminder_schedule.spec). wall-clock-поля
- * (`at`, `times`, `until`) — московские строки; нормализованный UTC-инстант
+ * (`at`, `time`, `startDate`, `until`) — московские; нормализованный UTC-инстант
  * срабатывания лежит отдельно в reminder_schedule.next_fire_at (его и читает
- * горячий due-scan). Полный движок вычисления — P3 (lib/reminders/schedule).
+ * горячий due-scan). Движок вычисления — lib/reminders/schedule.
+ *
+ * Повтор задан структурно (не raw RRULE) и считается в московском wall-clock —
+ * это проще и надёжнее в обращении с таймзоной, чем iCal-rrule в UTC. weekdays:
+ * 0=Вс..6=Сб (как Date.getUTCDay).
  */
 export type ScheduleSpec =
   | (ScheduleSpecBase & { kind: 'oneoff'; at: string }) // 'YYYY-MM-DDTHH:MM'
   | (ScheduleSpecBase & { kind: 'dates'; dates: string[]; times: string[] })
-  | (ScheduleSpecBase & { kind: 'rrule'; rrule: string; times: string[] })
+  | (ScheduleSpecBase & {
+      kind: 'recurring';
+      freq: RecurFreq;
+      interval: number; // каждые N дней/недель/месяцев/лет (>=1)
+      startDate: string; // 'YYYY-MM-DD' (МСК) — якорь серии
+      time: string; // 'HH:MM' (МСК)
+      weekdays?: number[]; // weekly: дни недели 0=Вс..6=Сб
+      monthday?: number; // monthly: число 1..31 (клампится к концу месяца)
+    })
   | (ScheduleSpecBase & {
       kind: 'relative';
       anchor: { source: 'payment' | 'document'; field: string };

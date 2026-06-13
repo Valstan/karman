@@ -17,6 +17,7 @@ import { ReminderFormDialog } from './reminder-form-dialog';
 import { ConfirmDialog } from './confirm-dialog';
 import { deleteReminderAction, setReminderStatusAction } from '@/lib/actions/reminders';
 import { utcToMoscowLocal } from '@/lib/reminders/time';
+import { describeSpec } from '@/lib/reminders/spec-display';
 import type { ReminderListItem } from '@/lib/services/reminders';
 
 function fmt(utcIso: string | null): string {
@@ -85,7 +86,12 @@ export function RemindersTable({ reminders }: { reminders: ReminderListItem[] })
                     </Badge>
                   )}
                 </TableCell>
-                <TableCell>{whenLabel}</TableCell>
+                <TableCell>
+                  <div>{whenLabel}</div>
+                  {r.spec?.kind === 'recurring' && (
+                    <div className="text-xs text-muted-foreground">{describeSpec(r.spec)}</div>
+                  )}
+                </TableCell>
                 <TableCell>
                   {r.status === 'paused' ? (
                     <Badge variant="secondary">на паузе</Badge>
