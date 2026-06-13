@@ -81,6 +81,9 @@ jobs:
           fi
           cp -r .next/static .next/standalone/.next/static
           if [ -d public ]; then cp -r public .next/standalone/public; fi
+          # Воркер напоминаний (тонкое реле, без зависимостей) едет рядом с server.js;
+          # его запускает karman-reminders.service из current/. См. docs/telegram-reminders.md.
+          cp scripts/reminders-worker.mjs .next/standalone/reminders-worker.mjs
           tar czf karman-app.tgz -C .next/standalone .
           echo "bundle: $(du -h karman-app.tgz | cut -f1)"
 

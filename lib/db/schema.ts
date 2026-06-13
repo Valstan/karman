@@ -16,6 +16,7 @@ import {
   boolean,
   date,
   integer,
+  jsonb,
   numeric,
   pgTable,
   serial,
@@ -24,6 +25,14 @@ import {
   varchar,
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
+import type {
+  DeliveryStatus,
+  ReminderActionKind,
+  ReminderPriority,
+  ReminderSourceType,
+  ReminderStatus,
+  ScheduleSpec,
+} from '@/lib/reminders/types';
 
 export type CreditStatus = 'active' | 'overdue' | 'closed';
 export type PaymentStatus = 'scheduled' | 'overdue' | 'paid';
@@ -191,3 +200,104 @@ export type CreditRow = typeof creditsCredit.$inferSelect;
 export type PaymentRow = typeof creditsPayment.$inferSelect;
 export type DocumentRow = typeof documentsDocument.$inferSelect;
 export type DocumentCategoryRow = typeof documentsDocumentcategory.$inferSelect;
+
+// --- Напоминания → Telegram (миграция 0001_telegram_reminders) ---------------
+// Новые таблицы созданы с DB-дефолтами now(); здесь дублируем `.defaultNow()`
+// и `$onUpdate` для путей через Drizzle. Индексы заданы в SQL-миграции
+// (drizzle-kit generate не запускаем — см. docs/telegram-reminders.md).
+const tstz = (name: string) => timestamp(name, { withTimezone: true, mode: 'string' });
+
+/** Привязка Telegram-чата к пользователю (1:1). */
+export const telegramLink = pgTable('telegram_link', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => authUser.id),
+  chatId: bigint('chat_id', { mode: 'number' }),
+  linkCode: varchar('link_code', { length: 64 }),
+  linkCodeExpiresAt: tstz('link_code_expires_at'),
+  tgUsername: varchar('tg_username', { length: 64 }),
+  isActive: boolean('is_active').notNull().default(true),
+  markPaidEnabled: boolean('mark_paid_enabled').notNull().default(false),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+  updatedAt: tstz('updated_at').notNull().defaultNow().$onUpdate(isoNow),
+});
+
+/** Определение напоминания. */
+export const reminder = pgTable('reminder', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => authUser.id),
+  title: varchar('title', { length: 200 }).notNull(),
+  bodyTemplate: text('body_template').notNull().default(''),
+  sourceType: varchar('source_type', { length: 20 })
+    .$type<ReminderSourceType>()
+    .notNull()
+    .default('freeform'),
+  sourceId: bigint('source_id', { mode: 'number' }),
+  ruleId: varchar('rule_id', { length: 40 }),
+  priority: varchar('priority', { length: 10 }).$type<ReminderPriority>().notNull().default('normal'),
+  silent: boolean('silent').notNull().default(false),
+  status: varchar('status', { length: 12 }).$type<ReminderStatus>().notNull().default('active'),
+  timezone: varchar('timezone', { length: 40 }).notNull().default('Europe/Moscow'),
+  attachmentRef: varchar('attachment_ref', { length: 120 }),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+  updatedAt: tstz('updated_at').notNull().defaultNow().$onUpdate(isoNow),
+});
+
+/** Расписание (1:1 с reminder); next_fire_at — нормализованный UTC-инстант. */
+export const reminderSchedule = pgTable('reminder_schedule', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  reminderId: bigint('reminder_id', { mode: 'number' })
+    .notNull()
+    .references(() => reminder.id, { onDelete: 'cascade' }),
+  spec: jsonb('spec').$type<ScheduleSpec>().notNull(),
+  nextFireAt: tstz('next_fire_at'),
+  lastFiredAt: tstz('last_fired_at'),
+  fireCount: integer('fire_count').notNull().default(0),
+  endAt: tstz('end_at'),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+  updatedAt: tstz('updated_at').notNull().defaultNow().$onUpdate(isoNow),
+});
+
+/** Журнал срабатываний/отправок; UNIQUE (reminder_id, fire_slot) защищает от двойной отправки. */
+export const reminderDelivery = pgTable('reminder_delivery', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  reminderId: bigint('reminder_id', { mode: 'number' })
+    .notNull()
+    .references(() => reminder.id, { onDelete: 'cascade' }),
+  scheduleId: bigint('schedule_id', { mode: 'number' }).references(() => reminderSchedule.id, {
+    onDelete: 'set null',
+  }),
+  fireSlot: tstz('fire_slot').notNull(),
+  status: varchar('status', { length: 12 }).$type<DeliveryStatus>().notNull().default('pending'),
+  tgChatId: bigint('tg_chat_id', { mode: 'number' }),
+  tgMessageId: bigint('tg_message_id', { mode: 'number' }),
+  attempts: integer('attempts').notNull().default(0),
+  lastError: text('last_error'),
+  sentAt: tstz('sent_at'),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+});
+
+/** Входящие нажатия кнопок; UNIQUE (delivery_id, action) — идемпотентность. */
+export const reminderAction = pgTable('reminder_action', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  deliveryId: bigint('delivery_id', { mode: 'number' }).references(() => reminderDelivery.id, {
+    onDelete: 'cascade',
+  }),
+  reminderId: bigint('reminder_id', { mode: 'number' })
+    .notNull()
+    .references(() => reminder.id, { onDelete: 'cascade' }),
+  userId: integer('user_id').notNull(),
+  action: varchar('action', { length: 20 }).$type<ReminderActionKind>().notNull(),
+  payload: jsonb('payload'),
+  tgCallbackId: varchar('tg_callback_id', { length: 64 }),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+});
+
+export type TelegramLinkRow = typeof telegramLink.$inferSelect;
+export type ReminderRow = typeof reminder.$inferSelect;
+export type ReminderScheduleRow = typeof reminderSchedule.$inferSelect;
+export type ReminderDeliveryRow = typeof reminderDelivery.$inferSelect;
+export type ReminderActionRow = typeof reminderAction.$inferSelect;
