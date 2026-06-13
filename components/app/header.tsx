@@ -12,6 +12,7 @@ const NAV = [
   { href: '/credits', label: 'Кредиты' },
   { href: '/banks', label: 'Банки' },
   { href: '/documents', label: 'Документы' },
+  { href: '/settings', label: 'Настройки' },
 ] as const;
 
 export function Header({ username }: { username: string }) {

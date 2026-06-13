@@ -14,4 +14,11 @@ export async function register(): Promise<void> {
   if (process.env.NODE_ENV === 'production' && !process.env.SESSION_SECRET) {
     throw new Error('SESSION_SECRET must be set in production');
   }
+  // Мягкое предупреждение (не throw — ядро приложения не зависит от напоминаний):
+  // без секрета эндпоинты /api/telegram/ingest и /api/reminders/dispatch отдают 401.
+  if (process.env.NODE_ENV === 'production' && !process.env.REMINDERS_INTERNAL_SECRET) {
+    console.warn(
+      '[reminders] REMINDERS_INTERNAL_SECRET не задан — Telegram-напоминания отключены (эндпоинты вернут 401).',
+    );
+  }
 }

@@ -1,0 +1,27 @@
+# systemd-юнит воркера напоминаний KARMAN (тонкое реле Telegram ↔ Next).
+# Запускает reminders-worker.mjs из текущего релиза (файл копируется в
+# .next/standalone при сборке артефакта, см. .github/workflows/deploy-prod.yml).
+# Установка (один раз на проде):
+#   sudo cp scripts/karman-reminders.service /etc/systemd/system/karman-reminders.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now karman-reminders
+# env-файл /etc/karman.env должен содержать (см. docs/telegram-reminders.md):
+#   TELEGRAM_BOT_TOKEN=...        REMINDERS_INTERNAL_SECRET=...
+#   TELEGRAM_BOT_USERNAME=...     (DATABASE_URL/SESSION_SECRET уже там для karman.service)
+[Unit]
+Description=KARMAN reminders worker (Telegram long-poll + dispatch)
+After=network.target karman.service
+Wants=karman.service
+
+[Service]
+Type=simple
+User=valstan
+WorkingDirectory=/home/valstan/karman/current
+Environment=NODE_ENV=production
+Environment=PORT=3000
+EnvironmentFile=/etc/karman.env
+ExecStart=/usr/bin/node reminders-worker.mjs
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
