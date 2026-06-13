@@ -41,11 +41,19 @@
   сессия → письмо to-brain с рефакторинг-предложениями (с грубой стоимостью) и фич-идеями
   владельцу. **Первый — Q3 2026 (авг–сен).**
   `added: 2026-06-11` `snoozed: 0` `last-touch: 2026-06-11` `decay: fresh`
-- **Смена deploy-target на Бокс 1 (по сигналу Мозга)** — править vars `DEPLOY_SSH_HOST/PORT`,
-  `DEPLOY_APP_PORT`→3002, pubkey karman-ci-deploy на бокс, env → `/etc/karman/karman.env` (#008),
-  DATABASE_URL → `karman_db`/`karman_app`. Данные (media+дамп) переносит Мозг; baseline-DDL
-  на новом боксе НЕ выполнять. Ждём Ф0–Ф2 Мозга.
-  `added: 2026-06-11` `snoozed: 0` `last-touch: 2026-06-11` `decay: fresh`
+- **Смена deploy-target на Бокс 1 — ⏸ ЗАМОРОЖЕНО владельцем (HOLD 06-12)** — консолидация на
+  один сервер на паузе, прод остаётся на tiny. Ф3 не начинали (target ни разу не переключали).
+  Слот Бокса 1 заморожен как стенд (снапшот данных от 06-11). **Не трогать до письма brain о
+  возобновлении/отмене.** Если возобновим — параметры слота в `../brain_matrica/mailboxes/KARMAN/
+  from-brain/2026-06-11-box1-slot-ready-deploy-signal.md` (vars `DEPLOY_SSH_HOST/PORT`,
+  `DEPLOY_APP_PORT`→3002, env → `/etc/karman/karman.env`, baseline-DDL НЕ выполнять).
+  `added: 2026-06-11` `snoozed: 0` `last-touch: 2026-06-13` `decay: fresh`
+- **G54 чеклист «поле прошло все слои» (zod-strip drift)** — grably brain 06-12 (mandate ref).
+  strict/strip zod-схема молча срезает новые optional-поля контракта; юнит-зелёный это НЕ ловит,
+  только live round-trip (write через реальный стек → read → assert). При следующем расширении
+  контракта через optional-поле прогнать: тип → клиент → route-валидатор → сервис → хранилище →
+  обратное чтение. Детали — `../brain_matrica/cross-project-ideas/GOTCHAS.md` → G54.
+  `added: 2026-06-13` `snoozed: 0` `last-touch: 2026-06-13` `decay: fresh`
 - **Завести ESLint (lint-гейт)** — гейтов #027 сейчас три (typecheck/test/build), lint отсутствует
   в принципе. Поднять `eslint-config-next` + `--max-warnings 0` в `npm run lint`, добавить в CI.
   `added: 2026-06-10` `snoozed: 0` `last-touch: 2026-06-10` `decay: fresh`
