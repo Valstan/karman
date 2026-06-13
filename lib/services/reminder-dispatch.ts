@@ -116,11 +116,13 @@ export async function dispatchDueReminders(): Promise<DispatchResult> {
       const msg = await renderReminderMessage({
         sourceType: row.sourceType,
         sourceId: row.sourceId,
+        userId: row.userId,
         title: row.title,
         body: row.body,
       });
       if (!msg.valid) {
-        await markDelivery(deliveryId, 'skipped', 'источник неактуален (оплачен/удалён)');
+        // Дайджесту нечего сообщить сегодня (или источник неактуален) — пропуск + перенос.
+        await markDelivery(deliveryId, 'skipped', 'нет данных для сообщения');
         await advance(row.scheduleId, row.spec, fireSlot, row.fireCount);
         skipped += 1;
         continue;
@@ -129,7 +131,8 @@ export async function dispatchDueReminders(): Promise<DispatchResult> {
         chatId: link.chatId,
         text: msg.text,
         disableNotification: row.silent,
-        replyMarkup: buildReminderKeyboard(deliveryId),
+        // Кнопки Готово/Отложить — только у свободных напоминаний; дайджест информативный.
+        replyMarkup: row.sourceType === 'freeform' ? buildReminderKeyboard(deliveryId) : undefined,
       });
 
       if (res.ok) {

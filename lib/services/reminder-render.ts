@@ -1,74 +1,82 @@
 import 'server-only';
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
-import { creditsBank, creditsCredit, creditsPayment, documentsDocument } from '@/lib/db/schema';
+import { creditsCredit, creditsPayment, documentsDocument } from '@/lib/db/schema';
 import { renderReminderText } from '@/lib/reminders/render';
-import { substitute } from '@/lib/reminders/template';
-import { formatDate, formatMoney } from '@/lib/format';
-import { daysUntil } from '@/lib/dates';
+import { formatMoney } from '@/lib/format';
+import { DOC_WINDOW_DAYS, UPCOMING_WINDOW_DAYS } from '@/lib/reminders/domain-templates';
 import type { ReminderSourceType } from '@/lib/reminders/types';
 
 export type RenderedMessage = { valid: boolean; text: string };
 
-/**
- * Готовит текст сообщения. Для доменных напоминаний подставляет переменные из
- * ЖИВОЙ строки источника и проверяет актуальность: оплаченный платёж / удалённый
- * или неактивный документ → {valid:false} (диспетчер пропустит и продвинет).
- */
-export async function renderReminderMessage(row: {
+type RenderRow = {
   sourceType: ReminderSourceType;
   sourceId: number | null;
+  userId: number;
   title: string;
   body: string;
-}): Promise<RenderedMessage> {
-  if (row.sourceType === 'freeform' || row.sourceId === null) {
-    return { valid: true, text: renderReminderText(row.title, row.body) };
-  }
+};
 
-  if (row.sourceType === 'payment') {
-    const [p] = await db
-      .select({
-        amount: creditsPayment.amount,
-        dueDate: creditsPayment.dueDate,
-        status: creditsPayment.status,
-        creditName: creditsCredit.name,
-        bankName: creditsBank.name,
-      })
-      .from(creditsPayment)
-      .innerJoin(creditsCredit, eq(creditsCredit.id, creditsPayment.creditId))
-      .innerJoin(creditsBank, eq(creditsBank.id, creditsCredit.bankId))
-      .where(eq(creditsPayment.id, row.sourceId))
-      .limit(1);
-    if (!p || p.status === 'paid') {
-      return { valid: false, text: '' };
-    }
-    const vars: Record<string, string> = {
-      кредит: p.creditName?.trim() ? p.creditName : p.bankName,
-      сумма: formatMoney(p.amount),
-      банк: p.bankName,
-      дата: formatDate(p.dueDate),
-      дней: String(Math.max(0, daysUntil(p.dueDate))),
-    };
-    return { valid: true, text: renderReminderText(substitute(row.title, vars), substitute(row.body, vars)) };
+/**
+ * Готовит текст сообщения. Для дайджеста собирает сводку из ЖИВЫХ данных
+ * пользователя (к оплате скоро / просрочено / истекающие документы). Если в этот
+ * день нечего сообщить — {valid:false} (диспетчер пропустит и перенесёт на завтра).
+ */
+export async function renderReminderMessage(row: RenderRow): Promise<RenderedMessage> {
+  if (row.sourceType === 'digest') {
+    return renderDigest(row.userId);
   }
+  // freeform (и любой иной — на всякий случай) — обычный текст напоминания.
+  return { valid: true, text: renderReminderText(row.title, row.body) };
+}
 
-  // document
-  const [d] = await db
+async function renderDigest(userId: number): Promise<RenderedMessage> {
+  const [up] = await db
     .select({
-      title: documentsDocument.title,
-      expiryDate: documentsDocument.expiryDate,
-      isActive: documentsDocument.isActive,
+      n: sql<number>`count(*)::int`,
+      s: sql<string>`coalesce(sum(${creditsPayment.amount}), 0)::text`,
     })
+    .from(creditsPayment)
+    .innerJoin(creditsCredit, eq(creditsCredit.id, creditsPayment.creditId))
+    .where(
+      and(
+        eq(creditsCredit.userId, userId),
+        eq(creditsPayment.status, 'scheduled'),
+        sql`${creditsPayment.dueDate} between CURRENT_DATE and CURRENT_DATE + make_interval(days => ${UPCOMING_WINDOW_DAYS})`,
+      ),
+    );
+
+  const [ov] = await db
+    .select({
+      n: sql<number>`count(*)::int`,
+      s: sql<string>`coalesce(sum(${creditsPayment.amount}), 0)::text`,
+    })
+    .from(creditsPayment)
+    .innerJoin(creditsCredit, eq(creditsCredit.id, creditsPayment.creditId))
+    .where(and(eq(creditsCredit.userId, userId), eq(creditsPayment.status, 'overdue')));
+
+  const [dc] = await db
+    .select({ n: sql<number>`count(*)::int` })
     .from(documentsDocument)
-    .where(eq(documentsDocument.id, row.sourceId))
-    .limit(1);
-  if (!d || !d.isActive || !d.expiryDate) {
+    .where(
+      and(
+        eq(documentsDocument.userId, userId),
+        eq(documentsDocument.isActive, true),
+        sql`${documentsDocument.expiryDate} is not null`,
+        sql`${documentsDocument.expiryDate} between CURRENT_DATE and CURRENT_DATE + make_interval(days => ${DOC_WINDOW_DAYS})`,
+      ),
+    );
+
+  const nUp = up?.n ?? 0;
+  const nOv = ov?.n ?? 0;
+  const nDoc = dc?.n ?? 0;
+  if (nUp === 0 && nOv === 0 && nDoc === 0) {
     return { valid: false, text: '' };
   }
-  const vars: Record<string, string> = {
-    документ: d.title,
-    дата: formatDate(d.expiryDate),
-    дней: String(Math.max(0, daysUntil(d.expiryDate))),
-  };
-  return { valid: true, text: renderReminderText(substitute(row.title, vars), substitute(row.body, vars)) };
+
+  const lines = ['📋 <b>Сводка KARMAN</b>'];
+  if (nUp > 0) lines.push(`💳 К оплате (${UPCOMING_WINDOW_DAYS} дн.): <b>${nUp}</b> на ${formatMoney(up!.s)}`);
+  if (nOv > 0) lines.push(`🔴 Просрочено: <b>${nOv}</b> на ${formatMoney(ov!.s)}`);
+  if (nDoc > 0) lines.push(`📄 Истекает документов (${DOC_WINDOW_DAYS} дн.): <b>${nDoc}</b>`);
+  return { valid: true, text: lines.join('\n') };
 }
