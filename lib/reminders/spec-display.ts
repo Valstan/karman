@@ -14,7 +14,15 @@ export type ReminderFormValues = {
   endType: 'never' | 'afterN' | 'until';
   endN: number | '';
   endUntil: string; // 'YYYY-MM-DD' | ''
+  businessDaysOnly: boolean;
+  quietEnabled: boolean;
+  quietFrom: string; // 'HH:MM' | ''
+  quietTo: string; // 'HH:MM' | ''
+  quietDefer: string; // 'HH:MM' | ''
 };
+
+/** Дефолт тихих часов при включении чекбокса: ночь 22:00–08:00 → перенос на 08:00. */
+export const QUIET_HOURS_DEFAULT = { from: '22:00', to: '08:00', deferTo: '08:00' };
 
 export const WEEKDAY_LABELS = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
 /** Порядок показа: Пн..Вс. */
@@ -54,6 +62,11 @@ export function specToFormValues(spec: ScheduleSpec | null): Partial<ReminderFor
       interval: spec.interval,
       weekdays: spec.weekdays ?? [],
       monthday: spec.monthday ?? '',
+      businessDaysOnly: spec.businessDaysOnly ?? false,
+      quietEnabled: Boolean(spec.quietHours),
+      quietFrom: spec.quietHours?.from ?? '',
+      quietTo: spec.quietHours?.to ?? '',
+      quietDefer: spec.quietHours?.deferTo ?? '',
       ...endFields,
     };
   }
@@ -78,5 +91,8 @@ export function describeSpec(spec: ScheduleSpec | null): string {
   let end = '';
   if (spec.end?.type === 'afterN') end = `, ${spec.end.n} раз`;
   else if (spec.end?.type === 'until') end = `, до ${spec.end.until}`;
-  return `${every}${detail} в ${spec.time}${end}`;
+  let delivery = '';
+  if (spec.businessDaysOnly) delivery += ' · будни';
+  if (spec.quietHours) delivery += ` · тихо ${spec.quietHours.from}–${spec.quietHours.to}`;
+  return `${every}${detail} в ${spec.time}${end}${delivery}`;
 }

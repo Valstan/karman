@@ -4,7 +4,7 @@ import { db } from '@/lib/db/client';
 import { reminder, reminderSchedule } from '@/lib/db/schema';
 import { ownership, type SessionUser } from '@/lib/auth/rbac';
 import { computeNextFire } from '@/lib/reminders/schedule';
-import type { ScheduleEnd, ScheduleSpec } from '@/lib/reminders/types';
+import type { QuietHours, ScheduleEnd, ScheduleSpec } from '@/lib/reminders/types';
 import type { ReminderCreateInput, ReminderUpdateInput } from '@/lib/validation/reminder';
 
 export type ReminderListItem = {
@@ -30,6 +30,13 @@ function buildEnd(input: ReminderCreateInput): ScheduleEnd | undefined {
   return undefined; // never
 }
 
+function buildQuietHours(input: ReminderCreateInput): QuietHours | undefined {
+  if (!input.quietEnabled || !input.quietFrom || !input.quietTo || !input.quietDefer) {
+    return undefined;
+  }
+  return { from: input.quietFrom, to: input.quietTo, deferTo: input.quietDefer };
+}
+
 function buildSpec(input: ReminderCreateInput): ScheduleSpec {
   const end = buildEnd(input);
   if (input.repeat === 'none') {
@@ -37,6 +44,7 @@ function buildSpec(input: ReminderCreateInput): ScheduleSpec {
   }
   const startDate = input.at.slice(0, 10);
   const time = input.at.slice(11, 16);
+  const quietHours = buildQuietHours(input);
   return {
     kind: 'recurring',
     freq: input.repeat,
@@ -45,6 +53,8 @@ function buildSpec(input: ReminderCreateInput): ScheduleSpec {
     time,
     ...(input.repeat === 'weekly' && input.weekdays.length ? { weekdays: input.weekdays } : {}),
     ...(input.repeat === 'monthly' && input.monthday !== undefined ? { monthday: input.monthday } : {}),
+    ...(input.businessDaysOnly ? { businessDaysOnly: true } : {}),
+    ...(quietHours ? { quietHours } : {}),
     ...(end ? { end } : {}),
   };
 }
