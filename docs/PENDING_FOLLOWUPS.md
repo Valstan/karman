@@ -56,13 +56,17 @@
   сессия → письмо to-brain с рефакторинг-предложениями (с грубой стоимостью) и фич-идеями
   владельцу. **Первый — Q3 2026 (авг–сен).**
   `added: 2026-06-11` `snoozed: 0` `last-touch: 2026-06-11` `decay: fresh`
-- **Смена deploy-target на Бокс 1 — ⏸ ЗАМОРОЖЕНО владельцем (HOLD 06-12)** — консолидация на
-  один сервер на паузе, прод остаётся на tiny. Ф3 не начинали (target ни разу не переключали).
-  Слот Бокса 1 заморожен как стенд (снапшот данных от 06-11). **Не трогать до письма brain о
-  возобновлении/отмене.** Если возобновим — параметры слота в `../brain_matrica/mailboxes/KARMAN/
-  from-brain/2026-06-11-box1-slot-ready-deploy-signal.md` (vars `DEPLOY_SSH_HOST/PORT`,
-  `DEPLOY_APP_PORT`→3002, env → `/etc/karman/karman.env`, baseline-DDL НЕ выполнять).
-  `added: 2026-06-11` `snoozed: 0` `last-touch: 2026-06-13` `decay: fresh`
+- **Смена deploy-target на Бокс 1 — ▶ ВОЗОБНОВЛЕНА (RESUME brain 06-13, владелец снял паузу)** —
+  HOLD 06-12 ОТМЕНЁН (`from-brain/2026-06-13-migration-resume.md`); Ф5/Ф6 снова в плане, KARMAN —
+  первый жилец. Модель — **отдельные индивидуальные процессы** (НЕ multi-tenant): свой репо/процесс/
+  порт/systemd-юнит/БД-роль на общем Postgres. По playbook остановились на **Ф4 (смок без DNS
+  пройден)**. Возобновление: пере-проверить целостность стенд-слота (порт/юнит/БД-роль — за паузу
+  бокс мог трогаться под passport) → свежий дамп + `media/` → повтор Ф4-смока через Host-header →
+  Ф5 freeze+дельта → Ф6 cutover (go на DNS за владельцем) → Ф7 (7–14 дн) → Ф8. Параметры слота —
+  `from-brain/2026-06-11-box1-slot-ready-deploy-signal.md` (vars `DEPLOY_SSH_HOST/PORT`,
+  `DEPLOY_APP_PORT`→3002, env → `/etc/karman/karman.env`, baseline-DDL НЕ выполнять как DDL).
+  CI-артефакт-деплой (вместо on-box build) — жёсткий гейт ДО заезда 2-го жильца (Sabantuy).
+  `added: 2026-06-11` `snoozed: 0` `last-touch: 2026-06-15` `decay: fresh`
 - **G54 чеклист «поле прошло все слои» (zod-strip drift)** — grably brain 06-12 (mandate ref).
   strict/strip zod-схема молча срезает новые optional-поля контракта; юнит-зелёный это НЕ ловит,
   только live round-trip (write через реальный стек → read → assert). При следующем расширении
@@ -70,10 +74,10 @@
   обратное чтение. Детали — `../brain_matrica/cross-project-ideas/GOTCHAS.md` → G54.
   `added: 2026-06-13` `snoozed: 0` `last-touch: 2026-06-13` `decay: fresh`
 - **Напоминания P3-хвосты (движок расписаний)** — в проде день/неделя/месяц/год + интервал +
-  окончание. Не доделано: тихие часы с переносом на утро, только-рабочие-дни (+праздники),
-  календарь будущих срабатываний в UI, произвольные даты в форме, cron-выражения. Движок
-  (`lib/reminders/schedule`) частично готов под расширение.
-  `added: 2026-06-14` `snoozed: 0` `last-touch: 2026-06-14` `decay: fresh`
+  окончание + **тихие часы (перенос на утро) и только-рабочие-дни** (движок+форма+тесты, G54
+  round-trip пройден локально, 2026-06-15). Не доделано: праздники (к рабочим дням), календарь
+  будущих срабатываний в UI, произвольные даты в форме (движок умеет `kind:'dates'`), cron.
+  `added: 2026-06-14` `snoozed: 0` `last-touch: 2026-06-15` `decay: fresh`
 - **Завести ESLint (lint-гейт)** — гейтов #027 сейчас три (typecheck/test/build), lint отсутствует
   в принципе. Поднять `eslint-config-next` + `--max-warnings 0` в `npm run lint`, добавить в CI.
   `added: 2026-06-10` `snoozed: 0` `last-touch: 2026-06-10` `decay: fresh`
