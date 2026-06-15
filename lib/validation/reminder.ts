@@ -10,6 +10,8 @@ const localDateTime = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, 'Укажите дату и время');
 
+const localTime = z.string().regex(/^\d{2}:\d{2}$/, 'Время в формате ЧЧ:ММ');
+
 export const reminderCreateSchema = z.object({
   title: z.string().trim().min(1, 'Введите заголовок').max(200),
   body: z.string().trim().max(2000).optional().default(''),
@@ -23,7 +25,16 @@ export const reminderCreateSchema = z.object({
   monthday: z.coerce.number().int().min(1).max(31).optional(),
   endType: z.enum(['never', 'afterN', 'until']).default('never'),
   endN: z.coerce.number().int().min(1).max(1000).optional(),
-  endUntil: optionalDateString,
+  // .optional(): форма опускает ключ при endType≠'until'. Zod v4 не считает
+  // union-с-undefined опциональным ключом (в отличие от v3) → без этого
+  // отсутствующий endUntil даёт "expected nonoptional".
+  endUntil: optionalDateString.optional(),
+  // Доставка (тихие часы / рабочие дни) — применяются движком к повторам:
+  businessDaysOnly: z.coerce.boolean().optional().default(false),
+  quietEnabled: z.coerce.boolean().optional().default(false),
+  quietFrom: localTime.optional(),
+  quietTo: localTime.optional(),
+  quietDefer: localTime.optional(),
 });
 
 export const reminderUpdateSchema = reminderCreateSchema.extend({

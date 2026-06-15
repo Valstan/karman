@@ -1,5 +1,5 @@
 import { moscowLocalToUtcIso, utcToMoscowLocal } from './time';
-import type { ScheduleSpec } from './types';
+import type { QuietHours, ScheduleSpec } from './types';
 
 /**
  * Движок расписания: вычисляет следующее срабатывание (UTC-инстант, ISO) строго
@@ -8,7 +8,9 @@ import type { ScheduleSpec } from './types';
  * конвертируется в UTC. Тестируется матрицей в schedule.test.ts.
  *
  * `firedCount` — сколько срабатываний уже было (для end.afterN). При создании 0.
- * Тихие часы / только-рабочие-дни / cron / relative — следующие итерации (P3+/P4).
+ * Тихие часы (`quietHours`) и только-рабочие-дни (`businessDaysOnly`) применяются
+ * как монотонный сдвиг каждого кандидата ВПЕРЁД (см. adjustCandidate); cron /
+ * relative — следующие итерации (P3+/P4).
  */
 
 const MAX_OCCURRENCES = 1000;
@@ -97,6 +99,48 @@ function recurringDates(spec: Extract<ScheduleSpec, { kind: 'recurring' }>, notB
   return out.slice(0, MAX_OCCURRENCES);
 }
 
+function toMinutes(hhmm: string): number {
+  return Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+}
+
+/**
+ * Тихие часы: если московское время кандидата попадает в окно [from, to) — перенести
+ * на `deferTo`. Окно может пересекать полночь (from > to, напр. 22:00..08:00): вечерняя
+ * часть (t >= from) переносится на `deferTo` СЛЕДУЮЩЕГО дня, ночная (t < to) — текущего.
+ * Возвращает скорректированные дату+время (всегда не раньше исходного момента).
+ */
+function applyQuietHours(date: Ymd, time: string, q: QuietHours): { date: Ymd; time: string } {
+  const t = toMinutes(time);
+  const from = toMinutes(q.from);
+  const to = toMinutes(q.to);
+  const wraps = from > to;
+  const inQuiet = wraps ? t >= from || t < to : t >= from && t < to;
+  if (!inQuiet) return { date, time };
+  const nextDay = wraps && t >= from;
+  return { date: nextDay ? addDays(date, 1) : date, time: q.deferTo };
+}
+
+/** Только рабочие дни: суббота/воскресенье → ближайший следующий будний день (то же время). */
+function applyBusinessDays(date: Ymd): Ymd {
+  let d = date;
+  while (weekday(d) === 0 || weekday(d) === 6) d = addDays(d, 1);
+  return d;
+}
+
+/**
+ * Сдвиг кандидата по тихим часам и рабочим дням. Тихие часы первыми (могут перенести
+ * на выходной), затем рабочие дни ловят выходной. Оба сдвига только вперёд — итоговый
+ * UTC-инстант не меньше исходного, поэтому минимум по всем кандидатам корректен даже
+ * если сдвиг меняет относительный порядок соседних кандидатов.
+ */
+function adjustCandidate(local: string, spec: ScheduleSpec): string {
+  let date = parseYmd(local.slice(0, 10));
+  let time = local.slice(11, 16);
+  if (spec.quietHours) ({ date, time } = applyQuietHours(date, time, spec.quietHours));
+  if (spec.businessDaysOnly) date = applyBusinessDays(date);
+  return `${ymdToStr(date)}T${time}`;
+}
+
 /** Список московских wall-clock 'YYYY-MM-DDTHH:MM' по спеке (ascending). */
 function localCandidates(spec: ScheduleSpec, notBefore: Ymd): string[] {
   switch (spec.kind) {
@@ -128,17 +172,28 @@ export function computeNextFire(
   const afterMs = Date.parse(afterIso);
   // Перемотка серии к «сейчас» (буфер −3 дня) — см. recurringDates.
   const notBefore = addDays(parseYmd(utcToMoscowLocal(afterIso).slice(0, 10)), -3);
+  const adjusted = spec.quietHours || spec.businessDaysOnly;
 
+  // Сдвиг тихих часов / рабочих дней может переставить соседние кандидаты местами,
+  // поэтому без сдвигов оставляем быстрый путь (первый подходящий, кандидаты ascending),
+  // а со сдвигами берём минимальный инстант среди всех (оба сдвига — только вперёд).
+  let best: number | null = null;
   for (const local of localCandidates(spec, notBefore)) {
-    const utc = moscowLocalToUtcIso(local);
+    const utc = moscowLocalToUtcIso(adjusted ? adjustCandidate(local, spec) : local);
     const ms = Date.parse(utc);
     if (ms <= afterMs) {
       continue;
     }
     if (untilMs !== null && ms > untilMs) {
+      if (adjusted) continue;
       return null;
     }
-    return utc;
+    if (!adjusted) {
+      return utc;
+    }
+    if (best === null || ms < best) {
+      best = ms;
+    }
   }
-  return null;
+  return best === null ? null : new Date(best).toISOString();
 }

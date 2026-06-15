@@ -26,6 +26,7 @@ import {
 import { cn } from '@/lib/utils';
 import { createReminderAction, updateReminderAction } from '@/lib/actions/reminders';
 import {
+  QUIET_HOURS_DEFAULT,
   specToFormValues,
   WEEKDAY_LABELS,
   WEEKDAY_ORDER,
@@ -47,6 +48,11 @@ function defaults(reminder?: ReminderListItem): ReminderFormValues {
     endType: 'never',
     endN: '',
     endUntil: '',
+    businessDaysOnly: false,
+    quietEnabled: false,
+    quietFrom: '',
+    quietTo: '',
+    quietDefer: '',
   };
   return { ...base, ...specToFormValues(reminder?.spec ?? null) };
 }
@@ -67,13 +73,17 @@ export function ReminderFormDialog({
     control,
     watch,
     reset,
+    setValue,
     formState: { isSubmitting },
   } = useForm<ReminderFormValues>({ defaultValues: defaults(reminder) });
 
   const repeat = watch('repeat');
   const endType = watch('endType');
+  const quietEnabled = watch('quietEnabled');
 
   async function onSubmit(v: ReminderFormValues) {
+    const recurring = v.repeat !== 'none';
+    const quietOn = recurring && v.quietEnabled;
     const payload = {
       title: v.title,
       body: v.body,
@@ -87,6 +97,15 @@ export function ReminderFormDialog({
       endType: v.endType,
       ...(v.endType === 'afterN' && v.endN ? { endN: Number(v.endN) } : {}),
       ...(v.endType === 'until' && v.endUntil ? { endUntil: v.endUntil } : {}),
+      businessDaysOnly: recurring && v.businessDaysOnly,
+      quietEnabled: quietOn,
+      ...(quietOn
+        ? {
+            quietFrom: v.quietFrom || QUIET_HOURS_DEFAULT.from,
+            quietTo: v.quietTo || QUIET_HOURS_DEFAULT.to,
+            quietDefer: v.quietDefer || QUIET_HOURS_DEFAULT.deferTo,
+          }
+        : {}),
     };
 
     const result = isEdit
@@ -257,6 +276,45 @@ export function ReminderFormDialog({
                   <Input type="date" className="w-44" {...register('endUntil')} />
                 )}
               </div>
+            </div>
+          )}
+
+          {repeat !== 'none' && (
+            <div className="grid gap-2 rounded-md border p-3">
+              <Label className="text-sm font-medium">Доставка</Label>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" className="h-4 w-4" {...register('businessDaysOnly')} />
+                Только по будням (сб/вс → понедельник)
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  {...register('quietEnabled')}
+                  onChange={(e) => {
+                    setValue('quietEnabled', e.target.checked);
+                    if (e.target.checked) {
+                      if (!watch('quietFrom')) setValue('quietFrom', QUIET_HOURS_DEFAULT.from);
+                      if (!watch('quietTo')) setValue('quietTo', QUIET_HOURS_DEFAULT.to);
+                      if (!watch('quietDefer')) setValue('quietDefer', QUIET_HOURS_DEFAULT.deferTo);
+                    }
+                  }}
+                />
+                Тихие часы (не беспокоить ночью)
+              </label>
+              {quietEnabled && (
+                <div className="flex flex-wrap items-center gap-2 pl-6 text-sm">
+                  <span className="text-muted-foreground">с</span>
+                  <Input type="time" className="w-28" {...register('quietFrom')} />
+                  <span className="text-muted-foreground">до</span>
+                  <Input type="time" className="w-28" {...register('quietTo')} />
+                  <span className="text-muted-foreground">→ перенести на</span>
+                  <Input type="time" className="w-28" {...register('quietDefer')} />
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">
+                Применяется к каждому срабатыванию повтора. Тихое окно может пересекать полночь.
+              </p>
             </div>
           )}
 
