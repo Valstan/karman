@@ -25,10 +25,9 @@ export const reminderCreateSchema = z.object({
   monthday: z.coerce.number().int().min(1).max(31).optional(),
   endType: z.enum(['never', 'afterN', 'until']).default('never'),
   endN: z.coerce.number().int().min(1).max(1000).optional(),
-  // .optional(): форма опускает ключ при endType≠'until'. Zod v4 не считает
-  // union-с-undefined опциональным ключом (в отличие от v3) → без этого
-  // отсутствующий endUntil даёт "expected nonoptional".
-  endUntil: optionalDateString.optional(),
+  // Форма опускает ключ при endType≠'until' — `optionalDateString` теперь сам
+  // опускаемый (корневой фикс в common.ts под Zod v4), отдельный .optional() не нужен.
+  endUntil: optionalDateString,
   // Доставка (тихие часы / рабочие дни) — применяются движком к повторам:
   businessDaysOnly: z.coerce.boolean().optional().default(false),
   quietEnabled: z.coerce.boolean().optional().default(false),
