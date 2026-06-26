@@ -10,6 +10,7 @@ import { ThemeToggle } from './theme-toggle';
 const NAV = [
   { href: '/', label: 'Панель' },
   { href: '/credits', label: 'Кредиты' },
+  { href: '/payments', label: 'Платежи' },
   { href: '/banks', label: 'Банки' },
   { href: '/documents', label: 'Документы' },
   { href: '/reminders', label: 'Напоминания' },
