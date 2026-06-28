@@ -73,6 +73,12 @@ export function buildRelPath(
   return path.posix.join('documents', String(userId), String(docId), `${slot}-${token}.${ext}`);
 }
 
+/** true, если файл — растровое изображение (можно показать миниатюрой). PDF → false. */
+export function isImagePath(relPath: string): boolean {
+  const ext = path.extname(relPath).slice(1).toLowerCase();
+  return ext === 'jpg' || ext === 'jpeg' || ext === 'png' || ext === 'webp';
+}
+
 /** content-type для отдачи по расширению относительного пути. */
 export function contentTypeForPath(relPath: string): string {
   const ext = path.extname(relPath).slice(1).toLowerCase();
