@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { formValuesToSpec, formatMoscowInstant, type ReminderFormValues } from './spec-display';
+import {
+  formValuesToSpec,
+  formatMoscowInstant,
+  specToFormValues,
+  describeSpec,
+  type ReminderFormValues,
+} from './spec-display';
+import type { ScheduleSpec } from './types';
 
 const base: ReminderFormValues = {
   title: 'T',
@@ -11,6 +18,8 @@ const base: ReminderFormValues = {
   interval: 1,
   weekdays: [],
   monthday: '',
+  dates: [],
+  datesTime: '09:00',
   endType: 'never',
   endN: '',
   endUntil: '',
@@ -80,6 +89,41 @@ describe('formValuesToSpec', () => {
     expect(
       formValuesToSpec({ ...base, repeat: 'daily', quietEnabled: true, quietFrom: '22:00' }),
     ).not.toHaveProperty('quietHours');
+  });
+});
+
+describe('formValuesToSpec — режим dates', () => {
+  it('repeat=dates → kind:dates, даты сортируются, единое время', () => {
+    expect(
+      formValuesToSpec({ ...base, repeat: 'dates', dates: ['2026-07-10', '2026-06-30'], datesTime: '18:00' }),
+    ).toEqual({ kind: 'dates', dates: ['2026-06-30', '2026-07-10'], times: ['18:00'] });
+  });
+
+  it('пустое время → дефолт 09:00', () => {
+    expect(formValuesToSpec({ ...base, repeat: 'dates', dates: ['2026-07-10'], datesTime: '' })).toEqual({
+      kind: 'dates',
+      dates: ['2026-07-10'],
+      times: ['09:00'],
+    });
+  });
+});
+
+describe('round-trip dates: spec → форма → spec', () => {
+  it('specToFormValues ∘ formValuesToSpec — тождество для dates', () => {
+    const spec: ScheduleSpec = { kind: 'dates', dates: ['2026-06-30', '2026-07-10'], times: ['18:00'] };
+    const merged = { ...base, ...specToFormValues(spec) } as ReminderFormValues;
+    expect(formValuesToSpec(merged)).toEqual(spec);
+  });
+});
+
+describe('describeSpec — dates', () => {
+  it('описывает количество дат и время', () => {
+    expect(describeSpec({ kind: 'dates', dates: ['2026-06-30', '2026-07-10'], times: ['18:00'] })).toBe(
+      'По датам: 2 дат в 18:00',
+    );
+    expect(describeSpec({ kind: 'dates', dates: ['2026-06-30'], times: ['09:00'] })).toBe(
+      'По датам: 1 дата в 09:00',
+    );
   });
 });
 

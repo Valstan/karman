@@ -39,11 +39,21 @@ function buildQuietHours(input: ReminderCreateInput): QuietHours | undefined {
 
 function buildSpec(input: ReminderCreateInput): ScheduleSpec {
   const end = buildEnd(input);
-  if (input.repeat === 'none') {
-    return { kind: 'oneoff', at: input.at, ...(end ? { end } : {}) };
+  if (input.repeat === 'dates') {
+    return {
+      kind: 'dates',
+      dates: [...input.dates].sort(),
+      times: [input.datesTime || '09:00'],
+      ...(end ? { end } : {}),
+    };
   }
-  const startDate = input.at.slice(0, 10);
-  const time = input.at.slice(11, 16);
+  // refine гарантирует `at` для всех режимов кроме 'dates'.
+  const at = input.at ?? '';
+  if (input.repeat === 'none') {
+    return { kind: 'oneoff', at, ...(end ? { end } : {}) };
+  }
+  const startDate = at.slice(0, 10);
+  const time = at.slice(11, 16);
   const quietHours = buildQuietHours(input);
   return {
     kind: 'recurring',

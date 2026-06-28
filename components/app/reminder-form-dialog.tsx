@@ -2,6 +2,7 @@
 
 import { useState, useMemo, type ReactNode } from 'react';
 import { useForm, useWatch, Controller } from 'react-hook-form';
+import { Plus, Trash2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import {
@@ -48,6 +49,8 @@ function defaults(reminder?: ReminderListItem): ReminderFormValues {
     interval: 1,
     weekdays: [],
     monthday: '',
+    dates: [],
+    datesTime: '09:00',
     endType: 'never',
     endN: '',
     endUntil: '',
@@ -83,15 +86,22 @@ export function ReminderFormDialog({
   const repeat = useWatch({ control, name: 'repeat' });
   const endType = useWatch({ control, name: 'endType' });
   const quietEnabled = useWatch({ control, name: 'quietEnabled' });
+  const isRecurring = repeat === 'daily' || repeat === 'weekly' || repeat === 'monthly' || repeat === 'yearly';
+  const isDates = repeat === 'dates';
 
   // Живой предпросмотр «когда сработает»: строим спеку из текущих значений (зеркало
   // серверного buildSpec) и считаем ближайшие срабатывания. Сервер — источник правды.
   const allValues = useWatch({ control });
   const preview = useMemo(() => {
-    const at = allValues?.at ?? '';
-    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(at)) return { valid: false, fires: [] as string[] };
+    const v = allValues as ReminderFormValues | undefined;
+    if (!v) return { valid: false, fires: [] as string[] };
+    const hasInput =
+      v.repeat === 'dates'
+        ? (v.dates?.filter(Boolean).length ?? 0) > 0
+        : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v.at ?? '');
+    if (!hasInput) return { valid: false, fires: [] as string[] };
     try {
-      const spec = formValuesToSpec(allValues as ReminderFormValues);
+      const spec = formValuesToSpec(v);
       return { valid: true, fires: nextFires(spec, new Date().toISOString(), 5) };
     } catch {
       return { valid: false, fires: [] as string[] };
@@ -99,31 +109,41 @@ export function ReminderFormDialog({
   }, [allValues]);
 
   async function onSubmit(v: ReminderFormValues) {
-    const recurring = v.repeat !== 'none';
-    const quietOn = recurring && v.quietEnabled;
-    const payload = {
-      title: v.title,
-      body: v.body,
-      at: v.at,
-      priority: v.priority,
-      silent: v.silent,
-      repeat: v.repeat,
-      interval: Number(v.interval) || 1,
-      weekdays: v.repeat === 'weekly' ? v.weekdays : [],
-      ...(v.repeat === 'monthly' && v.monthday ? { monthday: Number(v.monthday) } : {}),
-      endType: v.endType,
-      ...(v.endType === 'afterN' && v.endN ? { endN: Number(v.endN) } : {}),
-      ...(v.endType === 'until' && v.endUntil ? { endUntil: v.endUntil } : {}),
-      businessDaysOnly: recurring && v.businessDaysOnly,
-      quietEnabled: quietOn,
-      ...(quietOn
-        ? {
-            quietFrom: v.quietFrom || QUIET_HOURS_DEFAULT.from,
-            quietTo: v.quietTo || QUIET_HOURS_DEFAULT.to,
-            quietDefer: v.quietDefer || QUIET_HOURS_DEFAULT.deferTo,
-          }
-        : {}),
-    };
+    const common = { title: v.title, body: v.body, priority: v.priority, silent: v.silent };
+    let payload: Record<string, unknown>;
+    if (v.repeat === 'dates') {
+      // Произвольные даты: at/повтор/доставка/окончание не нужны.
+      const dates = [...new Set(v.dates.filter(Boolean))].sort();
+      payload = {
+        ...common,
+        repeat: 'dates',
+        dates,
+        ...(v.datesTime ? { datesTime: v.datesTime } : {}),
+      };
+    } else {
+      const recurring = v.repeat !== 'none';
+      const quietOn = recurring && v.quietEnabled;
+      payload = {
+        ...common,
+        at: v.at,
+        repeat: v.repeat,
+        interval: Number(v.interval) || 1,
+        weekdays: v.repeat === 'weekly' ? v.weekdays : [],
+        ...(v.repeat === 'monthly' && v.monthday ? { monthday: Number(v.monthday) } : {}),
+        endType: v.endType,
+        ...(v.endType === 'afterN' && v.endN ? { endN: Number(v.endN) } : {}),
+        ...(v.endType === 'until' && v.endUntil ? { endUntil: v.endUntil } : {}),
+        businessDaysOnly: recurring && v.businessDaysOnly,
+        quietEnabled: quietOn,
+        ...(quietOn
+          ? {
+              quietFrom: v.quietFrom || QUIET_HOURS_DEFAULT.from,
+              quietTo: v.quietTo || QUIET_HOURS_DEFAULT.to,
+              quietDefer: v.quietDefer || QUIET_HOURS_DEFAULT.deferTo,
+            }
+          : {}),
+      };
+    }
 
     const result = isEdit
       ? await updateReminderAction({ id: reminder!.id, ...payload })
@@ -160,10 +180,12 @@ export function ReminderFormDialog({
             <Label htmlFor="body">Текст (необязательно)</Label>
             <Textarea id="body" rows={2} {...register('body')} />
           </div>
-          <div className="grid gap-2">
-            <Label htmlFor="at">Когда / начало (МСК)</Label>
-            <Input id="at" type="datetime-local" required {...register('at')} />
-          </div>
+          {!isDates && (
+            <div className="grid gap-2">
+              <Label htmlFor="at">{repeat === 'none' ? 'Когда (МСК)' : 'Начало (МСК)'}</Label>
+              <Input id="at" type="datetime-local" required {...register('at')} />
+            </div>
+          )}
 
           <div className="grid gap-2">
             <Label>Повтор</Label>
@@ -181,13 +203,70 @@ export function ReminderFormDialog({
                     <SelectItem value="weekly">Каждую неделю</SelectItem>
                     <SelectItem value="monthly">Каждый месяц</SelectItem>
                     <SelectItem value="yearly">Каждый год</SelectItem>
+                    <SelectItem value="dates">По датам (вручную)</SelectItem>
                   </SelectContent>
                 </Select>
               )}
             />
           </div>
 
-          {repeat !== 'none' && (
+          {isDates && (
+            <div className="grid gap-2 rounded-md border p-3">
+              <Label className="text-sm font-medium">Даты срабатывания (МСК)</Label>
+              <Controller
+                control={control}
+                name="dates"
+                render={({ field }) => (
+                  <div className="flex flex-col gap-2">
+                    {field.value.length === 0 && (
+                      <p className="text-sm text-muted-foreground">Дат пока нет — добавьте ниже.</p>
+                    )}
+                    {field.value.map((d, i) => (
+                      <div key={i} className="flex items-center gap-2">
+                        <Input
+                          type="date"
+                          className="w-44"
+                          value={d}
+                          onChange={(e) =>
+                            field.onChange(field.value.map((x, j) => (j === i ? e.target.value : x)))
+                          }
+                        />
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          title="Убрать дату"
+                          onClick={() => field.onChange(field.value.filter((_, j) => j !== i))}
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </div>
+                    ))}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="self-start"
+                      onClick={() => field.onChange([...field.value, ''])}
+                    >
+                      <Plus className="mr-1 h-4 w-4" /> Добавить дату
+                    </Button>
+                  </div>
+                )}
+              />
+              <div className="flex items-center gap-2">
+                <Label htmlFor="datesTime" className="whitespace-nowrap text-sm">
+                  Время (для всех)
+                </Label>
+                <Input id="datesTime" type="time" className="w-28" {...register('datesTime')} />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Сработает в указанное время каждой даты. Повтор/окончание здесь не применяются.
+              </p>
+            </div>
+          )}
+
+          {isRecurring && (
             <div className="flex items-center gap-2">
               <Label htmlFor="interval" className="whitespace-nowrap">
                 Каждые
@@ -266,7 +345,7 @@ export function ReminderFormDialog({
             </div>
           )}
 
-          {repeat !== 'none' && (
+          {isRecurring && (
             <div className="grid gap-2">
               <Label>Окончание</Label>
               <div className="flex items-center gap-2">
@@ -296,7 +375,7 @@ export function ReminderFormDialog({
             </div>
           )}
 
-          {repeat !== 'none' && (
+          {isRecurring && (
             <div className="grid gap-2 rounded-md border p-3">
               <Label className="text-sm font-medium">Доставка</Label>
               <label className="flex items-center gap-2 text-sm">
