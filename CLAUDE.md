@@ -7,9 +7,10 @@
 ## Гейты качества (предпосылка автономии)
 
 - `npm run typecheck` — `tsc --noEmit`
+- `npm run lint` — `eslint . --max-warnings 0` (flat config `eslint.config.mjs`,
+  eslint-config-next 16 на ESLint 9; warnings = провал гейта).
 - `npm run test` — `vitest run`
 - `npm run build` — `next build`
-- lint-гейта НЕТ (ESLint не настроен) — не объявлять его зелёным.
 - CI (`.github/workflows/ci.yml`) гоняет те же гейты на PR.
 
 ## Автономия под гейтами (#027)

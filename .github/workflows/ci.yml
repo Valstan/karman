@@ -1,5 +1,5 @@
-# Гейты качества KARMAN (#027 gate-replaced autonomy): typecheck + vitest + build.
-# Зелёный CI — предпосылка авто-мержа PR. Lint-гейта нет (ESLint не настроен).
+# Гейты качества KARMAN (#027 gate-replaced autonomy): typecheck + lint + vitest + build.
+# Зелёный CI — предпосылка авто-мержа PR.
 name: CI
 
 on:
@@ -27,5 +27,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run lint
       - run: npm run test
       - run: npm run build
