@@ -1,4 +1,5 @@
-import type { ScheduleSpec } from './types';
+import { utcToMoscowLocal } from './time';
+import type { ScheduleEnd, ScheduleSpec } from './types';
 
 /** Поля формы напоминания (UI). Пустые числовые — '' (не отправляются в zod). */
 export type ReminderFormValues = {
@@ -72,6 +73,47 @@ export function specToFormValues(spec: ScheduleSpec | null): Partial<ReminderFor
   }
   // dates / relative — форма их не редактирует (P4/позже)
   return { repeat: 'none', interval: 1, weekdays: [], ...endFields };
+}
+
+function endFromValues(v: ReminderFormValues): ScheduleEnd | undefined {
+  if (v.endType === 'afterN' && v.endN !== '') return { type: 'afterN', n: Number(v.endN) };
+  if (v.endType === 'until' && v.endUntil) return { type: 'until', until: v.endUntil };
+  return undefined; // never
+}
+
+/**
+ * Значения формы → ScheduleSpec. Зеркало серверного `buildSpec`
+ * (lib/services/reminders.ts) — нужно для предпросмотра «когда сработает» прямо в
+ * форме (сервер пересчитывает спеку при сохранении, он остаётся источником правды).
+ * Держать в синхроне с buildSpec; обратное преобразование — specToFormValues.
+ */
+export function formValuesToSpec(v: ReminderFormValues): ScheduleSpec {
+  const end = endFromValues(v);
+  if (v.repeat === 'none') {
+    return { kind: 'oneoff', at: v.at, ...(end ? { end } : {}) };
+  }
+  const quietHours =
+    v.quietEnabled && v.quietFrom && v.quietTo && v.quietDefer
+      ? { from: v.quietFrom, to: v.quietTo, deferTo: v.quietDefer }
+      : undefined;
+  return {
+    kind: 'recurring',
+    freq: v.repeat,
+    interval: Number(v.interval) || 1,
+    startDate: v.at.slice(0, 10),
+    time: v.at.slice(11, 16),
+    ...(v.repeat === 'weekly' && v.weekdays.length ? { weekdays: v.weekdays } : {}),
+    ...(v.repeat === 'monthly' && v.monthday !== '' ? { monthday: Number(v.monthday) } : {}),
+    ...(v.businessDaysOnly ? { businessDaysOnly: true } : {}),
+    ...(quietHours ? { quietHours } : {}),
+    ...(end ? { end } : {}),
+  };
+}
+
+/** UTC-инстант (ISO) → 'ДД.ММ.ГГГГ ЧЧ:ММ' в московском времени. */
+export function formatMoscowInstant(utcIso: string): string {
+  const local = utcToMoscowLocal(utcIso); // 'YYYY-MM-DDTHH:MM'
+  return `${local.slice(8, 10)}.${local.slice(5, 7)}.${local.slice(0, 4)} ${local.slice(11, 16)}`;
 }
 
 /** Краткое человекочитаемое описание расписания для таблицы. */

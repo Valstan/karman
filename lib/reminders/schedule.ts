@@ -159,6 +159,31 @@ function localCandidates(spec: ScheduleSpec, notBefore: Ymd): string[] {
   }
 }
 
+/**
+ * Ближайшие `count` срабатываний строго ПОСЛЕ `afterIso` (UTC ISO, ascending).
+ * Итерирует computeNextFire, прокидывая каждый результат как новый `afterIso` и
+ * наращивая firedCount (чтобы end.afterN считался корректно). Короче `count`, если
+ * серия завершается раньше. Чистая — для предпросмотра «когда сработает» в UI.
+ */
+export function nextFires(
+  spec: ScheduleSpec,
+  afterIso: string,
+  count: number,
+  firedCount = 0,
+): string[] {
+  const out: string[] = [];
+  let after = afterIso;
+  let fired = firedCount;
+  for (let i = 0; i < count; i++) {
+    const next = computeNextFire(spec, after, fired);
+    if (next === null) break;
+    out.push(next);
+    after = next;
+    fired++;
+  }
+  return out;
+}
+
 export function computeNextFire(
   spec: ScheduleSpec,
   afterIso: string,

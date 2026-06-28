@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { useState, useMemo, type ReactNode } from 'react';
 import { useForm, useWatch, Controller } from 'react-hook-form';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
@@ -28,10 +28,13 @@ import { createReminderAction, updateReminderAction } from '@/lib/actions/remind
 import {
   QUIET_HOURS_DEFAULT,
   specToFormValues,
+  formValuesToSpec,
+  formatMoscowInstant,
   WEEKDAY_LABELS,
   WEEKDAY_ORDER,
   type ReminderFormValues,
 } from '@/lib/reminders/spec-display';
+import { nextFires } from '@/lib/reminders/schedule';
 import type { ReminderListItem } from '@/lib/services/reminders';
 
 function defaults(reminder?: ReminderListItem): ReminderFormValues {
@@ -80,6 +83,20 @@ export function ReminderFormDialog({
   const repeat = useWatch({ control, name: 'repeat' });
   const endType = useWatch({ control, name: 'endType' });
   const quietEnabled = useWatch({ control, name: 'quietEnabled' });
+
+  // Живой предпросмотр «когда сработает»: строим спеку из текущих значений (зеркало
+  // серверного buildSpec) и считаем ближайшие срабатывания. Сервер — источник правды.
+  const allValues = useWatch({ control });
+  const preview = useMemo(() => {
+    const at = allValues?.at ?? '';
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(at)) return { valid: false, fires: [] as string[] };
+    try {
+      const spec = formValuesToSpec(allValues as ReminderFormValues);
+      return { valid: true, fires: nextFires(spec, new Date().toISOString(), 5) };
+    } catch {
+      return { valid: false, fires: [] as string[] };
+    }
+  }, [allValues]);
 
   async function onSubmit(v: ReminderFormValues) {
     const recurring = v.repeat !== 'none';
@@ -342,6 +359,23 @@ export function ReminderFormDialog({
               Без звука
             </label>
           </div>
+
+          {preview.valid && (
+            <div className="grid gap-1 rounded-md border bg-muted/30 p-3">
+              <Label className="text-sm font-medium">Ближайшие срабатывания</Label>
+              {preview.fires.length > 0 ? (
+                <ul className="text-sm text-muted-foreground">
+                  {preview.fires.map((iso) => (
+                    <li key={iso}>{formatMoscowInstant(iso)}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Нет будущих срабатываний (момент в прошлом или серия завершена).
+                </p>
+              )}
+            </div>
+          )}
 
           <DialogFooter>
             <Button type="submit" disabled={isSubmitting}>
