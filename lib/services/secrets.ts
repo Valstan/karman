@@ -26,6 +26,7 @@ export type SecretTokenMeta = {
   id: number;
   name: string;
   tokenPrefix: string;
+  canWrite: boolean;
   lastUsedAt: string | null;
   revokedAt: string | null;
   createdAt: string;
@@ -129,6 +130,7 @@ export async function getProjectDetail(
       id: secretsToken.id,
       name: secretsToken.name,
       tokenPrefix: secretsToken.tokenPrefix,
+      canWrite: secretsToken.canWrite,
       lastUsedAt: secretsToken.lastUsedAt,
       revokedAt: secretsToken.revokedAt,
       createdAt: secretsToken.createdAt,
@@ -212,9 +214,13 @@ export async function createToken(
 ): Promise<string | null> {
   if ((await ownedProjectId(user, input.projectId)) === null) return null;
   const t = generateToken();
-  await db
-    .insert(secretsToken)
-    .values({ projectId: input.projectId, name: input.name, tokenPrefix: t.prefix, tokenHash: t.hash });
+  await db.insert(secretsToken).values({
+    projectId: input.projectId,
+    name: input.name,
+    tokenPrefix: t.prefix,
+    tokenHash: t.hash,
+    canWrite: input.canWrite,
+  });
   return t.token;
 }
 
@@ -295,6 +301,69 @@ export async function pullByToken(
   } catch {
     // Например, SECRETS_MASTER_KEY не задан/неверен — расшифровка невозможна.
     await logAudit(tok.projectId, tok.id, 'pull_error', 'ошибка расшифровки (мастер-ключ?)', ip);
+    return { ok: false, status: 500, error: 'Сервис секретов недоступен' };
+  }
+}
+
+export type PushResult =
+  | { ok: true; written: number }
+  | { ok: false; status: 401 | 403 | 500; error: string };
+
+/**
+ * Записывает (upsert) секреты в проект токена. Требует токен с `can_write`.
+ * Проверяет токен по хэшу, шифрует значения, пишет аудит, обновляет last_used_at.
+ */
+export async function pushByToken(
+  rawToken: string,
+  ip: string | null,
+  secrets: Record<string, string>,
+): Promise<PushResult> {
+  if (!looksLikeToken(rawToken)) {
+    await logAudit(null, null, 'push_denied', 'некорректный формат токена', ip);
+    return { ok: false, status: 401, error: 'Недействительный токен' };
+  }
+  const [tok] = await db
+    .select({
+      id: secretsToken.id,
+      projectId: secretsToken.projectId,
+      revokedAt: secretsToken.revokedAt,
+      canWrite: secretsToken.canWrite,
+    })
+    .from(secretsToken)
+    .where(eq(secretsToken.tokenHash, hashToken(rawToken)))
+    .limit(1);
+  if (!tok || tok.revokedAt) {
+    await logAudit(tok?.projectId ?? null, tok?.id ?? null, 'push_denied', tok ? 'токен отозван' : 'неизвестный токен', ip);
+    return { ok: false, status: 401, error: 'Недействительный токен' };
+  }
+  if (!tok.canWrite) {
+    await logAudit(tok.projectId, tok.id, 'push_denied', 'токен только для чтения', ip);
+    return { ok: false, status: 403, error: 'Токен не имеет прав записи' };
+  }
+
+  const entries = Object.entries(secrets);
+  try {
+    for (const [key, value] of entries) {
+      const enc = encryptSecret(value, secretAad(tok.projectId, key));
+      await db
+        .insert(secretsItem)
+        .values({
+          projectId: tok.projectId,
+          key,
+          ciphertext: enc.ciphertext,
+          iv: enc.iv,
+          authTag: enc.authTag,
+        })
+        .onConflictDoUpdate({
+          target: [secretsItem.projectId, secretsItem.key],
+          set: { ciphertext: enc.ciphertext, iv: enc.iv, authTag: enc.authTag, updatedAt: isoNow() },
+        });
+    }
+    await db.update(secretsToken).set({ lastUsedAt: isoNow() }).where(eq(secretsToken.id, tok.id));
+    await logAudit(tok.projectId, tok.id, 'push', `${entries.length} ключей`, ip);
+    return { ok: true, written: entries.length };
+  } catch {
+    await logAudit(tok.projectId, tok.id, 'push_error', 'ошибка шифрования/записи (мастер-ключ?)', ip);
     return { ok: false, status: 500, error: 'Сервис секретов недоступен' };
   }
 }

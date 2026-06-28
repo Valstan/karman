@@ -39,17 +39,17 @@ function CreateTokenDialog({ projectId }: { projectId: number }) {
     handleSubmit,
     reset,
     formState: { isSubmitting },
-  } = useForm<{ name: string }>({ defaultValues: { name: '' } });
+  } = useForm<{ name: string; canWrite: boolean }>({ defaultValues: { name: '', canWrite: false } });
 
   function close() {
     setOpen(false);
     setCreatedToken(null);
-    reset({ name: '' });
+    reset({ name: '', canWrite: false });
     router.refresh();
   }
 
-  async function onSubmit(values: { name: string }) {
-    const result = await createTokenAction({ projectId, name: values.name });
+  async function onSubmit(values: { name: string; canWrite: boolean }) {
+    const result = await createTokenAction({ projectId, name: values.name, canWrite: values.canWrite });
     if (!result.ok) {
       toast.error(result.error);
       return;
@@ -98,6 +98,10 @@ function CreateTokenDialog({ projectId }: { projectId: number }) {
               <Input id="token-name" required maxLength={200} placeholder="ci / prod-server" {...register('name')} />
               <p className="text-xs text-muted-foreground">Метка, чтобы отличать токены в списке.</p>
             </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" className="h-4 w-4" {...register('canWrite')} />
+              Разрешить запись (read-write) — проект сможет сохранять секреты, не только читать
+            </label>
             <DialogFooter>
               <Button type="submit" disabled={isSubmitting}>
                 {isSubmitting ? 'Создание…' : 'Создать'}
@@ -149,6 +153,7 @@ export function SecretTokensPanel({
             <TableRow>
               <TableHead>Название</TableHead>
               <TableHead>Префикс</TableHead>
+              <TableHead>Доступ</TableHead>
               <TableHead>Последнее использование</TableHead>
               <TableHead>Статус</TableHead>
               <TableHead className="text-right">Действия</TableHead>
@@ -157,7 +162,7 @@ export function SecretTokensPanel({
           <TableBody>
             {tokens.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5} className="h-20 text-center text-muted-foreground">
+                <TableCell colSpan={6} className="h-20 text-center text-muted-foreground">
                   Токенов пока нет.
                 </TableCell>
               </TableRow>
@@ -166,6 +171,11 @@ export function SecretTokensPanel({
               <TableRow key={t.id}>
                 <TableCell className="font-medium">{t.name}</TableCell>
                 <TableCell className="font-mono text-sm text-muted-foreground">{t.tokenPrefix}…</TableCell>
+                <TableCell>
+                  <Badge variant={t.canWrite ? 'default' : 'secondary'}>
+                    {t.canWrite ? 'read-write' : 'read-only'}
+                  </Badge>
+                </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
                   {t.lastUsedAt ? formatDate(t.lastUsedAt) : '—'}
                 </TableCell>

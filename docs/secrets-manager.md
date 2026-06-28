@@ -57,24 +57,35 @@ curl -H "Authorization: Bearer skm_…" https://<host>/api/secrets
 # Один ключ:
 curl -H "Authorization: Bearer skm_…" "https://<host>/api/secrets?key=DATABASE_URL"
 # → {"secrets":{"DATABASE_URL":"…"}}  (или 404, если ключа нет)
+
+# Запись (upsert) — нужен read-write токен (can_write):
+curl -X POST -H "Authorization: Bearer skm_…" -H "Content-Type: application/json" \
+  -d '{"secrets":{"DATABASE_URL":"postgres://…","API_KEY":"…"}}' \
+  https://<host>/api/secrets
+# → {"ok":true,"written":2}
 ```
 
-Коды: `401` — нет/недействителен/отозван токен; `404` — нет запрошенного ключа;
-`429` — rate-limit; `500` — мастер-ключ не настроен.
+Коды: `400` — некорректное тело; `401` — нет/недействителен/отозван токен; `403` — токен
+read-only (нет права записи); `404` — нет запрошенного ключа (GET); `429` — rate-limit;
+`500` — мастер-ключ не настроен.
 
 ## Токены
 
 - Создаются в UI проекта; показываются **один раз**. Метка (`name`) — чтобы отличать.
+- **Scope:** по умолчанию **read-only**; чекбокс «разрешить запись» даёт **read-write**
+  (`can_write`) — проект сможет сам сохранять секреты через `POST`. read-write выдавать только
+  тем, кому нужно писать.
 - Отзыв — `revoked_at`; отозванный токен сразу даёт 401.
-- Каждое обращение пишется в `secrets_audit` (выдача/отказ/промах), обновляется `last_used_at`.
+- Каждое обращение пишется в `secrets_audit` (`pull`/`push`/`*_denied`/`*_miss`/`*_error`),
+  обновляется `last_used_at`.
 
 ## Ограничения / на будущее
 
 - **Rate-limit** — in-memory fixed window (60/мин на токен+IP), per-instance. На Боксе 1
   один инстанс — ок; при масштабировании заменить на общий стор (Redis). См. `lib/secrets/rate-limit.ts`.
-- Доступ по токену — **read-only** (запись только через UI владельца).
-- Ротация мастер-ключа (re-encrypt всех значений), envelope-ключи на проект, scoped/TTL-токены,
-  экспорт/импорт `.env`, CLI-клиент — кандидаты следующих итераций.
+- Запись по токену — bulk upsert (`POST`), скоуп — проект токена; удаление секретов — только UI владельца.
+- Ротация мастер-ключа (re-encrypt всех значений), envelope-ключи на проект, scoped-по-ключам/
+  TTL-токены, экспорт/импорт `.env`, CLI-клиент — кандидаты следующих итераций.
 
 ## Слои
 
