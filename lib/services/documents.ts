@@ -4,7 +4,7 @@ import { db } from '@/lib/db/client';
 import { documentsDocument, documentsDocumentcategory } from '@/lib/db/schema';
 import { ownership, type SessionUser } from '@/lib/auth/rbac';
 import type { DocumentCreateInput, DocumentUpdateInput } from '@/lib/validation/document';
-import { SLOT_TO_COLUMN, type DocumentFileSlot } from '@/lib/storage/media-paths';
+import { SLOT_TO_COLUMN, isImagePath, type DocumentFileSlot } from '@/lib/storage/media-paths';
 import { deleteDocumentDir } from '@/lib/storage/media';
 
 /**
@@ -28,6 +28,10 @@ export type DocumentListItem = {
   hasFront: boolean;
   hasBack: boolean;
   hasAdditional: boolean;
+  // Картинка ли файл в слоте (для миниатюры). PDF → false, показываем иконку.
+  frontIsImage: boolean;
+  backIsImage: boolean;
+  additionalIsImage: boolean;
 };
 
 export type DocumentCategoryOption = {
@@ -74,6 +78,9 @@ export async function listDocuments(user: SessionUser): Promise<DocumentListItem
     hasFront: Boolean(frontImage),
     hasBack: Boolean(backImage),
     hasAdditional: Boolean(additionalFiles),
+    frontIsImage: frontImage ? isImagePath(frontImage) : false,
+    backIsImage: backImage ? isImagePath(backImage) : false,
+    additionalIsImage: additionalFiles ? isImagePath(additionalFiles) : false,
   }));
 }
 

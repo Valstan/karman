@@ -2,7 +2,7 @@
 
 import { Fragment, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Pencil, Trash2, Image as ImageIcon, Paperclip, Search } from 'lucide-react';
+import { Pencil, Trash2, Paperclip, Search, FileText, type LucideIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -32,6 +32,49 @@ import { HighlightedText } from './highlighted-text';
 import type { DocumentListItem, DocumentCategoryOption } from '@/lib/services/documents';
 
 type StatusFilter = 'all' | 'active' | 'inactive';
+
+/**
+ * Скан слота: миниатюра для растровых изображений, иконка-фоллбэк для PDF.
+ * Клик открывает полный файл в новой вкладке через авторизованный API-роут.
+ */
+function ScanThumb({
+  docId,
+  slot,
+  isImage,
+  title,
+  FallbackIcon,
+}: {
+  docId: number;
+  slot: 'front' | 'back' | 'additional';
+  isImage: boolean;
+  title: string;
+  FallbackIcon: LucideIcon;
+}) {
+  const href = `/api/documents/${docId}/file/${slot}`;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={title}
+      className="text-muted-foreground hover:text-foreground"
+    >
+      {isImage ? (
+        // Приватный файл за авторизованным API-роутом — оптимизатор next/image его
+        // не достанет (нет сессии), поэтому обычный <img>.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={href}
+          alt={title}
+          loading="lazy"
+          className="h-10 w-10 rounded border object-cover"
+        />
+      ) : (
+        <FallbackIcon className="h-4 w-4" />
+      )}
+    </a>
+  );
+}
 
 export function DocumentsTable({
   documents,
@@ -194,37 +237,31 @@ export function DocumentsTable({
                 <TableCell>
                   <div className="flex items-center gap-2">
                     {doc.hasFront && (
-                      <a
-                        href={`/api/documents/${doc.id}/file/front`}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <ScanThumb
+                        docId={doc.id}
+                        slot="front"
+                        isImage={doc.frontIsImage}
                         title="Лицевая сторона"
-                        className="text-muted-foreground hover:text-foreground"
-                      >
-                        <ImageIcon className="h-4 w-4" />
-                      </a>
+                        FallbackIcon={FileText}
+                      />
                     )}
                     {doc.hasBack && (
-                      <a
-                        href={`/api/documents/${doc.id}/file/back`}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <ScanThumb
+                        docId={doc.id}
+                        slot="back"
+                        isImage={doc.backIsImage}
                         title="Оборотная сторона"
-                        className="text-muted-foreground hover:text-foreground"
-                      >
-                        <ImageIcon className="h-4 w-4" />
-                      </a>
+                        FallbackIcon={FileText}
+                      />
                     )}
                     {doc.hasAdditional && (
-                      <a
-                        href={`/api/documents/${doc.id}/file/additional`}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <ScanThumb
+                        docId={doc.id}
+                        slot="additional"
+                        isImage={doc.additionalIsImage}
                         title="Доп. файл"
-                        className="text-muted-foreground hover:text-foreground"
-                      >
-                        <Paperclip className="h-4 w-4" />
-                      </a>
+                        FallbackIcon={Paperclip}
+                      />
                     )}
                     {!doc.hasFront && !doc.hasBack && !doc.hasAdditional && (
                       <span className="text-muted-foreground">—</span>

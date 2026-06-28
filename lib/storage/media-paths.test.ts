@@ -5,6 +5,7 @@ import {
   contentTypeForPath,
   extForMime,
   isDocumentFileSlot,
+  isImagePath,
   mediaRoot,
   SLOT_TO_COLUMN,
 } from './media-paths';
@@ -72,6 +73,22 @@ describe('absolutePathFor', () => {
 
   it('блокирует абсолютный путь', () => {
     expect(() => absolutePathFor('/etc/passwd')).toThrow();
+  });
+});
+
+describe('isImagePath', () => {
+  it('распознаёт растровые изображения', () => {
+    expect(isImagePath('documents/1/2/front-x.jpg')).toBe(true);
+    expect(isImagePath('documents/1/2/front-x.jpeg')).toBe(true);
+    expect(isImagePath('documents/1/2/front-x.png')).toBe(true);
+    expect(isImagePath('documents/1/2/front-x.webp')).toBe(true);
+    expect(isImagePath('FRONT-X.PNG')).toBe(true);
+  });
+
+  it('PDF и прочее — не изображение', () => {
+    expect(isImagePath('documents/1/2/additional-x.pdf')).toBe(false);
+    expect(isImagePath('documents/1/2/front-x.bin')).toBe(false);
+    expect(isImagePath('noext')).toBe(false);
   });
 });
 
