@@ -336,6 +336,9 @@ export const secretsToken = pgTable('secrets_token', {
   name: varchar('name', { length: 200 }).notNull(),
   tokenPrefix: varchar('token_prefix', { length: 20 }).notNull(),
   tokenHash: varchar('token_hash', { length: 64 }).notNull(),
+  // Разрешена ли запись секретов этим токеном (POST /api/secrets). По умолчанию
+  // read-only; read-write выдаётся явно (проект сам сохраняет свои ключи).
+  canWrite: boolean('can_write').notNull().default(false),
   lastUsedAt: tstz('last_used_at'),
   revokedAt: tstz('revoked_at'),
   createdAt: tstz('created_at').notNull().defaultNow(),
