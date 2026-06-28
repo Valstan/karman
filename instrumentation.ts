@@ -21,4 +21,11 @@ export async function register(): Promise<void> {
       '[reminders] REMINDERS_INTERNAL_SECRET не задан — Telegram-напоминания отключены (эндпоинты вернут 401).',
     );
   }
+  // Менеджер секретов опционален: без мастер-ключа страница /secrets и /api/secrets
+  // работают частично (создание проектов да, шифрование/выдача — нет). Мягкое предупреждение.
+  if (process.env.NODE_ENV === 'production' && !process.env.SECRETS_MASTER_KEY) {
+    console.warn(
+      '[secrets] SECRETS_MASTER_KEY не задан — менеджер секретов отключён (шифрование/выдача недоступны).',
+    );
+  }
 }

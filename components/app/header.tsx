@@ -14,6 +14,7 @@ const NAV = [
   { href: '/banks', label: 'Банки' },
   { href: '/documents', label: 'Документы' },
   { href: '/reminders', label: 'Напоминания' },
+  { href: '/secrets', label: 'Секреты' },
   { href: '/settings', label: 'Настройки' },
 ] as const;
 

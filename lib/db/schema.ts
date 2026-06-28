@@ -296,8 +296,72 @@ export const reminderAction = pgTable('reminder_action', {
   createdAt: tstz('created_at').notNull().defaultNow(),
 });
 
+// --- Менеджер секретов (зашифрованное хранилище ключей проектов) ------------
+// Новые таблицы (DB-дефолты now()). Значения секретов лежат ЗАШИФРОВАННЫМИ
+// (AES-256-GCM, мастер-ключ SECRETS_MASTER_KEY в env, не в БД). Токены доступа
+// проектов хранятся ТОЛЬКО хэшем. См. docs/secrets-manager.md, lib/secrets/.
+
+/** Проект — логическая группа секретов одного владельца. */
+export const secretsProject = pgTable('secrets_project', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => authUser.id),
+  name: varchar('name', { length: 200 }).notNull(),
+  slug: varchar('slug', { length: 100 }).notNull(),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+  updatedAt: tstz('updated_at').notNull().defaultNow().$onUpdate(isoNow),
+});
+
+/** Секрет: значение зашифровано AES-256-GCM (ciphertext/iv/auth_tag — base64). */
+export const secretsItem = pgTable('secrets_item', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  projectId: bigint('project_id', { mode: 'number' })
+    .notNull()
+    .references(() => secretsProject.id, { onDelete: 'cascade' }),
+  key: varchar('key', { length: 200 }).notNull(),
+  ciphertext: text('ciphertext').notNull(),
+  iv: varchar('iv', { length: 32 }).notNull(),
+  authTag: varchar('auth_tag', { length: 32 }).notNull(),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+  updatedAt: tstz('updated_at').notNull().defaultNow().$onUpdate(isoNow),
+});
+
+/** Токен доступа проекта (машинный). Хранится ТОЛЬКО SHA-256-хэш. */
+export const secretsToken = pgTable('secrets_token', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  projectId: bigint('project_id', { mode: 'number' })
+    .notNull()
+    .references(() => secretsProject.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 200 }).notNull(),
+  tokenPrefix: varchar('token_prefix', { length: 20 }).notNull(),
+  tokenHash: varchar('token_hash', { length: 64 }).notNull(),
+  lastUsedAt: tstz('last_used_at'),
+  revokedAt: tstz('revoked_at'),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+});
+
+/** Аудит обращений к секретам (pull по токену, выдача/отказ). */
+export const secretsAudit = pgTable('secrets_audit', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  projectId: bigint('project_id', { mode: 'number' }).references(() => secretsProject.id, {
+    onDelete: 'cascade',
+  }),
+  tokenId: bigint('token_id', { mode: 'number' }).references(() => secretsToken.id, {
+    onDelete: 'set null',
+  }),
+  action: varchar('action', { length: 40 }).notNull(),
+  detail: text('detail'),
+  ip: varchar('ip', { length: 64 }),
+  at: tstz('at').notNull().defaultNow(),
+});
+
 export type TelegramLinkRow = typeof telegramLink.$inferSelect;
 export type ReminderRow = typeof reminder.$inferSelect;
 export type ReminderScheduleRow = typeof reminderSchedule.$inferSelect;
 export type ReminderDeliveryRow = typeof reminderDelivery.$inferSelect;
 export type ReminderActionRow = typeof reminderAction.$inferSelect;
+export type SecretsProjectRow = typeof secretsProject.$inferSelect;
+export type SecretsItemRow = typeof secretsItem.$inferSelect;
+export type SecretsTokenRow = typeof secretsToken.$inferSelect;
+export type SecretsAuditRow = typeof secretsAudit.$inferSelect;
