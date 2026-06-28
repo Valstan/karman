@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeNextFire } from './schedule';
+import { computeNextFire, nextFires } from './schedule';
 import type { ScheduleSpec } from './types';
 
 // Все ожидаемые значения — UTC (московский wall-clock минус 3 часа).
@@ -213,5 +213,40 @@ describe('computeNextFire — dates', () => {
 
   it('берёт ближайший момент из набора дат×времён', () => {
     expect(computeNextFire(spec, '2026-06-25T10:00:00.000Z', 0)).toBe('2026-06-25T15:00:00.000Z');
+  });
+});
+
+describe('nextFires', () => {
+  const daily: ScheduleSpec = {
+    kind: 'recurring',
+    freq: 'daily',
+    interval: 1,
+    startDate: '2026-06-20',
+    time: '09:00',
+  };
+
+  it('возвращает N ближайших срабатываний по возрастанию', () => {
+    expect(nextFires(daily, '2026-06-19T23:00:00.000Z', 3)).toEqual([
+      '2026-06-20T06:00:00.000Z',
+      '2026-06-21T06:00:00.000Z',
+      '2026-06-22T06:00:00.000Z',
+    ]);
+  });
+
+  it('oneoff даёт ровно один момент', () => {
+    const spec: ScheduleSpec = { kind: 'oneoff', at: '2026-06-20T09:00' };
+    expect(nextFires(spec, '2026-06-01T00:00:00.000Z', 5)).toEqual(['2026-06-20T06:00:00.000Z']);
+  });
+
+  it('end.afterN ограничивает длину серии', () => {
+    const spec: ScheduleSpec = { ...daily, end: { type: 'afterN', n: 2 } };
+    expect(nextFires(spec, '2026-06-19T23:00:00.000Z', 5)).toEqual([
+      '2026-06-20T06:00:00.000Z',
+      '2026-06-21T06:00:00.000Z',
+    ]);
+  });
+
+  it('count=0 → пусто', () => {
+    expect(nextFires(daily, '2026-06-19T23:00:00.000Z', 0)).toEqual([]);
   });
 });
