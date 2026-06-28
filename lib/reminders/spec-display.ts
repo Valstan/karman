@@ -8,10 +8,12 @@ export type ReminderFormValues = {
   at: string; // 'YYYY-MM-DDTHH:MM' (МСК)
   priority: 'normal' | 'high';
   silent: boolean;
-  repeat: 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly';
+  repeat: 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly' | 'dates';
   interval: number;
   weekdays: number[]; // 0=Вс..6=Сб
   monthday: number | '';
+  dates: string[]; // repeat:'dates' — произвольные даты 'YYYY-MM-DD'
+  datesTime: string; // repeat:'dates' — единое время 'HH:MM' | ''
   endType: 'never' | 'afterN' | 'until';
   endN: number | '';
   endUntil: string; // 'YYYY-MM-DD' | ''
@@ -56,6 +58,16 @@ export function specToFormValues(spec: ScheduleSpec | null): Partial<ReminderFor
   if (spec.kind === 'oneoff') {
     return { at: spec.at, repeat: 'none', interval: 1, weekdays: [], ...endFields };
   }
+  if (spec.kind === 'dates') {
+    return {
+      repeat: 'dates',
+      interval: 1,
+      weekdays: [],
+      dates: spec.dates,
+      datesTime: spec.times[0] ?? '',
+      ...endFields,
+    };
+  }
   if (spec.kind === 'recurring') {
     return {
       at: `${spec.startDate}T${spec.time}`,
@@ -92,6 +104,14 @@ export function formValuesToSpec(v: ReminderFormValues): ScheduleSpec {
   if (v.repeat === 'none') {
     return { kind: 'oneoff', at: v.at, ...(end ? { end } : {}) };
   }
+  if (v.repeat === 'dates') {
+    return {
+      kind: 'dates',
+      dates: [...v.dates].sort(),
+      times: [v.datesTime || '09:00'],
+      ...(end ? { end } : {}),
+    };
+  }
   const quietHours =
     v.quietEnabled && v.quietFrom && v.quietTo && v.quietDefer
       ? { from: v.quietFrom, to: v.quietTo, deferTo: v.quietDefer }
@@ -120,7 +140,11 @@ export function formatMoscowInstant(utcIso: string): string {
 export function describeSpec(spec: ScheduleSpec | null): string {
   if (!spec) return '—';
   if (spec.kind === 'oneoff') return 'Разово';
-  if (spec.kind === 'dates') return 'По датам';
+  if (spec.kind === 'dates') {
+    const n = spec.dates.length;
+    const time = spec.times[0];
+    return `По датам: ${n} ${n === 1 ? 'дата' : 'дат'}${time ? ` в ${time}` : ''}`;
+  }
   if (spec.kind === 'relative') return 'Перед событием';
 
   const every = spec.interval > 1 ? `каждые ${spec.interval} ${INTERVAL_UNIT[spec.freq]}` : FREQ_LABEL[spec.freq];

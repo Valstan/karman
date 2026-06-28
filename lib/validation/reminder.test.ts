@@ -42,4 +42,33 @@ describe('reminderCreateSchema', () => {
     const r = reminderCreateSchema.safeParse({ title: 'Раз', at: '2026-07-01T09:00' });
     expect(r.success).toBe(true);
   });
+
+  it('repeat=dates: валидно без at, при наличии дат', () => {
+    const r = reminderCreateSchema.safeParse({
+      title: 'По датам',
+      repeat: 'dates',
+      dates: ['2026-07-01', '2026-08-15'],
+      datesTime: '12:00',
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.dates).toEqual(['2026-07-01', '2026-08-15']);
+      expect(r.data.datesTime).toBe('12:00');
+    }
+  });
+
+  it('repeat=dates без дат → ошибка (refine)', () => {
+    const r = reminderCreateSchema.safeParse({ title: 'Пусто', repeat: 'dates', dates: [] });
+    expect(r.success).toBe(false);
+  });
+
+  it('repeat=daily без at → ошибка (refine требует at вне режима dates)', () => {
+    const r = reminderCreateSchema.safeParse({ title: 'Без даты', repeat: 'daily' });
+    expect(r.success).toBe(false);
+  });
+
+  it('repeat=dates с битой датой → ошибка', () => {
+    const r = reminderCreateSchema.safeParse({ title: 'X', repeat: 'dates', dates: ['2026/07/01'] });
+    expect(r.success).toBe(false);
+  });
 });
