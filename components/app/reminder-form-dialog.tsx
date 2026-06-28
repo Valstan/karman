@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, type ReactNode } from 'react';
-import { useForm, Controller } from 'react-hook-form';
+import { useForm, useWatch, Controller } from 'react-hook-form';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import {
@@ -71,15 +71,15 @@ export function ReminderFormDialog({
     register,
     handleSubmit,
     control,
-    watch,
+    getValues,
     reset,
     setValue,
     formState: { isSubmitting },
   } = useForm<ReminderFormValues>({ defaultValues: defaults(reminder) });
 
-  const repeat = watch('repeat');
-  const endType = watch('endType');
-  const quietEnabled = watch('quietEnabled');
+  const repeat = useWatch({ control, name: 'repeat' });
+  const endType = useWatch({ control, name: 'endType' });
+  const quietEnabled = useWatch({ control, name: 'quietEnabled' });
 
   async function onSubmit(v: ReminderFormValues) {
     const recurring = v.repeat !== 'none';
@@ -294,9 +294,9 @@ export function ReminderFormDialog({
                   onChange={(e) => {
                     setValue('quietEnabled', e.target.checked);
                     if (e.target.checked) {
-                      if (!watch('quietFrom')) setValue('quietFrom', QUIET_HOURS_DEFAULT.from);
-                      if (!watch('quietTo')) setValue('quietTo', QUIET_HOURS_DEFAULT.to);
-                      if (!watch('quietDefer')) setValue('quietDefer', QUIET_HOURS_DEFAULT.deferTo);
+                      if (!getValues('quietFrom')) setValue('quietFrom', QUIET_HOURS_DEFAULT.from);
+                      if (!getValues('quietTo')) setValue('quietTo', QUIET_HOURS_DEFAULT.to);
+                      if (!getValues('quietDefer')) setValue('quietDefer', QUIET_HOURS_DEFAULT.deferTo);
                     }
                   }}
                 />
