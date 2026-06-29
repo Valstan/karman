@@ -78,10 +78,14 @@
 - **Менеджер секретов (#48) — В ПРОДЕ (2026-06-29).** MVP смержён; миграцию `0002` применил сам по
   SSH, деплой `workflow_dispatch`, мастер-ключ (brain выставил) подхватился; снаружи: health 200,
   `/api/secrets` 401. **Запись по токену (#54, 0003):** read-write токены + `POST /api/secrets` —
-  проекты сами сохраняют секреты. **Проект `trener` заведён + read-write токен** (round-trip
-  проверен). Дальнейшее (по запросу): ротация мастер-ключа, scoped-по-ключам/TTL-токены, экспорт/
-  импорт `.env`, CLI-клиент. Детали — `docs/secrets-manager.md`.
-  `added: 2026-06-28` `snoozed: 0` `last-touch: 2026-06-29` `decay: fresh`
+  проекты сами сохраняют секреты. **Комнаты заведены для всей экосистемы (#58, 2026-06-30):**
+  9 комнат + read-write токены (`matricarmz`,`gonba`,`setka`,`sabantuymalmyzh`,`vmalmyzhe`,
+  `dkmalmyzh`,`kalininocks`,`brain`,`karman`; trener был раньше). Токены выданы владельцу один раз.
+  **Хвост:** раздача токенов проектам (env `SECRETS_TOKEN`) + интеграция save/load на стороне
+  каждого проекта — owner/project-driven, как с trener. Дальнейшее (по запросу): ротация
+  мастер-ключа, scoped-по-ключам/TTL-токены, экспорт/импорт `.env`, CLI-клиент. Детали —
+  `docs/secrets-manager.md`, контракт — `docs/secrets-client-guide.md`.
+  `added: 2026-06-28` `snoozed: 0` `last-touch: 2026-06-30` `decay: fresh`
 - **Бэкап `media/` на проде** — сканы документов лежат на ФС вне БД; каталог требует бэкапа
   (упомянуто в handoff 2026-06-05, процедура не заведена).
   `added: 2026-06-05` `snoozed: 1` `last-touch: 2026-06-10` `decay: fresh`
