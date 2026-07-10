@@ -35,6 +35,33 @@ export const secretTokenCreateSchema = z.object({
   canWrite: z.coerce.boolean().optional().default(false),
 });
 
+// --- Карточки секретов (vault Ф1) -------------------------------------------
+
+// Значение поля карточки: без обрезания длинных ключей/JWT/сертификатов —
+// кап 256 КБ только как анти-abuse (требование ADR-0006 «не обрезать»).
+const cardFieldValue = z
+  .string()
+  .min(1, 'Пустое значение')
+  .max(262144, 'Слишком большое значение (макс 256 КБ)');
+
+export const secretCardCreateSchema = z.object({
+  projectId: z.coerce.number().int().positive(),
+  title: z.string().trim().min(1, 'Введите наименование').max(500),
+  // Программное обозначение (как в env прода); пусто — личная карточка без env-связки.
+  envKey: secretKeyName.optional().or(z.literal('').transform(() => undefined)),
+});
+
+export const secretCardUpdateSchema = secretCardCreateSchema
+  .omit({ projectId: true })
+  .extend({ id: z.coerce.number().int().positive() });
+
+export const secretCardFieldUpsertSchema = z.object({
+  cardId: z.coerce.number().int().positive(),
+  name: z.string().trim().min(1, 'Введите имя поля').max(200),
+  kind: z.enum(['text', 'secret', 'url']).default('text'),
+  value: cardFieldValue,
+});
+
 /** Тело POST /api/secrets — машинная запись секретов по токену (bulk upsert). */
 export const secretPushSchema = z.object({
   secrets: z
@@ -47,3 +74,6 @@ export type SecretProjectCreateInput = z.infer<typeof secretProjectCreateSchema>
 export type SecretProjectUpdateInput = z.infer<typeof secretProjectUpdateSchema>;
 export type SecretItemUpsertInput = z.infer<typeof secretItemUpsertSchema>;
 export type SecretTokenCreateInput = z.infer<typeof secretTokenCreateSchema>;
+export type SecretCardCreateInput = z.infer<typeof secretCardCreateSchema>;
+export type SecretCardUpdateInput = z.infer<typeof secretCardUpdateSchema>;
+export type SecretCardFieldUpsertInput = z.infer<typeof secretCardFieldUpsertSchema>;

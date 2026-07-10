@@ -2,7 +2,8 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { ArrowLeft } from 'lucide-react';
 import { requireUser } from '@/lib/auth/current-user';
-import { getProjectDetail } from '@/lib/services/secrets';
+import { getProjectDetail, listCards } from '@/lib/services/secrets';
+import { SecretCardsPanel } from '@/components/app/secret-cards-panel';
 import { SecretItemsPanel } from '@/components/app/secret-items-panel';
 import { SecretTokensPanel } from '@/components/app/secret-tokens-panel';
 import {
@@ -27,6 +28,7 @@ export default async function SecretProjectPage({
 
   const detail = await getProjectDetail(user, projectId);
   if (!detail) notFound();
+  const cards = (await listCards(user, projectId)) ?? [];
 
   return (
     <div className="flex flex-col gap-6">
@@ -41,6 +43,7 @@ export default async function SecretProjectPage({
         <p className="font-mono text-sm text-muted-foreground">{detail.project.slug}</p>
       </div>
 
+      <SecretCardsPanel projectId={detail.project.id} cards={cards} items={detail.items} />
       <SecretItemsPanel projectId={detail.project.id} items={detail.items} />
       <SecretTokensPanel projectId={detail.project.id} tokens={detail.tokens} />
 

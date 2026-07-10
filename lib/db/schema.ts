@@ -344,6 +344,43 @@ export const secretsToken = pgTable('secrets_token', {
   createdAt: tstz('created_at').notNull().defaultNow(),
 });
 
+/**
+ * Карточка секрета (vault Ф1) — человекочитаемый слой поверх env-пар: наименование
+ * (зашифровано, AAD привязан к id карточки), программное обозначение env_key
+ * (plaintext — связка с secrets_item и уникальность в комнате; NULL у личных карточек).
+ */
+export const secretsCard = pgTable('secrets_card', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  projectId: bigint('project_id', { mode: 'number' })
+    .notNull()
+    .references(() => secretsProject.id, { onDelete: 'cascade' }),
+  envKey: varchar('env_key', { length: 200 }),
+  titleCt: text('title_ct').notNull(),
+  titleIv: varchar('title_iv', { length: 32 }).notNull(),
+  titleTag: varchar('title_tag', { length: 32 }).notNull(),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+  updatedAt: tstz('updated_at').notNull().defaultNow().$onUpdate(isoNow),
+});
+
+/**
+ * Произвольное поле карточки. Значения ВСЕХ kind (text/secret/url — подсказка
+ * отображения) шифруются AES-256-GCM; text-колонка — длинные значения целиком.
+ */
+export const secretsCardField = pgTable('secrets_card_field', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  cardId: bigint('card_id', { mode: 'number' })
+    .notNull()
+    .references(() => secretsCard.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 200 }).notNull(),
+  kind: varchar('kind', { length: 10 }).notNull().default('text'),
+  ciphertext: text('ciphertext').notNull(),
+  iv: varchar('iv', { length: 32 }).notNull(),
+  authTag: varchar('auth_tag', { length: 32 }).notNull(),
+  position: integer('position').notNull().default(0),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+  updatedAt: tstz('updated_at').notNull().defaultNow().$onUpdate(isoNow),
+});
+
 /** Аудит обращений к секретам (pull по токену, выдача/отказ). */
 export const secretsAudit = pgTable('secrets_audit', {
   id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),

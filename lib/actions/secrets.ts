@@ -5,6 +5,9 @@ import {
   secretProjectUpdateSchema,
   secretItemUpsertSchema,
   secretTokenCreateSchema,
+  secretCardCreateSchema,
+  secretCardUpdateSchema,
+  secretCardFieldUpsertSchema,
 } from '@/lib/validation/secret';
 import {
   createProject,
@@ -15,6 +18,12 @@ import {
   revealItem,
   createToken,
   revokeToken,
+  createCard,
+  updateCard,
+  deleteCard,
+  upsertCardField,
+  deleteCardField,
+  revealCardField,
 } from '@/lib/services/secrets';
 import { currentUserOrNull, revalidateAll, type ActionResult } from './_internal';
 
@@ -90,6 +99,82 @@ export async function revealItemAction(id: number): Promise<ActionResult<{ value
   try {
     const value = await revealItem(user, id);
     if (value === null) return { ok: false, error: 'Секрет не найден' };
+    return { ok: true, data: { value } };
+  } catch {
+    return { ok: false, error: 'Сервис секретов недоступен (мастер-ключ?)' };
+  }
+}
+
+// --- Карточки секретов (vault Ф1) --------------------------------------------
+
+export async function createCardAction(values: unknown): Promise<ActionResult<{ id: number }>> {
+  const user = await currentUserOrNull();
+  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  const parsed = secretCardCreateSchema.safeParse(values);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? 'Некорректные данные' };
+  try {
+    const id = await createCard(user, parsed.data);
+    if (id === null) return { ok: false, error: 'Проект не найден' };
+    revalidateAll();
+    return { ok: true, data: { id } };
+  } catch (e) {
+    if (isUniqueViolation(e)) return { ok: false, error: 'Карточка с таким программным обозначением уже есть' };
+    throw e;
+  }
+}
+
+export async function updateCardAction(values: unknown): Promise<ActionResult> {
+  const user = await currentUserOrNull();
+  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  const parsed = secretCardUpdateSchema.safeParse(values);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? 'Некорректные данные' };
+  try {
+    const ok = await updateCard(user, parsed.data);
+    if (!ok) return { ok: false, error: 'Карточка не найдена' };
+    revalidateAll();
+    return { ok: true };
+  } catch (e) {
+    if (isUniqueViolation(e)) return { ok: false, error: 'Карточка с таким программным обозначением уже есть' };
+    throw e;
+  }
+}
+
+export async function deleteCardAction(id: number): Promise<ActionResult> {
+  const user = await currentUserOrNull();
+  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  const ok = await deleteCard(user, id);
+  if (!ok) return { ok: false, error: 'Карточка не найдена' };
+  revalidateAll();
+  return { ok: true };
+}
+
+export async function upsertCardFieldAction(values: unknown): Promise<ActionResult> {
+  const user = await currentUserOrNull();
+  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  const parsed = secretCardFieldUpsertSchema.safeParse(values);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? 'Некорректные данные' };
+  const ok = await upsertCardField(user, parsed.data);
+  if (!ok) return { ok: false, error: 'Карточка не найдена' };
+  revalidateAll();
+  return { ok: true };
+}
+
+export async function deleteCardFieldAction(id: number): Promise<ActionResult> {
+  const user = await currentUserOrNull();
+  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  const ok = await deleteCardField(user, id);
+  if (!ok) return { ok: false, error: 'Поле не найдено' };
+  revalidateAll();
+  return { ok: true };
+}
+
+/** Расшифровывает значение поля карточки для показа владельцу. */
+export async function revealCardFieldAction(id: number): Promise<ActionResult<{ value: string }>> {
+  const user = await currentUserOrNull();
+  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  try {
+    const value = await revealCardField(user, id);
+    if (value === null) return { ok: false, error: 'Поле не найдено' };
     return { ok: true, data: { value } };
   } catch {
     return { ok: false, error: 'Сервис секретов недоступен (мастер-ключ?)' };
