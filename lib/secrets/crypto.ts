@@ -46,6 +46,16 @@ export function secretAad(projectId: number, key: string): string {
   return `secrets:${projectId}:${key}`;
 }
 
+/** AAD наименования карточки — привязка к id (шифруется после insert, в транзакции). */
+export function cardTitleAad(cardId: number): string {
+  return `secrets:card:${cardId}:title`;
+}
+
+/** AAD значения поля карточки — привязка к (карточка, имя поля). */
+export function cardFieldAad(cardId: number, name: string): string {
+  return `secrets:card-field:${cardId}:${name}`;
+}
+
 /** Шифрует plaintext; aad — `secretAad(projectId, key)`. Всё base64. */
 export function encryptSecret(plaintext: string, aad: string): EncryptedValue {
   const iv = randomBytes(IV_BYTES);

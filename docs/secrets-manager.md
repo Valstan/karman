@@ -88,6 +88,17 @@ Slug'и: `trener`, `matricarmz`, `gonba`, `setka` (SARAFAN), `sabantuymalmyzh`, 
 `docs/secrets-client-guide.md`. Заводятся в UI; bulk-bootstrap — прямой аддитивный `INSERT`
 (`secrets_project` + `secrets_token` с `token_hash`=SHA-256, `token_prefix`) по SSH.
 
+## Карточки секретов (vault Ф1)
+
+Человекочитаемый слой поверх env-пар (план — `docs/secrets-vault-plan.md`, миграция `0004`):
+карточка = наименование (зашифровано, AAD от id) + программное обозначение `env_key`
+(plaintext, опционально — у личных паролей его нет) + произвольные поля
+(`secrets_card_field`: имя plaintext, значение всегда AES-256-GCM, kind `text`/`secret`/`url` —
+подсказка отображения). Значения без обрезания (`text`, кап 256 КБ в валидации — анти-abuse).
+Env-значение карточки живёт в `secrets_item` (одно место истины — то же значение видит
+машинный API); карточка без `env_key` — личная, целиком в своих полях. Удаление карточки
+env-значение не трогает. Машинный API карточки не отдаёт — только GUI владельца.
+
 ## Ограничения / на будущее
 
 - **Rate-limit** — in-memory fixed window (60/мин на токен+IP), per-instance. На Боксе 1
