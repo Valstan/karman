@@ -47,4 +47,3 @@ export type SecretProjectCreateInput = z.infer<typeof secretProjectCreateSchema>
 export type SecretProjectUpdateInput = z.infer<typeof secretProjectUpdateSchema>;
 export type SecretItemUpsertInput = z.infer<typeof secretItemUpsertSchema>;
 export type SecretTokenCreateInput = z.infer<typeof secretTokenCreateSchema>;
-export type SecretPushInput = z.infer<typeof secretPushSchema>;

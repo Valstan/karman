@@ -21,5 +21,9 @@
   // components/ui/** — вендоренная библиотека shadcn/ui (копии компонентов под
   // `npx shadcn add`), не наш рукописный код: неиспользуемое там — библиотечная
   // поверхность, не цель гигиены. Наши компоненты живут в components/app/**.
-  "ignore": ["components/ui/**"]
+  "ignore": ["components/ui/**"],
+
+  // Прод-воркер напоминаний: запускается systemd (`karman-reminders`), а не из
+  // package.json — knip сам этот вход не видит.
+  "entry": ["scripts/reminders-worker.mjs"]
 }
