@@ -1,5 +1,5 @@
 import { Plus } from 'lucide-react';
-import { requireUser } from '@/lib/auth/current-user';
+import { requireSecretsUser } from '@/lib/auth/current-user';
 import { listProjects } from '@/lib/services/secrets';
 import { secretsConfigured } from '@/lib/secrets/crypto';
 import { Button } from '@/components/ui/button';
@@ -7,7 +7,7 @@ import { SecretProjectDialog } from '@/components/app/secret-project-dialog';
 import { SecretProjectsList } from '@/components/app/secret-projects-list';
 
 export default async function SecretsPage() {
-  const user = await requireUser();
+  const user = await requireSecretsUser();
   const projects = await listProjects(user);
   const configured = secretsConfigured();
 

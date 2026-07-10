@@ -296,6 +296,43 @@ export const reminderAction = pgTable('reminder_action', {
   createdAt: tstz('created_at').notNull().defaultNow(),
 });
 
+// --- Второй фактор входа (TOTP, vault Ф2) ------------------------------------
+// Секрет TOTP зашифрован мастер-ключом менеджера секретов (AAD от user_id),
+// recovery-коды — только SHA-256-хэши. См. docs/secrets-vault-plan.md.
+
+/** TOTP пользователя. enabled_at NULL — enrollment не подтверждён кодом. */
+export const authTotp = pgTable('auth_totp', {
+  userId: integer('user_id')
+    .primaryKey()
+    .references(() => authUser.id, { onDelete: 'cascade' }),
+  secretCt: text('secret_ct').notNull(),
+  secretIv: varchar('secret_iv', { length: 32 }).notNull(),
+  secretTag: varchar('secret_tag', { length: 32 }).notNull(),
+  enabledAt: tstz('enabled_at'),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+});
+
+/** Одноразовый recovery-код (в БД только хэш; plaintext показан один раз). */
+export const authRecoveryCode = pgTable('auth_recovery_code', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => authUser.id, { onDelete: 'cascade' }),
+  codeHash: varchar('code_hash', { length: 64 }).notNull(),
+  usedAt: tstz('used_at'),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+});
+
+/** Аудит входов (успех/провал/lockout/2FA); username — и для несуществующих логинов. */
+export const authAudit = pgTable('auth_audit', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  userId: integer('user_id').references(() => authUser.id, { onDelete: 'set null' }),
+  username: varchar('username', { length: 150 }),
+  action: varchar('action', { length: 40 }).notNull(),
+  ip: varchar('ip', { length: 64 }),
+  at: tstz('at').notNull().defaultNow(),
+});
+
 // --- Менеджер секретов (зашифрованное хранилище ключей проектов) ------------
 // Новые таблицы (DB-дефолты now()). Значения секретов лежат ЗАШИФРОВАННЫМИ
 // (AES-256-GCM, мастер-ключ SECRETS_MASTER_KEY в env, не в БД). Токены доступа
