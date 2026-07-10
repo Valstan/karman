@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { ArrowLeft } from 'lucide-react';
-import { requireUser } from '@/lib/auth/current-user';
+import { requireSecretsUser } from '@/lib/auth/current-user';
 import { getProjectDetail, listCards } from '@/lib/services/secrets';
 import { SecretCardsPanel } from '@/components/app/secret-cards-panel';
 import { SecretItemsPanel } from '@/components/app/secret-items-panel';
@@ -21,7 +21,7 @@ export default async function SecretProjectPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requireSecretsUser();
   const { id } = await params;
   const projectId = Number(id);
   if (!Number.isInteger(projectId) || projectId <= 0) notFound();

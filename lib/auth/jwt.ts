@@ -33,21 +33,56 @@ function getSecretKey(): Uint8Array {
   return cachedKey;
 }
 
-export async function signSession(uid: number): Promise<string> {
-  return new SignJWT({ uid })
+/** mfa — сессия прошла второй фактор (TOTP/recovery); гейт раздела /secrets. */
+export async function signSession(uid: number, mfa = false): Promise<string> {
+  return new SignJWT({ uid, mfa })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setExpirationTime(`${SESSION_TTL_SECONDS}s`)
     .sign(getSecretKey());
 }
 
-export async function verifySession(token: string | undefined | null): Promise<number | null> {
+export type SessionPayload = { uid: number; mfa: boolean };
+
+export async function verifySessionPayload(
+  token: string | undefined | null,
+): Promise<SessionPayload | null> {
   if (!token) {
     return null;
   }
   try {
     const { payload } = await jwtVerify(token, getSecretKey());
-    return typeof payload.uid === 'number' ? payload.uid : null;
+    if (typeof payload.uid !== 'number') return null;
+    return { uid: payload.uid, mfa: payload.mfa === true };
+  } catch {
+    return null;
+  }
+}
+
+export async function verifySession(token: string | undefined | null): Promise<number | null> {
+  return (await verifySessionPayload(token))?.uid ?? null;
+}
+
+// --- Промежуточный токен второго шага входа (пароль принят, ждём TOTP-код) ---
+
+export const TOTP_PENDING_COOKIE = 'karman_totp_pending';
+export const TOTP_PENDING_TTL_SECONDS = 5 * 60;
+
+export async function signTotpPending(uid: number): Promise<string> {
+  return new SignJWT({ uid, stage: 'totp' })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime(`${TOTP_PENDING_TTL_SECONDS}s`)
+    .sign(getSecretKey());
+}
+
+export async function verifyTotpPending(token: string | undefined | null): Promise<number | null> {
+  if (!token) {
+    return null;
+  }
+  try {
+    const { payload } = await jwtVerify(token, getSecretKey());
+    return payload.stage === 'totp' && typeof payload.uid === 'number' ? payload.uid : null;
   } catch {
     return null;
   }

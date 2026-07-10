@@ -25,7 +25,7 @@ import {
   deleteCardField,
   revealCardField,
 } from '@/lib/services/secrets';
-import { currentUserOrNull, revalidateAll, type ActionResult } from './_internal';
+import { requireSecretsAccess, revalidateAll, type ActionResult } from './_internal';
 
 /** Уникальное нарушение Postgres (слаг занят). */
 function isUniqueViolation(e: unknown): boolean {
@@ -33,8 +33,9 @@ function isUniqueViolation(e: unknown): boolean {
 }
 
 export async function createProjectAction(values: unknown): Promise<ActionResult<{ id: number }>> {
-  const user = await currentUserOrNull();
-  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const user = guard.user;
   const parsed = secretProjectCreateSchema.safeParse(values);
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? 'Некорректные данные' };
   try {
@@ -48,8 +49,9 @@ export async function createProjectAction(values: unknown): Promise<ActionResult
 }
 
 export async function updateProjectAction(values: unknown): Promise<ActionResult> {
-  const user = await currentUserOrNull();
-  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const user = guard.user;
   const parsed = secretProjectUpdateSchema.safeParse(values);
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? 'Некорректные данные' };
   try {
@@ -64,8 +66,9 @@ export async function updateProjectAction(values: unknown): Promise<ActionResult
 }
 
 export async function deleteProjectAction(id: number): Promise<ActionResult> {
-  const user = await currentUserOrNull();
-  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const user = guard.user;
   const ok = await deleteProject(user, id);
   if (!ok) return { ok: false, error: 'Проект не найден' };
   revalidateAll();
@@ -73,8 +76,9 @@ export async function deleteProjectAction(id: number): Promise<ActionResult> {
 }
 
 export async function upsertItemAction(values: unknown): Promise<ActionResult> {
-  const user = await currentUserOrNull();
-  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const user = guard.user;
   const parsed = secretItemUpsertSchema.safeParse(values);
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? 'Некорректные данные' };
   const ok = await upsertItem(user, parsed.data);
@@ -84,8 +88,9 @@ export async function upsertItemAction(values: unknown): Promise<ActionResult> {
 }
 
 export async function deleteItemAction(id: number): Promise<ActionResult> {
-  const user = await currentUserOrNull();
-  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const user = guard.user;
   const ok = await deleteItem(user, id);
   if (!ok) return { ok: false, error: 'Секрет не найден' };
   revalidateAll();
@@ -94,8 +99,9 @@ export async function deleteItemAction(id: number): Promise<ActionResult> {
 
 /** Расшифровывает одно значение для показа владельцу. */
 export async function revealItemAction(id: number): Promise<ActionResult<{ value: string }>> {
-  const user = await currentUserOrNull();
-  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const user = guard.user;
   try {
     const value = await revealItem(user, id);
     if (value === null) return { ok: false, error: 'Секрет не найден' };
@@ -108,8 +114,9 @@ export async function revealItemAction(id: number): Promise<ActionResult<{ value
 // --- Карточки секретов (vault Ф1) --------------------------------------------
 
 export async function createCardAction(values: unknown): Promise<ActionResult<{ id: number }>> {
-  const user = await currentUserOrNull();
-  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const user = guard.user;
   const parsed = secretCardCreateSchema.safeParse(values);
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? 'Некорректные данные' };
   try {
@@ -124,8 +131,9 @@ export async function createCardAction(values: unknown): Promise<ActionResult<{ 
 }
 
 export async function updateCardAction(values: unknown): Promise<ActionResult> {
-  const user = await currentUserOrNull();
-  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const user = guard.user;
   const parsed = secretCardUpdateSchema.safeParse(values);
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? 'Некорректные данные' };
   try {
@@ -140,8 +148,9 @@ export async function updateCardAction(values: unknown): Promise<ActionResult> {
 }
 
 export async function deleteCardAction(id: number): Promise<ActionResult> {
-  const user = await currentUserOrNull();
-  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const user = guard.user;
   const ok = await deleteCard(user, id);
   if (!ok) return { ok: false, error: 'Карточка не найдена' };
   revalidateAll();
@@ -149,8 +158,9 @@ export async function deleteCardAction(id: number): Promise<ActionResult> {
 }
 
 export async function upsertCardFieldAction(values: unknown): Promise<ActionResult> {
-  const user = await currentUserOrNull();
-  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const user = guard.user;
   const parsed = secretCardFieldUpsertSchema.safeParse(values);
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? 'Некорректные данные' };
   const ok = await upsertCardField(user, parsed.data);
@@ -160,8 +170,9 @@ export async function upsertCardFieldAction(values: unknown): Promise<ActionResu
 }
 
 export async function deleteCardFieldAction(id: number): Promise<ActionResult> {
-  const user = await currentUserOrNull();
-  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const user = guard.user;
   const ok = await deleteCardField(user, id);
   if (!ok) return { ok: false, error: 'Поле не найдено' };
   revalidateAll();
@@ -170,8 +181,9 @@ export async function deleteCardFieldAction(id: number): Promise<ActionResult> {
 
 /** Расшифровывает значение поля карточки для показа владельцу. */
 export async function revealCardFieldAction(id: number): Promise<ActionResult<{ value: string }>> {
-  const user = await currentUserOrNull();
-  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const user = guard.user;
   try {
     const value = await revealCardField(user, id);
     if (value === null) return { ok: false, error: 'Поле не найдено' };
@@ -183,8 +195,9 @@ export async function revealCardFieldAction(id: number): Promise<ActionResult<{ 
 
 /** Создаёт токен; возвращает сам токен ОДИН раз (потом — только хэш в БД). */
 export async function createTokenAction(values: unknown): Promise<ActionResult<{ token: string }>> {
-  const user = await currentUserOrNull();
-  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const user = guard.user;
   const parsed = secretTokenCreateSchema.safeParse(values);
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? 'Некорректные данные' };
   const token = await createToken(user, parsed.data);
@@ -194,8 +207,9 @@ export async function createTokenAction(values: unknown): Promise<ActionResult<{
 }
 
 export async function revokeTokenAction(id: number): Promise<ActionResult> {
-  const user = await currentUserOrNull();
-  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const user = guard.user;
   const ok = await revokeToken(user, id);
   if (!ok) return { ok: false, error: 'Токен не найден' };
   revalidateAll();

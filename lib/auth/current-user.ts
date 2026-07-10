@@ -4,7 +4,8 @@ import { redirect } from 'next/navigation';
 import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { authUser } from '@/lib/db/schema';
-import { readSessionUid } from './session';
+import { readSessionUid, readSessionPayload } from './session';
+import { totpEnabled } from '@/lib/services/twofactor';
 import type { SessionUser } from './rbac';
 
 /**
@@ -51,6 +52,20 @@ export async function requireUser(): Promise<SessionUser> {
   const user = await getCurrentUser();
   if (!user) {
     redirect('/login');
+  }
+  return user;
+}
+
+/**
+ * Гейт раздела /secrets (vault Ф2): если у пользователя включён 2FA, сессия
+ * обязана пройти второй фактор (claim mfa в JWT). Старые сессии, выданные до
+ * включения 2FA, отправляются на повторный вход.
+ */
+export async function requireSecretsUser(): Promise<SessionUser> {
+  const user = await requireUser();
+  if (await totpEnabled(user.id)) {
+    const payload = await readSessionPayload();
+    if (!payload?.mfa) redirect('/login');
   }
   return user;
 }
