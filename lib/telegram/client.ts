@@ -80,23 +80,6 @@ export function sendMessage(params: SendMessageParams): Promise<TgResult<SentMes
   });
 }
 
-export function sendPhoto(args: {
-  chatId: number;
-  photoUrl: string;
-  caption?: string;
-  replyMarkup?: TgInlineKeyboard;
-  disableNotification?: boolean;
-}): Promise<TgResult<SentMessage>> {
-  return callMethod<SentMessage>('sendPhoto', {
-    chat_id: args.chatId,
-    photo: args.photoUrl,
-    caption: args.caption,
-    parse_mode: 'HTML',
-    reply_markup: args.replyMarkup,
-    disable_notification: args.disableNotification ?? false,
-  });
-}
-
 export function answerCallbackQuery(args: {
   callbackQueryId: string;
   text?: string;
@@ -118,20 +101,5 @@ export function editMessageReplyMarkup(args: {
     chat_id: args.chatId,
     message_id: args.messageId,
     reply_markup: args.replyMarkup ?? { inline_keyboard: [] },
-  });
-}
-
-export function editMessageText(args: {
-  chatId: number;
-  messageId: number;
-  text: string;
-  replyMarkup?: TgInlineKeyboard;
-}): Promise<TgResult<unknown>> {
-  return callMethod('editMessageText', {
-    chat_id: args.chatId,
-    message_id: args.messageId,
-    text: args.text,
-    parse_mode: 'HTML',
-    reply_markup: args.replyMarkup,
   });
 }
