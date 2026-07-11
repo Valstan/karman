@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, count, desc, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   secretsProject,
@@ -85,18 +85,41 @@ async function logAudit(
 // --- Проекты (UI владельца) -------------------------------------------------
 
 export async function listProjects(user: SessionUser): Promise<SecretProjectListItem[]> {
-  return db
+  // Счётчики — grouped-подзапросами через LEFT JOIN, НЕ коррелированными
+  // подзапросами: drizzle рендерит `${secretsProject.id}` внутри raw-`sql` в
+  // select-проекции как безымянный `"id"`, который в подзапросе резолвится в
+  // столбец дочерней таблицы (`where project_id = id`) и даёт неверный счёт.
+  // Разные алиасы (`item_n`/`token_n`) — чтобы неквалифицированные имена в
+  // проекции не конфликтовали (drizzle их тоже не квалифицирует).
+  const itemCounts = db
+    .select({ projectId: secretsItem.projectId, itemN: count().as('item_n') })
+    .from(secretsItem)
+    .groupBy(secretsItem.projectId)
+    .as('item_counts');
+  const tokenCounts = db
+    .select({ projectId: secretsToken.projectId, tokenN: count().as('token_n') })
+    .from(secretsToken)
+    .where(isNull(secretsToken.revokedAt))
+    .groupBy(secretsToken.projectId)
+    .as('token_counts');
+
+  const rows = await db
     .select({
       id: secretsProject.id,
       name: secretsProject.name,
       slug: secretsProject.slug,
       createdAt: secretsProject.createdAt,
-      itemCount: sql<number>`(select count(*)::int from secrets_item where project_id = ${secretsProject.id})`,
-      tokenCount: sql<number>`(select count(*)::int from secrets_token where project_id = ${secretsProject.id} and revoked_at is null)`,
+      itemCount: itemCounts.itemN,
+      tokenCount: tokenCounts.tokenN,
     })
     .from(secretsProject)
+    .leftJoin(itemCounts, eq(itemCounts.projectId, secretsProject.id))
+    .leftJoin(tokenCounts, eq(tokenCounts.projectId, secretsProject.id))
     .where(ownership(user, secretsProject.userId))
     .orderBy(desc(secretsProject.id));
+
+  // LEFT JOIN → комнаты без секретов/токенов дают NULL; наружу — 0.
+  return rows.map((r) => ({ ...r, itemCount: r.itemCount ?? 0, tokenCount: r.tokenCount ?? 0 }));
 }
 
 export async function createProject(user: SessionUser, input: SecretProjectCreateInput): Promise<number> {
