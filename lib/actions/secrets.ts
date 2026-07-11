@@ -8,6 +8,7 @@ import {
   secretCardCreateSchema,
   secretCardUpdateSchema,
   secretCardFieldUpsertSchema,
+  secretCardImportSchema,
 } from '@/lib/validation/secret';
 import {
   createProject,
@@ -24,6 +25,7 @@ import {
   upsertCardField,
   deleteCardField,
   revealCardField,
+  importCards,
 } from '@/lib/services/secrets';
 import { requireSecretsAccess, revalidateAll, type ActionResult } from './_internal';
 
@@ -177,6 +179,25 @@ export async function deleteCardFieldAction(id: number): Promise<ActionResult> {
   if (!ok) return { ok: false, error: 'Поле не найдено' };
   revalidateAll();
   return { ok: true };
+}
+
+/** Импорт карточек из CSV (браузерный экспорт паролей и т.п.). */
+export async function importCardsAction(
+  values: unknown,
+): Promise<ActionResult<{ imported: number; skipped: number }>> {
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const parsed = secretCardImportSchema.safeParse(values);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? 'Некорректные данные' };
+  try {
+    const result = await importCards(guard.user, parsed.data.projectId, parsed.data.csv);
+    if (result === null) return { ok: false, error: 'Проект не найден' };
+    if (result.imported === 0) return { ok: false, error: 'В файле не найдено карточек для импорта' };
+    revalidateAll();
+    return { ok: true, data: result };
+  } catch {
+    return { ok: false, error: 'Сервис секретов недоступен (мастер-ключ?)' };
+  }
 }
 
 /** Расшифровывает значение поля карточки для показа владельцу. */
