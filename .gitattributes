@@ -1,0 +1,4 @@
+# Shell-скрипты всегда с LF: они исполняются на Linux-боксе (bash спотыкается на
+# CR — `$'\r': command not found`). Windows-рабочая копия иначе делает CRLF и при
+# переносе на бокс (scp) скрипт ломается. См. docs/secrets-vault-backup.md.
+*.sh text eol=lf
