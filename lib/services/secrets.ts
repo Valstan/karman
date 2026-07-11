@@ -18,6 +18,8 @@ import {
   cardFieldAad,
 } from '@/lib/secrets/crypto';
 import { generateToken, hashToken, looksLikeToken } from '@/lib/secrets/token';
+import { parseCsv } from '@/lib/csv-parse';
+import { mapCsvToCards } from '@/lib/secrets/csv-import';
 import type {
   SecretProjectCreateInput,
   SecretProjectUpdateInput,
@@ -398,6 +400,54 @@ export async function revealCardField(user: SessionUser, fieldId: number): Promi
     .limit(1);
   if (!field || (await ownedCardId(user, field.cardId)) === null) return null;
   return decryptSecret(field, cardFieldAad(field.cardId, field.name));
+}
+
+/**
+ * Импорт карточек из CSV (vault Ф3). Парсит, мапит колонки (браузерные
+ * экспорты), создаёт карточки + поля с шифрованием. Каждая карточка — своя
+ * транзакция (одна битая строка не откатывает весь импорт). null — нет доступа.
+ */
+export async function importCards(
+  user: SessionUser,
+  projectId: number,
+  csvText: string,
+): Promise<{ imported: number; skipped: number } | null> {
+  if ((await ownedProjectId(user, projectId)) === null) return null;
+  const { cards, skipped } = mapCsvToCards(parseCsv(csvText));
+
+  let imported = 0;
+  for (const card of cards) {
+    await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(secretsCard)
+        .values({ projectId, envKey: null, titleCt: '', titleIv: '', titleTag: '' })
+        .returning({ id: secretsCard.id });
+      const id = created!.id;
+      const t = encryptSecret(card.title, cardTitleAad(id));
+      await tx
+        .update(secretsCard)
+        .set({ titleCt: t.ciphertext, titleIv: t.iv, titleTag: t.authTag })
+        .where(eq(secretsCard.id, id));
+      if (card.fields.length > 0) {
+        await tx.insert(secretsCardField).values(
+          card.fields.map((f, idx) => {
+            const enc = encryptSecret(f.value, cardFieldAad(id, f.name));
+            return {
+              cardId: id,
+              name: f.name,
+              kind: f.kind,
+              ciphertext: enc.ciphertext,
+              iv: enc.iv,
+              authTag: enc.authTag,
+              position: idx + 1,
+            };
+          }),
+        );
+      }
+    });
+    imported += 1;
+  }
+  return { imported, skipped };
 }
 
 // --- Токены доступа ---------------------------------------------------------

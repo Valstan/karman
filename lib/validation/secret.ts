@@ -62,6 +62,12 @@ export const secretCardFieldUpsertSchema = z.object({
   value: cardFieldValue,
 });
 
+/** Импорт карточек из CSV (vault Ф3). Кап 8 МБ на файл (анти-abuse). */
+export const secretCardImportSchema = z.object({
+  projectId: z.coerce.number().int().positive(),
+  csv: z.string().min(1, 'Пустой файл').max(8 * 1024 * 1024, 'Файл слишком большой (макс 8 МБ)'),
+});
+
 /** Тело POST /api/secrets — машинная запись секретов по токену (bulk upsert). */
 export const secretPushSchema = z.object({
   secrets: z
@@ -77,3 +83,4 @@ export type SecretTokenCreateInput = z.infer<typeof secretTokenCreateSchema>;
 export type SecretCardCreateInput = z.infer<typeof secretCardCreateSchema>;
 export type SecretCardUpdateInput = z.infer<typeof secretCardUpdateSchema>;
 export type SecretCardFieldUpsertInput = z.infer<typeof secretCardFieldUpsertSchema>;
+export type SecretCardImportInput = z.infer<typeof secretCardImportSchema>;

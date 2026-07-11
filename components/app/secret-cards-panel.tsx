@@ -3,7 +3,7 @@
 import { useState, type ReactNode } from 'react';
 import { useForm } from 'react-hook-form';
 import { useRouter } from 'next/navigation';
-import { Plus, Pencil, Trash2, Eye, EyeOff, Copy, ExternalLink } from 'lucide-react';
+import { Plus, Pencil, Trash2, Eye, EyeOff, Copy, ExternalLink, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   Dialog,
@@ -41,6 +41,7 @@ import {
   upsertCardFieldAction,
   deleteCardFieldAction,
   revealCardFieldAction,
+  importCardsAction,
   upsertItemAction,
   revealItemAction,
 } from '@/lib/actions/secrets';
@@ -443,6 +444,79 @@ function EnvValueDialog({
   );
 }
 
+/** Импорт карточек из CSV-файла (экспорт браузерного менеджера паролей и т.п.). */
+function CardImportDialog({ projectId, trigger }: { projectId: number; trigger: ReactNode }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [csv, setCsv] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    setCsv(await file.text());
+  }
+
+  async function submit() {
+    if (!csv) {
+      toast.error('Выберите CSV-файл');
+      return;
+    }
+    setBusy(true);
+    const result = await importCardsAction({ projectId, csv });
+    setBusy(false);
+    if (!result.ok) {
+      toast.error(result.error);
+      return;
+    }
+    const { imported, skipped } = result.data!;
+    toast.success(`Импортировано карточек: ${imported}${skipped ? `, пропущено строк: ${skipped}` : ''}`);
+    setOpen(false);
+    setCsv('');
+    setFileName(null);
+    router.refresh();
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) {
+          setCsv('');
+          setFileName(null);
+        }
+      }}
+    >
+      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Импорт карточек из CSV</DialogTitle>
+        </DialogHeader>
+        <div className="grid gap-4">
+          <p className="text-sm text-muted-foreground">
+            Экспорт браузерного менеджера паролей (Chrome/Firefox: столбцы
+            name, url, username, password, note) или любой CSV: первый/именованный
+            столбец — наименование, остальные — поля карточки. Значения шифруются.
+          </p>
+          <div className="grid gap-2">
+            <Label htmlFor="csv-file">CSV-файл</Label>
+            <Input id="csv-file" type="file" accept=".csv,text/csv" onChange={onFile} />
+            {fileName && <p className="text-xs text-muted-foreground">Выбран: {fileName}</p>}
+          </div>
+          <DialogFooter>
+            <Button onClick={submit} disabled={busy || !csv}>
+              {busy ? 'Импорт…' : 'Импортировать'}
+            </Button>
+          </DialogFooter>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function SecretCardsPanel({
   projectId,
   cards,
@@ -468,14 +542,24 @@ export function SecretCardsPanel({
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">Карточки</h2>
-        <CardMetaDialog
-          projectId={projectId}
-          trigger={
-            <Button size="sm">
-              <Plus className="mr-1 h-4 w-4" /> Карточка
-            </Button>
-          }
-        />
+        <div className="flex items-center gap-2">
+          <CardImportDialog
+            projectId={projectId}
+            trigger={
+              <Button size="sm" variant="outline">
+                <Upload className="mr-1 h-4 w-4" /> Импорт CSV
+              </Button>
+            }
+          />
+          <CardMetaDialog
+            projectId={projectId}
+            trigger={
+              <Button size="sm">
+                <Plus className="mr-1 h-4 w-4" /> Карточка
+              </Button>
+            }
+          />
+        </div>
       </div>
       <div className="rounded-lg border">
         <Table>
