@@ -2,6 +2,7 @@ import 'server-only';
 import { and, count, desc, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
+  authUser,
   secretsProject,
   secretsItem,
   secretsToken,
@@ -478,6 +479,70 @@ export async function revokeToken(user: SessionUser, tokenId: number): Promise<b
   if (!tok || (await ownedProjectId(user, tok.projectId)) === null) return false;
   await db.update(secretsToken).set({ revokedAt: isoNow() }).where(eq(secretsToken.id, tokenId));
   return true;
+}
+
+// --- Self-serve provisioning (API, без сессии) -------------------------------
+
+export type ProvisionResult =
+  | { ok: true; projectId: number; slug: string; token: string; tokenPrefix: string }
+  | { ok: false; status: 409 | 500; error: string };
+
+/** Аудит отказа по provisioning-ключу (неверный/отсутствующий Bearer). */
+export async function logProvisionAuthDenied(ip: string | null): Promise<void> {
+  await logAudit(null, null, 'provision_denied', 'недействительный provisioning-ключ', ip);
+}
+
+/**
+ * Заводит комнату проекта + read-write токен без владельца-MFA (self-serve
+ * onboarding, мандат brain 2026-07-12). Гейт по `VAULT_PROVISION_KEY` — в роуте;
+ * здесь инварианты: комната вешается на владельца-superuser, slug уникален
+ * (существующая комната → 409, токены к чужим комнатам этим путём не минтятся),
+ * комната и токен создаются атомарно, операция — в аудит-лог.
+ */
+export async function provisionRoom(
+  slug: string,
+  name: string | undefined,
+  ip: string | null,
+): Promise<ProvisionResult> {
+  const [owner] = await db
+    .select({ id: authUser.id })
+    .from(authUser)
+    .where(and(eq(authUser.isSuperuser, true), eq(authUser.isActive, true)))
+    .orderBy(authUser.id)
+    .limit(1);
+  if (!owner) {
+    await logAudit(null, null, 'provision_error', 'нет активного superuser-владельца', ip);
+    return { ok: false, status: 500, error: 'Сервис секретов недоступен' };
+  }
+
+  const [existing] = await db
+    .select({ id: secretsProject.id })
+    .from(secretsProject)
+    .where(eq(secretsProject.slug, slug))
+    .limit(1);
+  if (existing) {
+    await logAudit(existing.id, null, 'provision_denied', `комната «${slug}» уже существует`, ip);
+    return { ok: false, status: 409, error: 'Комната с таким slug уже существует' };
+  }
+
+  const t = generateToken();
+  const projectId = await db.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(secretsProject)
+      .values({ userId: owner.id, name: name ?? slug, slug })
+      .returning({ id: secretsProject.id });
+    const id = created!.id;
+    await tx.insert(secretsToken).values({
+      projectId: id,
+      name: 'self-serve rw',
+      tokenPrefix: t.prefix,
+      tokenHash: t.hash,
+      canWrite: true,
+    });
+    return id;
+  });
+  await logAudit(projectId, null, 'provision', `комната «${slug}» + rw-токен (self-serve)`, ip);
+  return { ok: true, projectId, slug, token: t.token, tokenPrefix: t.prefix };
 }
 
 // --- Машинный доступ по токену (API, без сессии) ----------------------------

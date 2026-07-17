@@ -68,6 +68,15 @@ export const secretCardImportSchema = z.object({
   csv: z.string().min(1, 'Пустой файл').max(8 * 1024 * 1024, 'Файл слишком большой (макс 8 МБ)'),
 });
 
+/**
+ * Тело POST /api/secrets/provision — self-serve onboarding комнаты (мандат brain
+ * 2026-07-12). name опционально: по умолчанию совпадает со slug.
+ */
+export const secretProvisionSchema = z.object({
+  slug: secretProjectCreateSchema.shape.slug,
+  name: z.string().trim().min(1).max(200).optional(),
+});
+
 /** Тело POST /api/secrets — машинная запись секретов по токену (bulk upsert). */
 export const secretPushSchema = z.object({
   secrets: z
@@ -84,3 +93,4 @@ export type SecretCardCreateInput = z.infer<typeof secretCardCreateSchema>;
 export type SecretCardUpdateInput = z.infer<typeof secretCardUpdateSchema>;
 export type SecretCardFieldUpsertInput = z.infer<typeof secretCardFieldUpsertSchema>;
 export type SecretCardImportInput = z.infer<typeof secretCardImportSchema>;
+export type SecretProvisionInput = z.infer<typeof secretProvisionSchema>;
