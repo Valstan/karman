@@ -28,4 +28,13 @@ export async function register(): Promise<void> {
       '[secrets] SECRETS_MASTER_KEY не задан — менеджер секретов отключён (шифрование/выдача недоступны).',
     );
   }
+  // Self-serve provisioning опционален: без ключа /api/secrets/provision отдаёт 503.
+  if (
+    process.env.NODE_ENV === 'production' &&
+    (process.env.VAULT_PROVISION_KEY?.trim().length ?? 0) < 32
+  ) {
+    console.warn(
+      '[secrets] VAULT_PROVISION_KEY не задан или короче 32 символов — self-serve provisioning отключён (503).',
+    );
+  }
 }
