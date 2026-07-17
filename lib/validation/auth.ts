@@ -9,3 +9,14 @@ export const loginSchema = z.object({
 export const totpCodeSchema = z.object({
   code: z.string().trim().min(6, 'Введите код').max(20),
 });
+
+/** Смена собственного пароля (восстановление доступа). */
+export const passwordChangeSchema = z.object({
+  currentPassword: z.string().min(1, 'Введите текущий пароль'),
+  nextPassword: z.string().min(8, 'Новый пароль — минимум 8 символов').max(128),
+});
+
+/** Сброс пароля аккаунта суперпользователем. */
+export const passwordResetSchema = z.object({
+  userId: z.coerce.number().int().positive(),
+});

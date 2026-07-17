@@ -136,6 +136,10 @@ export default function LoginPage() {
               <Button type="submit" disabled={loading} className="w-full">
                 {loading ? 'Вход…' : 'Войти'}
               </Button>
+              <p className="text-center text-xs text-muted-foreground">
+                Забыли логин или пароль? Обратитесь к владельцу — он подскажет логин и выдаст
+                временный пароль, который вы смените после входа в «Настройках».
+              </p>
             </form>
           )}
         </CardContent>
