@@ -33,10 +33,11 @@
 - **Раздача vault-токенов проектам** (env `SECRETS_TOKEN` + интеграция save/load на их стороне) —
   owner/project-driven, как было с trener. `until:` проект попросил токен / владелец раздал.
   `added: 2026-06-30` `last-touch: 2026-07-28`
-- **`GATEWAY_KEY_VMALMYZHE` в комнате `vmalmyzhe`** — мандат brain 07-26 просил перенести этот ключ
-  в `setka`; probe 07-28 показал, что комната `vmalmyzhe` пуста — портал ещё не зеркалировал ключ.
-  Маршрут со своей стороны построен и проверен вживую (grant, #73): выдача оформляется заранее и
-  срабатывает сама, как только ключ появится. `until:` ключ появился в комнате-источнике.
+- **`GATEWAY_KEY_VMALMYZHE` в комнате `vmalmyzhe`** — мандат brain 07-26/07-28. Со своей стороны
+  сделано ВСЁ: first-token режим provision в проде (#78, ADR-0010), grant `vmalmyzhe → setka`
+  оформлен заранее (`secrets_grant` id 2, alias `VMALMYZHE_INGEST_KEY`). Портал сам берёт токен
+  через provision и зеркалирует ключ; setka сам берёт токен и читает по выдаче. Проверить, что
+  круг замкнулся: pull setka отдаёт `VMALMYZHE_INGEST_KEY`. `until:` ключ появился в комнате-источнике.
   `added: 2026-07-28` `last-touch: 2026-07-28`
 
 ## Программы (recurring)
