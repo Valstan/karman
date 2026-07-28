@@ -757,9 +757,17 @@ export async function logProvisionAuthDenied(ip: string | null): Promise<void> {
 /**
  * Заводит комнату проекта + read-write токен без владельца-MFA (self-serve
  * onboarding, мандат brain 2026-07-12). Гейт по `VAULT_PROVISION_KEY` — в роуте;
- * здесь инварианты: комната вешается на владельца-superuser, slug уникален
- * (существующая комната → 409, токены к чужим комнатам этим путём не минтятся),
- * комната и токен создаются атомарно, операция — в аудит-лог.
+ * здесь инварианты: комната вешается на владельца-superuser, slug уникален,
+ * токены к чужим ЖИВЫМ комнатам этим путём не минтятся, комната и токен
+ * создаются атомарно, операция — в аудит-лог.
+ *
+ * Существующий slug (ADR-0010, мандат brain 2026-07-28): если комната пуста
+ * (0 секретов, 0 карточек) и ни один её токен ни разу не использовался —
+ * старые (потерянные при доставке) токены отзываются и выпускается свежий
+ * rw-токен (аудит `provision_first_token`). Читать в такой комнате нечего,
+ * а неиспользованный токен означает, что до легитимного держателя он не доехал.
+ * Любой след жизни (секрет, карточка, использованный токен) → прежний 409,
+ * переоткрытие только владельцем под 2FA.
  */
 export async function provisionRoom(
   slug: string,
@@ -783,8 +791,7 @@ export async function provisionRoom(
     .where(eq(secretsProject.slug, slug))
     .limit(1);
   if (existing) {
-    await logAudit(existing.id, null, 'provision_denied', `комната «${slug}» уже существует`, ip);
-    return { ok: false, status: 409, error: 'Комната с таким slug уже существует' };
+    return provisionFirstToken(existing.id, slug, ip);
   }
 
   const t = generateToken();
@@ -804,6 +811,63 @@ export async function provisionRoom(
     return id;
   });
   await logAudit(projectId, null, 'provision', `комната «${slug}» + rw-токен (self-serve)`, ip);
+  return { ok: true, projectId, slug, token: t.token, tokenPrefix: t.prefix };
+}
+
+/**
+ * Первый рабочий токен для существующей, но нетронутой комнаты (ADR-0010).
+ * Условия проверяет сервер: 0 секретов, 0 карточек, ни одного использования
+ * токена. Ранее выданные (потерянные) токены отзываются в той же транзакции.
+ */
+async function provisionFirstToken(
+  projectId: number,
+  slug: string,
+  ip: string | null,
+): Promise<ProvisionResult> {
+  const [items] = await db
+    .select({ n: count() })
+    .from(secretsItem)
+    .where(eq(secretsItem.projectId, projectId));
+  const [cards] = await db
+    .select({ n: count() })
+    .from(secretsCard)
+    .where(eq(secretsCard.projectId, projectId));
+  const [usedTokens] = await db
+    .select({ n: count() })
+    .from(secretsToken)
+    .where(and(eq(secretsToken.projectId, projectId), sql`${secretsToken.lastUsedAt} is not null`));
+  if ((items?.n ?? 1) > 0 || (cards?.n ?? 1) > 0 || (usedTokens?.n ?? 1) > 0) {
+    await logAudit(
+      projectId,
+      null,
+      'provision_denied',
+      `комната «${slug}» уже живая (секреты/карточки/использованный токен) — переоткрытие только владельцем`,
+      ip,
+    );
+    return { ok: false, status: 409, error: 'Комната с таким slug уже существует' };
+  }
+
+  const t = generateToken();
+  await db.transaction(async (tx) => {
+    await tx
+      .update(secretsToken)
+      .set({ revokedAt: isoNow() })
+      .where(and(eq(secretsToken.projectId, projectId), isNull(secretsToken.revokedAt)));
+    await tx.insert(secretsToken).values({
+      projectId,
+      name: 'self-serve rw (first token)',
+      tokenPrefix: t.prefix,
+      tokenHash: t.hash,
+      canWrite: true,
+    });
+  });
+  await logAudit(
+    projectId,
+    null,
+    'provision_first_token',
+    `первый рабочий rw-токен комнаты «${slug}» (пустая, токены не использовались; старые отозваны)`,
+    ip,
+  );
   return { ok: true, projectId, slug, token: t.token, tokenPrefix: t.prefix };
 }
 
