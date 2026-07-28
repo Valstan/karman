@@ -69,6 +69,24 @@ export const secretCardImportSchema = z.object({
 });
 
 /**
+ * Выдача доступа к ключу другой комнате (мандат brain 2026-07-26). Значение не
+ * копируется: получатель читает ключ источника под именем aliasKey (по умолчанию —
+ * то же имя). note — кто инициатор выдачи, уходит в аудит обеих комнат.
+ */
+export const secretGrantCreateSchema = z
+  .object({
+    sourceProjectId: z.coerce.number().int().positive(),
+    sourceKey: secretKeyName,
+    targetProjectId: z.coerce.number().int().positive(),
+    aliasKey: secretKeyName.optional().or(z.literal('').transform(() => undefined)),
+    note: z.string().trim().max(500).optional().or(z.literal('').transform(() => undefined)),
+  })
+  .refine((v) => v.sourceProjectId !== v.targetProjectId, {
+    message: 'Комната-источник и комната-получатель совпадают',
+    path: ['targetProjectId'],
+  });
+
+/**
  * Тело POST /api/secrets/provision — self-serve onboarding комнаты (мандат brain
  * 2026-07-12). name опционально: по умолчанию совпадает со slug.
  */
@@ -93,4 +111,5 @@ export type SecretCardCreateInput = z.infer<typeof secretCardCreateSchema>;
 export type SecretCardUpdateInput = z.infer<typeof secretCardUpdateSchema>;
 export type SecretCardFieldUpsertInput = z.infer<typeof secretCardFieldUpsertSchema>;
 export type SecretCardImportInput = z.infer<typeof secretCardImportSchema>;
+export type SecretGrantCreateInput = z.infer<typeof secretGrantCreateSchema>;
 export type SecretProvisionInput = z.infer<typeof secretProvisionSchema>;
