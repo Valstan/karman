@@ -9,6 +9,7 @@ import {
   secretCardUpdateSchema,
   secretCardFieldUpsertSchema,
   secretCardImportSchema,
+  secretGrantCreateSchema,
 } from '@/lib/validation/secret';
 import {
   createProject,
@@ -26,6 +27,8 @@ import {
   deleteCardField,
   revealCardField,
   importCards,
+  createGrant,
+  revokeGrant,
 } from '@/lib/services/secrets';
 import { requireSecretsAccess, revalidateAll, type ActionResult } from './_internal';
 
@@ -212,6 +215,37 @@ export async function revealCardFieldAction(id: number): Promise<ActionResult<{ 
   } catch {
     return { ok: false, error: 'Сервис секретов недоступен (мастер-ключ?)' };
   }
+}
+
+// --- Выдача доступа между комнатами (grant) ----------------------------------
+
+/** Выдаёт другой комнате доступ к одному ключу (значение не копируется). */
+export async function createGrantAction(values: unknown): Promise<ActionResult<{ id: number }>> {
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const user = guard.user;
+  const parsed = secretGrantCreateSchema.safeParse(values);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? 'Некорректные данные' };
+  try {
+    const result = await createGrant(user, parsed.data);
+    if (!result.ok) return { ok: false, error: result.error };
+    revalidateAll();
+    return { ok: true, data: { id: result.id } };
+  } catch (e) {
+    // Гонка двух выдач на одно имя — ловит partial unique в БД.
+    if (isUniqueViolation(e)) return { ok: false, error: 'Такой доступ уже выдан' };
+    throw e;
+  }
+}
+
+export async function revokeGrantAction(id: number): Promise<ActionResult> {
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const user = guard.user;
+  const ok = await revokeGrant(user, id);
+  if (!ok) return { ok: false, error: 'Выдача не найдена' };
+  revalidateAll();
+  return { ok: true };
 }
 
 /** Создаёт токен; возвращает сам токен ОДИН раз (потом — только хэш в БД). */

@@ -418,6 +418,27 @@ export const secretsCardField = pgTable('secrets_card_field', {
   updatedAt: tstz('updated_at').notNull().defaultNow().$onUpdate(isoNow),
 });
 
+/**
+ * Выдача доступа к ключу между комнатами (мандат brain 2026-07-26, класс #091).
+ * Значение НЕ копируется: получатель читает запись источника своим токеном под
+ * именем alias_key. Источник указан по имени ключа — grant можно выдать заранее.
+ */
+export const secretsGrant = pgTable('secrets_grant', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  sourceProjectId: bigint('source_project_id', { mode: 'number' })
+    .notNull()
+    .references(() => secretsProject.id, { onDelete: 'cascade' }),
+  sourceKey: varchar('source_key', { length: 200 }).notNull(),
+  targetProjectId: bigint('target_project_id', { mode: 'number' })
+    .notNull()
+    .references(() => secretsProject.id, { onDelete: 'cascade' }),
+  aliasKey: varchar('alias_key', { length: 200 }).notNull(),
+  // Кто инициатор выдачи (владелец от себя / по мандату brain) — уходит в аудит обеих сторон.
+  note: text('note'),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+  revokedAt: tstz('revoked_at'),
+});
+
 /** Аудит обращений к секретам (pull по токену, выдача/отказ). */
 export const secretsAudit = pgTable('secrets_audit', {
   id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
@@ -441,4 +462,5 @@ export type ReminderActionRow = typeof reminderAction.$inferSelect;
 export type SecretsProjectRow = typeof secretsProject.$inferSelect;
 export type SecretsItemRow = typeof secretsItem.$inferSelect;
 export type SecretsTokenRow = typeof secretsToken.$inferSelect;
+export type SecretsGrantRow = typeof secretsGrant.$inferSelect;
 export type SecretsAuditRow = typeof secretsAudit.$inferSelect;
