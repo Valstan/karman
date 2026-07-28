@@ -12,8 +12,9 @@ export const runtime = 'nodejs';
  *   POST /api/secrets/provision  → { ok, projectId, slug, token, tokenPrefix }
  * Тело: { slug, name? }. Авторизация: `Authorization: Bearer <VAULT_PROVISION_KEY>`
  * (provisioning-секрет #008-класса, НЕ skm_-токен и не мастер-MFA владельца).
- * Токен возвращается ОДИН раз; существующая комната → 409 (изоляция: этим путём
- * нельзя выпустить токен к уже заведённой комнате).
+ * Токен возвращается ОДИН раз. Существующий slug (ADR-0010): пустая комната с
+ * ни разу не использованными токенами → первый рабочий rw-токен (старые
+ * отзываются); живая комната → 409, переоткрытие только владельцем под 2FA.
  */
 function bearerToken(req: Request): string | null {
   const m = /^Bearer\s+(.+)$/i.exec((req.headers.get('authorization') ?? '').trim());
