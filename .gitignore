@@ -40,6 +40,12 @@ ssl/
 .claude/settings.local.json
 .claude/*.lock
 
+# Зеркало инструкций/команд под Codex (генерится локально из CLAUDE.md и .claude/commands).
+# Источник истины — CLAUDE.md; пока держим вне git, чтобы не расходились две копии.
+AGENTS.md
+.agents/
+.codex/
+
 # IDE / OS
 .idea/
 .vscode/
