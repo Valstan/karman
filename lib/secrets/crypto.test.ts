@@ -21,8 +21,13 @@ describe('crypto', () => {
 
   it('каждый вызов — новый IV (рандомизированное шифрование)', () => {
     const aad = secretAad(1, 'K');
-    const a = encryptSecret('v', aad);
-    const b = encryptSecret('v', aad);
+    // Значение НЕ однобайтовое намеренно: GCM — поточный режим, длина шифротекста
+    // равна длине открытого текста, поэтому на 'v' два разных IV давали одинаковый
+    // байт с вероятностью 1/256 — тест ложно краснел (пойман в CI 2026-08-03,
+    // ревизия гейтов #104). На 32 байтах вероятность совпадения — 2^-256.
+    const value = 'значение достаточной длины для проверки';
+    const a = encryptSecret(value, aad);
+    const b = encryptSecret(value, aad);
     expect(a.iv).not.toBe(b.iv);
     expect(a.ciphertext).not.toBe(b.ciphertext);
   });
