@@ -40,11 +40,11 @@ ssl/
 .claude/settings.local.json
 .claude/*.lock
 
-# Зеркало инструкций/команд под Codex (генерится локально из CLAUDE.md и .claude/commands).
-# Источник истины — CLAUDE.md; пока держим вне git, чтобы не расходились две копии.
-AGENTS.md
+# Агентский слой (ADR-0011): канон AGENTS.md и адаптеры CLAUDE.md/GEMINI.md — В GIT.
+# Вне git — только машинно-локальное: кэши/сессии инструментов и генерённые зеркала.
 .agents/
 .codex/
+.gemini/
 
 # IDE / OS
 .idea/
