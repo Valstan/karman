@@ -95,6 +95,18 @@ export const secretProvisionSchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),
 });
 
+/**
+ * Выпуск времянки — одноразового bootstrap-кода комнаты (задача владельца
+ * 2026-08-10). Срок зажимается в сервисе (`clampTtlMinutes`), поэтому здесь
+ * достаточно числа: форма может прислать пустую строку, и падать на этом незачем.
+ */
+export const secretBootstrapCreateSchema = z.object({
+  projectId: z.coerce.number().int().positive(),
+  ttlMinutes: z.coerce.number().optional().default(30),
+  canWrite: z.coerce.boolean().optional().default(false),
+  note: z.string().trim().max(500).optional().or(z.literal('').transform(() => undefined)),
+});
+
 /** Тело POST /api/secrets — машинная запись секретов по токену (bulk upsert). */
 export const secretPushSchema = z.object({
   secrets: z
@@ -115,3 +127,4 @@ export type SecretCardCreateInput = z.infer<typeof secretCardCreateSchema>;
 export type SecretCardUpdateInput = z.infer<typeof secretCardUpdateSchema>;
 export type SecretCardFieldUpsertInput = z.infer<typeof secretCardFieldUpsertSchema>;
 export type SecretGrantCreateInput = z.infer<typeof secretGrantCreateSchema>;
+export type SecretBootstrapCreateInput = z.infer<typeof secretBootstrapCreateSchema>;

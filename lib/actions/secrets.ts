@@ -10,6 +10,7 @@ import {
   secretCardFieldUpsertSchema,
   secretCardImportSchema,
   secretGrantCreateSchema,
+  secretBootstrapCreateSchema,
 } from '@/lib/validation/secret';
 import {
   createProject,
@@ -30,6 +31,7 @@ import {
   createGrant,
   revokeGrant,
 } from '@/lib/services/secrets';
+import { createBootstrap, revokeBootstrap } from '@/lib/services/bootstrap';
 import { requireSecretsAccess, revalidateAll, type ActionResult } from './_internal';
 
 /** Уникальное нарушение Postgres (слаг занят). */
@@ -267,6 +269,38 @@ export async function revokeTokenAction(id: number): Promise<ActionResult> {
   const user = guard.user;
   const ok = await revokeToken(user, id);
   if (!ok) return { ok: false, error: 'Токен не найден' };
+  revalidateAll();
+  return { ok: true };
+}
+
+// --- Времянка: одноразовый bootstrap-код комнаты (задача владельца 2026-08-10) ---
+
+/**
+ * Выпускает времянку. Код возвращается ОДИН раз и показывается владельцу —
+ * именно его можно продиктовать проекту; долгоживущий токен так не пересылается.
+ */
+export async function createBootstrapAction(
+  values: unknown,
+): Promise<ActionResult<{ code: string; expiresAt: string; canWrite: boolean }>> {
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const user = guard.user;
+  const parsed = secretBootstrapCreateSchema.safeParse(values);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? 'Некорректные данные' };
+  const issued = await createBootstrap(user, parsed.data);
+  if (!issued) return { ok: false, error: 'Комната не найдена' };
+  revalidateAll();
+  return { ok: true, data: { code: issued.code, expiresAt: issued.expiresAt, canWrite: issued.canWrite } };
+}
+
+/** Гасит невостребованную времянку до срока (передумали / продиктовали не тому). */
+export async function revokeBootstrapAction(id: number): Promise<ActionResult> {
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const user = guard.user;
+  const ok = await revokeBootstrap(user, id);
+  // Обменянную времянку гасить нечего — она уже мертва; отзывается выданный токен.
+  if (!ok) return { ok: false, error: 'Времянка не найдена или уже погашена' };
   revalidateAll();
   return { ok: true };
 }

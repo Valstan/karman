@@ -505,6 +505,30 @@ export const secretsGrant = pgTable('secrets_grant', {
   revokedAt: tstz('revoked_at'),
 });
 
+/**
+ * Одноразовый bootstrap-код комнаты («времянка»): владелец выпускает, проект
+ * меняет на токен своей комнаты, код гаснет. В БД — только хэш, как у токенов.
+ */
+export const secretsBootstrap = pgTable('secrets_bootstrap', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  projectId: bigint('project_id', { mode: 'number' })
+    .notNull()
+    .references(() => secretsProject.id, { onDelete: 'cascade' }),
+  codeHash: varchar('code_hash', { length: 64 }).notNull(),
+  codePrefix: varchar('code_prefix', { length: 20 }).notNull(),
+  /** Право будущего токена, зафиксированное в момент выпуска (получатель его не выбирает). */
+  canWrite: boolean('can_write').notNull().default(false),
+  expiresAt: tstz('expires_at').notNull(),
+  usedAt: tstz('used_at'),
+  usedIp: varchar('used_ip', { length: 64 }),
+  issuedTokenId: bigint('issued_token_id', { mode: 'number' }).references(() => secretsToken.id, {
+    onDelete: 'set null',
+  }),
+  note: text('note'),
+  revokedAt: tstz('revoked_at'),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+});
+
 /** Аудит обращений к секретам (pull по токену, выдача/отказ). */
 export const secretsAudit = pgTable('secrets_audit', {
   id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
