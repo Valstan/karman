@@ -103,6 +103,10 @@ export const secretPushSchema = z.object({
     .refine((m) => Object.keys(m).length <= 200, 'Слишком много ключей за раз (макс 200)'),
 });
 
+// Алиасы заводим ПО ФАКТУ импорта, а не «по одному на схему»: симметрия здесь
+// соблазнительна, но каждый неиспользованный алиас потом всплывает в deadcode.
+// Так уже вышло трижды — `SecretPushInput` (удалён 07-10), `SecretCardImportInput`
+// и `SecretProvisionInput` (удалены 08-10). Нужен тип у новой схемы — допиши строку.
 export type SecretProjectCreateInput = z.infer<typeof secretProjectCreateSchema>;
 export type SecretProjectUpdateInput = z.infer<typeof secretProjectUpdateSchema>;
 export type SecretItemUpsertInput = z.infer<typeof secretItemUpsertSchema>;
@@ -110,6 +114,4 @@ export type SecretTokenCreateInput = z.infer<typeof secretTokenCreateSchema>;
 export type SecretCardCreateInput = z.infer<typeof secretCardCreateSchema>;
 export type SecretCardUpdateInput = z.infer<typeof secretCardUpdateSchema>;
 export type SecretCardFieldUpsertInput = z.infer<typeof secretCardFieldUpsertSchema>;
-export type SecretCardImportInput = z.infer<typeof secretCardImportSchema>;
 export type SecretGrantCreateInput = z.infer<typeof secretGrantCreateSchema>;
-export type SecretProvisionInput = z.infer<typeof secretProvisionSchema>;
