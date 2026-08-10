@@ -37,6 +37,10 @@ VAULT_PROVISION_KEY=<строка ≥ 32 символов, например open
 рабочий rw-токен, старые отзываются (ADR-0010, аудит `provision_first_token`); живая
 комната → 409. Не задан или короче 32 символов → эндпойнт отвечает 503.
 
+С волны 2 ADR-0012 штатный вход — **паспорт CI**: `POST /api/secrets/session` (подписанное
+удостоверение вместо общей строки), см. `docs/passport-server.md`. `VAULT_PROVISION_KEY`
+остаётся break-glass'ом и гасится переменной `PROVISION_KEY_ENABLED=false`.
+
 Без ключа: страница `/secrets` позволяет создавать проекты, но шифрование и выдача
 секретов отключены (`instrumentation.ts` пишет предупреждение в лог на старте,
 `secretsConfigured()` → false, баннер в UI).
