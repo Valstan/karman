@@ -30,3 +30,8 @@ jobs:
       - run: npm run lint
       - run: npm run test
       - run: npm run build
+      # Уязвимости рантайм-зависимостей (Q3-самоосмотр, R4). Порог — high: до
+      # 2026-08-10 четыре high-CVE в libvips через sharp жили в проде месяц, и
+      # увидеть их можно было, только запустив audit руками. Dev-зависимости
+      # исключены намеренно: они не едут в прод-артефакт, а их шум глушил бы гейт.
+      - run: npm audit --omit=dev --audit-level=high
