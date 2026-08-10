@@ -66,21 +66,37 @@ pg_dump "$DATABASE_URL" --no-owner --no-privileges \
   > "$WORK/vault.sql"
 
 # --- 2. media/ (сканы документов) ------------------------------------------
+# Считаем файлы ДО упаковки: «ГОТОВО» без числа — это отчёт о том, что скрипт
+# отработал, а не о том, что что-то забэкаплено. Пустой каталог при живых
+# документах = молчаливая потеря, и увидеть её можно только по счётчику.
+MEDIA_FILES=0
 if [ -d "$MEDIA_ROOT" ]; then
-  echo "backup_vault: tar media/…"
+  MEDIA_FILES=$(find "$MEDIA_ROOT" -type f | wc -l)
+  echo "backup_vault: tar media/ (файлов: ${MEDIA_FILES})…"
   tar -czf "$WORK/media.tar.gz" -C "$(dirname "$MEDIA_ROOT")" "$(basename "$MEDIA_ROOT")"
+  if [ "$MEDIA_FILES" -eq 0 ]; then
+    echo "backup_vault: ВНИМАНИЕ — в '$MEDIA_ROOT' ноль файлов. Это норма, только если сканов нет в БД; иначе приложение пишет их в другой каталог (сверь MEDIA_ROOT в systemd-юните)." >&2
+  fi
 else
-  echo "backup_vault: media-каталог '$MEDIA_ROOT' отсутствует — пропускаю" >&2
+  echo "backup_vault: ВНИМАНИЕ — media-каталог '$MEDIA_ROOT' отсутствует, бэкап сканов ПУСТ" >&2
   : > "$WORK/media.tar.gz"
 fi
 
 # --- 3. Манифест + сборка бандла -------------------------------------------
+# Манифест несёт ОЖИДАЕМЫЕ величины: при восстановлении сразу видно, совпало ли
+# распакованное с тем, что паковали, — без сверки со сторонним источником.
 cat > "$WORK/MANIFEST.txt" <<EOF
 KARMAN vault backup
 created_utc: ${STAMP}
 includes: vault.sql (secrets_*/passport_*/auth_totp/auth_recovery_code/auth_audit), media.tar.gz
 excludes: SECRETS_MASTER_KEY (корень доверия — хранится у владельца отдельно, pool #008)
+excludes: passport_jwks_cache (кеш чужих публичных ключей — восстанавливается фетчем)
+media_root: ${MEDIA_ROOT}
+media_files: ${MEDIA_FILES}
+media_bytes: $(stat -c %s "$WORK/media.tar.gz" 2>/dev/null || echo 0)
+vault_sql_bytes: $(stat -c %s "$WORK/vault.sql" 2>/dev/null || echo 0)
 note: значения секретов в дампе ЗАШИФРОВАНЫ мастер-ключом; этот архив gpg — второй слой.
+note: восстановление проверяется учебным прогоном (docs/secrets-vault-backup.md, «Учебное восстановление»).
 EOF
 tar -cf "$WORK/${NAME}.tar" -C "$WORK" MANIFEST.txt vault.sql media.tar.gz
 
@@ -96,6 +112,20 @@ curl -sS --user "${YANDEX_WEBDAV_USER}:${YANDEX_WEBDAV_PASSWORD}" \
   -X MKCOL "${WEBDAV_HOST}${WEBDAV_DIR}/" -o /dev/null || true
 echo "backup_vault: выгрузка ${NAME}.tar.gpg на Яндекс.Диск…"
 wd -T "$WORK/${NAME}.tar.gpg" "${WEBDAV_HOST}${WEBDAV_DIR}/${NAME}.tar.gpg"
+
+# Сверка размера ПОСЛЕ выгрузки: успешный PUT означает «сервер принял запрос»,
+# а не «на Диске лежит целый файл». Обрыв на середине даёт ровно тот бэкап,
+# который выглядит существующим ровно до дня восстановления.
+LOCAL_BYTES=$(stat -c %s "$WORK/${NAME}.tar.gpg")
+REMOTE_BYTES=$(wd -I "${WEBDAV_HOST}${WEBDAV_DIR}/${NAME}.tar.gpg" 2>/dev/null \
+  | tr -d '\r' | awk 'tolower($1) == "content-length:" { print $2 }' | tail -1)
+if [ -z "$REMOTE_BYTES" ]; then
+  echo "backup_vault: ВНИМАНИЕ — размер выгруженного файла проверить не удалось (сервер не отдал Content-Length)" >&2
+elif [ "$REMOTE_BYTES" != "$LOCAL_BYTES" ]; then
+  die "выгрузка неполная: локально ${LOCAL_BYTES} Б, на Диске ${REMOTE_BYTES} Б"
+else
+  echo "backup_vault: выгрузка сверена — ${LOCAL_BYTES} Б"
+fi
 
 # --- 6. Ретенция: хранить последние $KEEP ----------------------------------
 # PROPFIND глубиной 1 → имена karman-vault-*.tar.gpg; сортируем (в имени
