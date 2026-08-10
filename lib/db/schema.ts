@@ -350,6 +350,66 @@ export const secretsProject = pgTable('secrets_project', {
   updatedAt: tstz('updated_at').notNull().defaultNow().$onUpdate(isoNow),
 });
 
+// --- Паспортный вход (ADR-0012 мозга, волна 2) -------------------------------
+// Личность берётся из криптографического claim'а удостоверения CI, а не из факта
+// обладания общей строкой. Таблицы объявлены ДО secrets_token: он ссылается на
+// passport_identity. См. docs/passport-server.md.
+
+/** Доверенный issuer удостоверений (GitHub OIDC — первый акцептор, не архитектура). */
+export const passportIssuer = pgTable('passport_issuer', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  issuer: varchar('issuer', { length: 300 }).notNull(),
+  jwksUri: varchar('jwks_uri', { length: 500 }).notNull(),
+  audience: varchar('audience', { length: 200 }).notNull(),
+  /** Регэксп по claim `sub`: пин субъекта на основную ветку (ветки/PR/форки не минтят личность). */
+  subjectPattern: varchar('subject_pattern', { length: 300 }).notNull(),
+  /** Claim с неизменяемым числовым идентификатором личности (у GitHub — repository_id). */
+  identityClaim: varchar('identity_claim', { length: 60 }).notNull(),
+  enabled: boolean('enabled').notNull().default(true),
+  note: text('note'),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+});
+
+/** Карта личность → комната. Заводится явно владельцем; автовывод slug'а запрещён. */
+export const passportIdentity = pgTable('passport_identity', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  issuerId: bigint('issuer_id', { mode: 'number' })
+    .notNull()
+    .references(() => passportIssuer.id, { onDelete: 'cascade' }),
+  identityValue: varchar('identity_value', { length: 200 }).notNull(),
+  /** Человекочитаемая метка (`Valstan/trener`) — только для UI и аудита, не для проверки. */
+  label: varchar('label', { length: 200 }).notNull(),
+  projectId: bigint('project_id', { mode: 'number' })
+    .notNull()
+    .references(() => secretsProject.id, { onDelete: 'cascade' }),
+  canWrite: boolean('can_write').notNull().default(false),
+  note: text('note'),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+  revokedAt: tstz('revoked_at'),
+});
+
+/** Снимок JWKS: удалённый фетч с cooldown, при недоступности issuer'а — stale-if-error. */
+export const passportJwksCache = pgTable('passport_jwks_cache', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  jwksUri: varchar('jwks_uri', { length: 500 }).notNull(),
+  jwks: jsonb('jwks').notNull(),
+  fetchedAt: tstz('fetched_at').notNull().defaultNow(),
+  lastError: text('last_error'),
+  lastErrorAt: tstz('last_error_at'),
+});
+
+/** Использованные удостоверения (anti-replay). Пишется ТОЛЬКО при успехе — иначе ретрай CI ломается. */
+export const passportAssertion = pgTable('passport_assertion', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  issuerId: bigint('issuer_id', { mode: 'number' })
+    .notNull()
+    .references(() => passportIssuer.id, { onDelete: 'cascade' }),
+  jti: varchar('jti', { length: 200 }).notNull(),
+  subject: text('subject').notNull(),
+  expiresAt: tstz('expires_at').notNull(),
+  usedAt: tstz('used_at').notNull().defaultNow(),
+});
+
 /** Секрет: значение зашифровано AES-256-GCM (ciphertext/iv/auth_tag — base64). */
 export const secretsItem = pgTable('secrets_item', {
   id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
@@ -379,6 +439,12 @@ export const secretsToken = pgTable('secrets_token', {
   lastUsedAt: tstz('last_used_at'),
   revokedAt: tstz('revoked_at'),
   createdAt: tstz('created_at').notNull().defaultNow(),
+  // Паспортная сессия (ADR-0012): срок жизни и личность, которой токен выдан.
+  // У токенов владельца обе колонки NULL — бессрочный, ничей.
+  expiresAt: tstz('expires_at'),
+  identityId: bigint('identity_id', { mode: 'number' }).references(() => passportIdentity.id, {
+    onDelete: 'cascade',
+  }),
 });
 
 /**
@@ -452,6 +518,9 @@ export const secretsAudit = pgTable('secrets_audit', {
   detail: text('detail'),
   ip: varchar('ip', { length: 64 }),
   at: tstz('at').notNull().defaultNow(),
+  // Кто совершил операцию (долг ADR-0012 §6). Формат — lib/secrets/actor.ts.
+  // NULL у строк до миграции 0007 читается как «актор неизвестен».
+  actor: varchar('actor', { length: 120 }),
 });
 
 export type TelegramLinkRow = typeof telegramLink.$inferSelect;

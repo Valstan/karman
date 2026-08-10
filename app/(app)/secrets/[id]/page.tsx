@@ -63,6 +63,7 @@ export default async function SecretProjectPage({
             <TableHeader>
               <TableRow>
                 <TableHead>Когда</TableHead>
+                <TableHead>Кто</TableHead>
                 <TableHead>Действие</TableHead>
                 <TableHead>Детали</TableHead>
                 <TableHead>IP</TableHead>
@@ -71,7 +72,7 @@ export default async function SecretProjectPage({
             <TableBody>
               {detail.audit.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={4} className="h-16 text-center text-muted-foreground">
+                  <TableCell colSpan={5} className="h-16 text-center text-muted-foreground">
                     Обращений пока не было.
                   </TableCell>
                 </TableRow>
@@ -79,6 +80,9 @@ export default async function SecretProjectPage({
               {detail.audit.map((a, i) => (
                 <TableRow key={i}>
                   <TableCell className="text-sm text-muted-foreground">{formatDate(a.at)}</TableCell>
+                  {/* Строки до миграции 0007 актора не несут — «—» здесь значит
+                      «неизвестно», а не «никто» (ADR-0012 §6). */}
+                  <TableCell className="font-mono text-sm">{a.actor ?? '—'}</TableCell>
                   <TableCell className="font-mono text-sm">{a.action}</TableCell>
                   <TableCell className="text-sm text-muted-foreground">{a.detail ?? '—'}</TableCell>
                   <TableCell className="text-sm text-muted-foreground">{a.ip ?? '—'}</TableCell>

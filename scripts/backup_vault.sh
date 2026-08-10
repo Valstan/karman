@@ -55,9 +55,13 @@ NAME="karman-vault-${STAMP}"
 # --- 1. Дамп vault-таблиц (ТОЛЬКО секреты/2FA/аудит, не вся БД) --------------
 # Явный список таблиц — чтобы бэкап был предсказуем и не тащил кредиты/документы.
 echo "backup_vault: pg_dump vault-таблиц…"
+# Список догоняет схему в том же PR, что и миграция (требование ADR-0012 §5):
+# карта личностей и grant'ы — состояние, восстановимое после отката БД только
+# руками. secrets_grant отставал от миграции 0006 и добавлен здесь же.
 pg_dump "$DATABASE_URL" --no-owner --no-privileges \
   -t secrets_project -t secrets_item -t secrets_token -t secrets_audit \
-  -t secrets_card -t secrets_card_field \
+  -t secrets_card -t secrets_card_field -t secrets_grant \
+  -t passport_issuer -t passport_identity -t passport_assertion \
   -t auth_totp -t auth_recovery_code -t auth_audit \
   > "$WORK/vault.sql"
 
@@ -74,7 +78,7 @@ fi
 cat > "$WORK/MANIFEST.txt" <<EOF
 KARMAN vault backup
 created_utc: ${STAMP}
-includes: vault.sql (secrets_*/auth_totp/auth_recovery_code/auth_audit), media.tar.gz
+includes: vault.sql (secrets_*/passport_*/auth_totp/auth_recovery_code/auth_audit), media.tar.gz
 excludes: SECRETS_MASTER_KEY (корень доверия — хранится у владельца отдельно, pool #008)
 note: значения секретов в дампе ЗАШИФРОВАНЫ мастер-ключом; этот архив gpg — второй слой.
 EOF
