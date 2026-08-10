@@ -42,8 +42,12 @@
   прогон `npm run deadcode` (config `knip.jsonc`). История: первый триаж 06-13 (остатков Vite/
   Express нет — чистая миграция; удалено 5 born-unused); 07-10 — `reminders-worker.mjs` false
   positive (systemd-вход, прописан в entry), удалены `sendPhoto`/`editMessageText` (#24, вернутся
-  из git при P5-вложениях) и тип `SecretPushInput`, depcheck чист.
-  `recurring` `every: месяц` `last-run: 2026-07-10` (следующий — август)
+  из git при P5-вложениях) и тип `SecretPushInput`, depcheck чист; 08-10 — удалены
+  born-unused типы `SecretCardImportInput` и `SecretProvisionInput`, depcheck чист.
+  **Третий рецидив одного класса** (после `SecretPushInput`): в `lib/validation/secret.ts`
+  алиасы заводились «по одному на схему» из соображений симметрии, а импортировались не все.
+  Причина устранена комментарием у списка алиасов — заводить по факту импорта.
+  `recurring` `every: месяц` `last-run: 2026-08-10` (следующий — сентябрь)
 - **Квартальный стратегический самоосмотр** — директива brain 06-10: раз в квартал отдельная
   сессия → письмо to-brain с рефакторинг-предложениями (с грубой стоимостью) и фич-идеями
   владельцу. **Всплыл на `/start` 2026-08-03: окно Q3 (авг–сен) открыто, ни разу не проводился.**
