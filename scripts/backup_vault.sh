@@ -60,7 +60,7 @@ echo "backup_vault: pg_dump vault-таблиц…"
 # руками. secrets_grant отставал от миграции 0006 и добавлен здесь же.
 pg_dump "$DATABASE_URL" --no-owner --no-privileges \
   -t secrets_project -t secrets_item -t secrets_token -t secrets_audit \
-  -t secrets_card -t secrets_card_field -t secrets_grant \
+  -t secrets_card -t secrets_card_field -t secrets_grant -t secrets_bootstrap \
   -t passport_issuer -t passport_identity -t passport_assertion \
   -t auth_totp -t auth_recovery_code -t auth_audit \
   > "$WORK/vault.sql"
