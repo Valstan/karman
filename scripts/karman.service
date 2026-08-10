@@ -1,9 +1,13 @@
 # systemd-юнит KARMAN (единое приложение Next.js, standalone-артефакт из CI).
 # Деплой кладёт релизы в /home/valstan/karman/releases/<sha> и переключает
 # симлинк /home/valstan/karman/current (см. .github/workflows/deploy-prod.yml).
-# Установка:
+# Установка / обновление юнита (деплой его НЕ синхронизирует — только restart):
 #   sudo cp scripts/karman.service /etc/systemd/system/karman.service
-#   sudo systemctl daemon-reload && sudo systemctl enable --now karman
+#   sudo systemctl daemon-reload && sudo systemctl restart karman
+#
+# Сверено с боевым юнитом Бокса 1 2026-08-10. До этой сверки файл расходился
+# с продом молча (PORT=3000, /etc/karman.env, /usr/bin/node) — то есть
+# «установка по инструкции» из шапки положила бы прод.
 [Unit]
 Description=KARMAN (Next.js)
 After=network.target postgresql.service
@@ -13,15 +17,29 @@ Type=simple
 User=valstan
 WorkingDirectory=/home/valstan/karman/current
 Environment=NODE_ENV=production
-Environment=PORT=3000
+Environment=PORT=3002
 Environment=HOSTNAME=127.0.0.1
 # Сканы документов живут вне релиз-директорий и переживают деплои.
 Environment=MEDIA_ROOT=/home/valstan/karman/media
+# Idle-таймаут keep-alive сокета (G234). Дефолт Node — 5 с, и если перед
+# приложением появится прокси с пулом upstream-соединений (nginx
+# `upstream { keepalive N }`), прокси начнёт отправлять запросы в сокеты,
+# которые Node только что закрыл → случайные 502 при пустых логах приложения.
+# Сегодня пула нет (проверено 2026-08-10: ни одного upstream-блока на Боксе 1),
+# так что это ремень поверх подтяжек — он взводится в тот день, когда пул заведут.
+# Значение больше типичных 60 с у nginx. Standalone-сервер Next читает
+# именно эту переменную (.next/standalone/server.js → startServer).
+# headersTimeout (дефолт 60 с) idle-сокет НЕ режет — проверено на Node 22.20.0
+# живой пробой, поэтому второй переменной не нужно.
+Environment=KEEP_ALIVE_TIMEOUT=65000
 # SESSION_SECRET и DATABASE_URL — в env-файле (обязательны!):
 #   SESSION_SECRET=<openssl rand -base64 48>
 #   DATABASE_URL=postgres:///karman_db?host=/var/run/postgresql
-EnvironmentFile=/etc/karman.env
-ExecStart=/usr/bin/node server.js
+EnvironmentFile=/etc/karman/karman.env
+ExecStart=/opt/node22/bin/node server.js
+MemoryHigh=448M
+MemoryMax=512M
+CPUQuota=150%
 Restart=on-failure
 RestartSec=3
 

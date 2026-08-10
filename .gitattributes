@@ -2,3 +2,9 @@
 # CR — `$'\r': command not found`). Windows-рабочая копия иначе делает CRLF и при
 # переносе на бокс (scp) скрипт ломается. См. docs/secrets-vault-backup.md.
 *.sh text eol=lf
+
+# Та же грабля для конфигов, которые уезжают на бокс копированием: systemd-юнит
+# и конфиг nginx. `Environment=X=1\r` и `proxy_pass …;\r` ломаются молча — сервис
+# либо не стартует, либо стартует с мусором в значении.
+*.service text eol=lf
+*.conf text eol=lf
