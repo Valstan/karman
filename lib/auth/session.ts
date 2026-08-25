@@ -1,15 +1,20 @@
 import 'server-only';
 import { cookies } from 'next/headers';
 import {
+  OIDC_STATE_COOKIE,
+  OIDC_STATE_TTL_SECONDS,
   SESSION_COOKIE,
   SESSION_TTL_SECONDS,
   TOTP_PENDING_COOKIE,
   TOTP_PENDING_TTL_SECONDS,
+  signOidcState,
   signSession,
   signTotpPending,
+  verifyOidcState,
   verifySession,
   verifySessionPayload,
   verifyTotpPending,
+  type OidcStatePayload,
   type SessionPayload,
 } from './jwt';
 
@@ -66,4 +71,22 @@ export async function readTotpPendingUid(): Promise<number | null> {
 export async function clearTotpPendingCookie(): Promise<void> {
   const cookieStore = await cookies();
   cookieStore.delete(TOTP_PENDING_COOKIE);
+}
+
+// --- Состояние браузерного редиректа ЕСА --------------------------------------
+
+export async function setOidcStateCookie(payload: OidcStatePayload): Promise<void> {
+  const token = await signOidcState(payload);
+  const cookieStore = await cookies();
+  cookieStore.set(OIDC_STATE_COOKIE, token, { ...COOKIE_ATTRS, maxAge: OIDC_STATE_TTL_SECONDS });
+}
+
+export async function readOidcState(): Promise<OidcStatePayload | null> {
+  const cookieStore = await cookies();
+  return verifyOidcState(cookieStore.get(OIDC_STATE_COOKIE)?.value);
+}
+
+export async function clearOidcStateCookie(): Promise<void> {
+  const cookieStore = await cookies();
+  cookieStore.delete(OIDC_STATE_COOKIE);
 }

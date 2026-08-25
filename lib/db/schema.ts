@@ -552,6 +552,25 @@ export type ReminderRow = typeof reminder.$inferSelect;
 export type ReminderScheduleRow = typeof reminderSchedule.$inferSelect;
 export type ReminderDeliveryRow = typeof reminderDelivery.$inferSelect;
 export type ReminderActionRow = typeof reminderAction.$inferSelect;
+/**
+ * Связь «личность у внешнего OIDC-провайдера -> пользователь КАРМАНа»
+ * (вход через ЕСА, миграция 0009). Привязка по неизменяемому `sub`, а не по
+ * почте: почта у человека меняется, и связь по ней означала бы смену владельца
+ * аккаунта вместе со сменой почты.
+ */
+export const authOidcIdentity = pgTable('auth_oidc_identity', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  issuer: varchar('issuer', { length: 255 }).notNull(),
+  subject: varchar('subject', { length: 255 }).notNull(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => authUser.id, { onDelete: 'cascade' }),
+  email: varchar('email', { length: 254 }),
+  origin: varchar('origin', { length: 32 }).notNull().default('provisioned'),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+  lastLoginAt: tstz('last_login_at'),
+});
+
 export type SecretsProjectRow = typeof secretsProject.$inferSelect;
 export type SecretsItemRow = typeof secretsItem.$inferSelect;
 export type SecretsTokenRow = typeof secretsToken.$inferSelect;

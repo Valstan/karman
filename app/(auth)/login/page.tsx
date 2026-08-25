@@ -1,163 +1,29 @@
-'use client';
+import { cookies } from 'next/headers';
+import { LoginForm } from '@/components/auth/login-form';
+import { esaConfig } from '@/lib/auth/oidc';
+import { esaRedirectUri } from '@/lib/auth/oidc-redirect';
+import { TOTP_PENDING_COOKIE, verifyTotpPending } from '@/lib/auth/jwt';
 
-import { useRef, useState, type FormEvent } from 'react';
-import { useRouter } from 'next/navigation';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+/**
+ * Страница входа — серверная: только она может ответить на два вопроса, которые
+ * нельзя решать в браузере. Настроена ли ЕСА (это env сервера, и показывать
+ * кнопку, за которой ничего нет, — худший вид неработающего входа) и ждёт ли
+ * пользователь второго фактора (pending-cookie подписана и читается на сервере;
+ * доверять этому решению клиенту нельзя).
+ */
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
+  const esaParam = params.esa;
+  const esaNotice = typeof esaParam === 'string' ? esaParam : null;
 
-export default function LoginPage() {
-  const router = useRouter();
-  const [loading, setLoading] = useState(false);
-  // Засов от повторной отправки. Одного `disabled={loading}` мало: setState
-  // применяется к следующему рендеру, и три нажатия Enter подряд успевают
-  // выстрелить тремя POST'ами до того, как кнопка станет неактивной. Цена
-  // ровно такая: 2026-08-25 у владельца так сгорели все 10 попыток за 29 с
-  // (в auth_audit три login_fail внутри одной секунды), и он получил
-  // 15-минутную блокировку, гадая, чем плох пароль. Ref обновляется
-  // синхронно — именно поэтому засов на нём, а не на состоянии.
-  const inFlight = useRef(false);
-  const [error, setError] = useState<string | null>(null);
-  const [totpStep, setTotpStep] = useState(false);
+  const cookieStore = await cookies();
+  const totpPending = (await verifyTotpPending(cookieStore.get(TOTP_PENDING_COOKIE)?.value)) !== null;
 
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setLoading(true);
-    setError(null);
+  const esaEnabled = esaConfig() !== null && esaRedirectUri() !== null;
 
-    const form = new FormData(event.currentTarget);
-    const body = {
-      username: String(form.get('username') ?? ''),
-      password: String(form.get('password') ?? ''),
-    };
-
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const data = (await res.json().catch(() => ({}))) as { message?: string };
-        setError(data.message ?? 'Не удалось войти');
-        return;
-      }
-      const data = (await res.json().catch(() => ({}))) as { totpRequired?: boolean };
-      if (data.totpRequired) {
-        setTotpStep(true);
-        return;
-      }
-      router.replace('/');
-      router.refresh();
-    } catch {
-      setError('Сеть недоступна');
-    } finally {
-      inFlight.current = false;
-      setLoading(false);
-    }
-  }
-
-  async function onSubmitTotp(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setLoading(true);
-    setError(null);
-
-    const form = new FormData(event.currentTarget);
-    try {
-      const res = await fetch('/api/auth/totp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: String(form.get('code') ?? '') }),
-      });
-      if (!res.ok) {
-        const data = (await res.json().catch(() => ({}))) as { message?: string };
-        setError(data.message ?? 'Неверный код');
-        if (res.status === 401 && (data.message ?? '').includes('истекла')) setTotpStep(false);
-        return;
-      }
-      router.replace('/');
-      router.refresh();
-    } catch {
-      setError('Сеть недоступна');
-    } finally {
-      inFlight.current = false;
-      setLoading(false);
-    }
-  }
-
-  return (
-    <main className="grid min-h-screen place-items-center bg-muted/40 p-4">
-      <Card className="w-full max-w-sm">
-        <CardHeader className="text-center">
-          <CardTitle className="text-2xl">KARMAN</CardTitle>
-          <CardDescription>Учёт кредитов — вход в систему</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {totpStep ? (
-            <form onSubmit={onSubmitTotp} className="flex flex-col gap-4">
-              {error && (
-                <Alert variant="destructive">
-                  <AlertDescription>{error}</AlertDescription>
-                </Alert>
-              )}
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="code">Код из приложения</Label>
-                <Input
-                  id="code"
-                  name="code"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  placeholder="123 456"
-                  className="font-mono"
-                  required
-                  autoFocus
-                />
-                <p className="text-xs text-muted-foreground">
-                  Или одноразовый recovery-код (xxxxx-xxxxx), если телефон недоступен.
-                </p>
-              </div>
-              <Button type="submit" disabled={loading} className="w-full">
-                {loading ? 'Проверка…' : 'Подтвердить'}
-              </Button>
-            </form>
-          ) : (
-            <form onSubmit={onSubmit} className="flex flex-col gap-4">
-              {error && (
-                <Alert variant="destructive">
-                  <AlertDescription>{error}</AlertDescription>
-                </Alert>
-              )}
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="username">Логин</Label>
-                <Input id="username" name="username" autoComplete="username" required autoFocus />
-              </div>
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="password">Пароль</Label>
-                <Input
-                  id="password"
-                  name="password"
-                  type="password"
-                  autoComplete="current-password"
-                  required
-                />
-              </div>
-              <Button type="submit" disabled={loading} className="w-full">
-                {loading ? 'Вход…' : 'Войти'}
-              </Button>
-              <p className="text-center text-xs text-muted-foreground">
-                Забыли логин или пароль? Обратитесь к владельцу — он подскажет логин и выдаст
-                временный пароль, который вы смените после входа в «Настройках».
-              </p>
-            </form>
-          )}
-        </CardContent>
-      </Card>
-    </main>
-  );
+  return <LoginForm esaEnabled={esaEnabled} totpPending={totpPending} esaNotice={esaNotice} />;
 }

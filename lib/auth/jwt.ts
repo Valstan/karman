@@ -87,3 +87,44 @@ export async function verifyTotpPending(token: string | undefined | null): Promi
     return null;
   }
 }
+
+// --- Состояние браузерного редиректа ЕСА (OIDC state + nonce + PKCE) ---------
+
+export const OIDC_STATE_COOKIE = 'karman_oidc_state';
+/** Пользователь должен успеть пройти чужую форму входа; дольше держать незачем. */
+export const OIDC_STATE_TTL_SECONDS = 10 * 60;
+
+export type OidcStatePayload = { state: string; nonce: string; codeVerifier: string };
+
+/**
+ * Состояние редиректа едет в подписанной cookie, а не в таблице.
+ *
+ * Причина не в экономии: строка в БД пережила бы рестарт, но потребовала бы
+ * чистки протухших и дала бы ещё одну поверхность, где висит `code_verifier`.
+ * Подписанная кука привязана к браузеру, который начал вход, гаснет сама по
+ * сроку и удаляется в момент обмена — то есть одноразова по построению.
+ */
+export async function signOidcState(payload: OidcStatePayload): Promise<string> {
+  return new SignJWT({ ...payload, stage: 'oidc' })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime(`${OIDC_STATE_TTL_SECONDS}s`)
+    .sign(getSecretKey());
+}
+
+export async function verifyOidcState(
+  token: string | undefined | null,
+): Promise<OidcStatePayload | null> {
+  if (!token) return null;
+  try {
+    const { payload } = await jwtVerify(token, getSecretKey());
+    if (payload.stage !== 'oidc') return null;
+    const { state, nonce, codeVerifier } = payload as Record<string, unknown>;
+    if (typeof state !== 'string' || typeof nonce !== 'string' || typeof codeVerifier !== 'string') {
+      return null;
+    }
+    return { state, nonce, codeVerifier };
+  } catch {
+    return null;
+  }
+}
