@@ -19,7 +19,8 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep, AskUserQuestion
 > Запускается и естественными фразами: **«закрой сессию»**, **«заверши сессию»**,
 > **«закрываемся»** — все они означают эту команду.
 
-**Что НЕ делает:** не деплоит на прод. Деплой KARMAN — отдельно: `scripts/deploy.sh`
+**Что НЕ делает:** не деплоит на прод. Деплой KARMAN — отдельно: `bash scripts/deploy_remote.sh`
+(сборка в CI; on-box `next build` запрещён мандатом brain 2026-06-11)
 (см. [docs/OPERATIONS.md](../../docs/OPERATIONS.md)).
 
 ## Когда вызывать
@@ -195,7 +196,7 @@ git pull --ff-only`. **Если в PR есть код** (например, те�
 
 ## Что НЕ делать
 
-- **Не деплоить на прод** (`scripts/deploy.sh`, ssh, restart, миграции) — это отдельный шаг.
+- **Не деплоить на прод** (`scripts/deploy_remote.sh`, ssh, restart, миграции) — отдельный шаг.
 - **Не push прямо в `main`** — даже handoff идёт через ветку + PR.
 - **Не `gh pr merge --admin`**; не авто-мёрджить PR с кодом.
 - **Не объявлять сессию закрытой, пока `git_sync_check.sh --gate` ≠ exit 0.**
