@@ -100,12 +100,14 @@ ADR-0012 §5, это не рекомендации:
 # 1. Числовой id репозитория (неизменяемый):
 gh api repos/Valstan/trener --jq .id
 
-# 2. id комнаты — из живого vault (страница /secrets или psql):
-ssh karman 'set -a; . /etc/karman/karman.env; psql "$DATABASE_URL" -c \
+# 2. id комнаты — из живого vault (страница /secrets или psql).
+#    ENV_FILE — env-файл сервиса; его путь берётся из systemd-юнита
+#    (`systemctl show karman -p EnvironmentFile`) и в git не хранится.
+ssh karman 'ENV_FILE=<путь-из-юнита>; set -a; . "$ENV_FILE"; psql "$DATABASE_URL" -c \
   "select id, slug from secrets_project order by id"'
 
 # 3. Строка реестра (can_write=false — читателю запись не нужна):
-ssh karman 'set -a; . /etc/karman/karman.env; psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f -' <<SQL
+ssh karman 'ENV_FILE=<путь-из-юнита>; set -a; . "$ENV_FILE"; psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f -' <<SQL
 insert into passport_identity (issuer_id, identity_value, label, project_id, can_write, note)
 select i.id, '<REPO_ID>', 'Valstan/trener', <PROJECT_ID>, false, 'пилот волны 2'
 from passport_issuer i
@@ -133,28 +135,75 @@ commit;
 
 Волна 1 у потребителей уже есть; меняется одна строка — откуда берётся токен.
 
+**Рецепт по умолчанию: весь обмен внутри ОДНОГО шага, токен наружу не выходит вовсе.**
+Так сделал пилот (`trener`, рабочий образец — `.github/workflows/passport-probe.yml`
+в их `main`).
+
 ```yaml
 permissions:
   id-token: write        # без этого GitHub удостоверение не выдаст
   contents: read
 steps:
-  - name: Сессия в vault по паспорту
+  - name: Забрать секреты из vault по паспорту
     run: |
       set -euo pipefail
-      ASSERTION="$(curl -sf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-        "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=karman-vault" | jq -r .value)"
-      TOKEN="$(curl -sf -X POST https://<karman-host>/api/secrets/session \
-        -H "Authorization: Bearer $ASSERTION" | jq -r .token)"
+      V=https://<karman-host>
+
+      ID_URL="$ACTIONS_ID_TOKEN_REQUEST_URL&audience=karman-vault"
+      ASSERTION="$(curl -sf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ID_URL" | jq -r .value)"
+      TOKEN="$(curl -sf -X POST "$V/api/secrets/session" -H "Authorization: Bearer $ASSERTION" | jq -r .token)"
       echo "::add-mask::$TOKEN"
-      echo "SECRETS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      # Самоотзыв ставится СРАЗУ после получения токена, до первого шага, который может упасть.
+      revoke() { curl -sS -X DELETE "$V/api/secrets/session" -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true; }
+      trap revoke EXIT INT TERM
+
+      # ...вся работа с секретами — здесь же, в этом шаге.
+      SOME_KEY="$(curl -sf "$V/api/secrets?key=SOME_KEY" -H "Authorization: Bearer $TOKEN" | jq -r '.secrets.SOME_KEY')"
+      echo "::add-mask::$SOME_KEY"
 ```
+
+### Самоотзыв — граница окна компрометации, а не «хороший тон»
+
+`DELETE /api/secrets/session` **обязан стоять в `trap … EXIT INT TERM`**, а не последней
+строкой шага. Под `set -euo pipefail` последняя строка недостижима при любом сбое выше:
+одна транспортная ошибка на промежуточном шаге — и сессия живёт до конца TTL. То есть
+в самом частом сценарии, ради которого самоотзыв и нужен (что-то пошло не так), последняя
+строка как раз не срабатывает; отмену прогона она не ловит вовсе, а `trap` ловит.
+
+При TTL 60 минут разница между «отозвали сразу» и «истечёт само» — это и есть окно,
+в которое утёкший токен ещё работает.
+
+### `$GITHUB_ENV` — размен, а не рецепт по умолчанию
+
+```bash
+echo "SECRETS_TOKEN=$TOKEN" >> "$GITHUB_ENV"     # ← только осознанно, см. условие
+```
+
+Эта строка отдаёт токен комнаты **всем последующим шагам job'а** — включая сторонние
+actions, которые кто-нибудь добавит через полгода, не зная про неё. Токен живёт до конца
+job'а в окружении, доступном чужому коду.
+
+**Условие применимости:** секрет реально нужен нескольким шагам, и вы согласны, что каждый
+сторонний action в этом job'е получает доступ к комнате целиком. Нужен одному шагу —
+не выносите: держите обмен внутри шага, как в рецепте выше.
+
+### Лог — это канал утечки
 
 Дальше — клиент волны 1 без изменений (`GET /api/secrets` с `SECRETS_TOKEN`), включая
 его allowlist ключей: **рендерить весь pull запрещено** (ADR-0012 §5, это примитив
 инъекции — `NODE_OPTIONS`, `LD_PRELOAD`, `DATABASE_URL`).
 
-Хорошим тоном — `DELETE /api/secrets/session` в конце job'а: сессия и так истечёт, но
-самоотзыв делает окно минимальным.
+Три правила для ветки ошибки, все про лог, а не про код:
+
+- **Наружу — только поля, извлечённые по имени, никогда тело ответа целиком.** Пока
+  отвечает приложение, там контрактное `{"error":…}`. Но `502`/`504` отдаёт **прокси**,
+  и его страница штатно содержит голый хостнейм и версию ПО.
+- **Маска GitHub этого не ловит по построению:** она знает точное значение секрета
+  (URL со схемой), а шлюз печатает хост **без** схемы — не совпадает, не маскируется.
+- **Не отправляйте чужой ответ в `echo "::error::…"`** — stdout раннера парсится на
+  `::`-директивы, то есть недоверенные байты в логе это ещё и вектор инъекции
+  workflow-команд.
 
 ## Границы v1 (решения, а не забывчивость)
 

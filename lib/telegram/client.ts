@@ -8,7 +8,7 @@ import type { SendMessageParams, TgInlineKeyboard, TgResult } from './types';
  * /api/telegram/ingest — здесь getUpdates нет намеренно.
  */
 
-// База Bot API. По умолчанию api.telegram.org, НО на прод-боксе (myjino, РФ) IP
+// База Bot API. По умолчанию api.telegram.org, НО на прод-хосте (РФ) IP
 // Telegram заблокированы RKN — там TELEGRAM_API_BASE указывает на relay вне блока
 // (напр. Cloudflare Worker). Реле проксирует /bot<token>/<method> на api.telegram.org.
 // См. docs/telegram-reminders.md.

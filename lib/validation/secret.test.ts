@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   secretPushSchema,
+  secretItemUpsertSchema,
   secretTokenCreateSchema,
   secretCardCreateSchema,
   secretCardFieldUpsertSchema,
@@ -88,5 +89,55 @@ describe('secretCardFieldUpsertSchema', () => {
 
   it('неизвестный kind → ошибка', () => {
     expect(secretCardFieldUpsertSchema.safeParse({ cardId: 1, name: 'X', kind: 'blob', value: 'v' }).success).toBe(false);
+  });
+});
+
+// D-035: в комнатах лежат приватные SSH-ключи владельца. Многострочное значение —
+// классическое место, где ключ ломается молча: одна лишняя нормализация, и PEM
+// становится нечитаемым, а узнают об этом на проде при первом ssh. Схема обязана
+// пропускать его байт-в-байт.
+describe('многострочные значения (SSH-ключи, PEM) — D-035', () => {
+  // Перевод строки через fromCharCode, а не escape-последовательностью: так тест
+  // читается одинаково при любом мыслимом перекодировании файла.
+  const NL = String.fromCharCode(10);
+  const PEM = [
+    '-----BEGIN OPENSSH PRIVATE KEY-----',
+    'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gt',
+    'ZWQyNTUxOQAAACBQ8m1sHkGr0hV4bYcGkX0aQ0f2sT9nJq5Zx1cVpKtWvAAAAJjWvvxN',
+    '-----END OPENSSH PRIVATE KEY-----',
+    '',
+  ].join(NL);
+
+  it('PEM проходит через secretItemUpsertSchema без искажений', () => {
+    const r = secretItemUpsertSchema.safeParse({ projectId: 1, key: 'SSH_KEY__myprod__PC79', value: PEM });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.value).toBe(PEM);
+      // Именно это ломается при .trim() на значении: хвостовой перевод строки,
+      // без которого ssh-keygen отказывается читать ключ.
+      expect(r.data.value.endsWith(NL)).toBe(true);
+      expect(r.data.value.split(NL)).toHaveLength(5);
+    }
+  });
+
+  it('PEM проходит через машинную запись (secretPushSchema)', () => {
+    const r = secretPushSchema.safeParse({ secrets: { SSH_KEY__myprod__PC79: PEM } });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.secrets.SSH_KEY__myprod__PC79).toBe(PEM);
+  });
+
+  it('конвенция имён D-035 совместима с валидатором ключа', () => {
+    // Разделитель — двойное подчёркивание, потому что дефис имя ключа не пропускает.
+    expect(secretPushSchema.safeParse({ secrets: { SSH_PUB__myprod__PC79: 'ssh-ed25519 AAAA' } }).success).toBe(true);
+    expect(secretPushSchema.safeParse({ secrets: { 'SSH_KEY__my-prod__PC79': 'x' } }).success).toBe(false);
+  });
+
+  it('ключ размера RSA-4096 (~3.4 КБ) проходит целиком', () => {
+    const body = Array.from({ length: 48 }, () => 'MIIJKQIBAAKCAgEAvQ7hEXAMPLEbase64line0123456789abcdefghijklmnopq').join(NL);
+    const big = ['-----BEGIN RSA PRIVATE KEY-----', body, '-----END RSA PRIVATE KEY-----', ''].join(NL);
+    expect(big.length).toBeGreaterThan(3000);
+    const r = secretItemUpsertSchema.safeParse({ projectId: 1, key: 'SSH_KEY__big__PC79', value: big });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.value).toBe(big);
   });
 });

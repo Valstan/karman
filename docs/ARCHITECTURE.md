@@ -6,8 +6,12 @@
 один процесс за nginx. PostgreSQL — через **Drizzle ORM**.
 
 ```
-Браузер → nginx (TLS, :443) → Next.js (node, 127.0.0.1:3000) → PostgreSQL (unix-socket)
+Браузер → nginx (TLS) → Next.js (node, 127.0.0.1:<APP_PORT>) → PostgreSQL (unix-socket)
 ```
+
+Порт приложения не зашит в код и не хранится в репозитории: он задаётся в systemd-юните
+(значение приезжает при деплое из repo-var `DEPLOY_APP_PORT`), туда же смотрит `proxy_pass`
+в конфиге nginx.
 
 ## Слои
 

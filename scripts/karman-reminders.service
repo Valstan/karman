@@ -1,10 +1,20 @@
-# systemd-юнит воркера напоминаний KARMAN (тонкое реле Telegram ↔ Next).
+# ШАБЛОН systemd-юнита воркера напоминаний KARMAN (тонкое реле Telegram ↔ Next).
+#
+# ЭТО НЕ ГОТОВЫЙ ФАЙЛ — не копировать `cp`. Рендер и установка:
+#   DEPLOY_USER=… APP_BASE=… APP_PORT=… ENV_FILE=… NODE_BIN=… \
+#     bash scripts/render_unit.sh scripts/karman-reminders.service \
+#     | sudo tee /etc/systemd/system/karman-reminders.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now karman-reminders
+#
 # Запускает reminders-worker.mjs из текущего релиза (файл копируется в
 # .next/standalone при сборке артефакта, см. .github/workflows/deploy-prod.yml).
-# Установка (один раз на проде):
-#   sudo cp scripts/karman-reminders.service /etc/systemd/system/karman-reminders.service
-#   sudo systemctl daemon-reload && sudo systemctl enable --now karman-reminders
-# env-файл /etc/karman.env должен содержать (см. docs/telegram-reminders.md):
+#
+# 2026-08-25: сверено с боевым юнитом. До сверки этот файл расходился с продом
+# в ЧЕТЫРЁХ местах разом (порт, путь к env-файлу, путь к node, отсутствие квот) —
+# «установка по инструкции» положила бы напоминания. Тот же класс, что у
+# karman.service 08-10; поэтому оба переведены в шаблоны.
+#
+# env-файл должен содержать (см. docs/telegram-reminders.md):
 #   TELEGRAM_BOT_TOKEN=...        REMINDERS_INTERNAL_SECRET=...
 #   TELEGRAM_BOT_USERNAME=...     (DATABASE_URL/SESSION_SECRET уже там для karman.service)
 [Unit]
@@ -14,14 +24,16 @@ Wants=karman.service
 
 [Service]
 Type=simple
-User=valstan
-WorkingDirectory=/home/valstan/karman/current
+User=@DEPLOY_USER@
+WorkingDirectory=@APP_BASE@/current
 Environment=NODE_ENV=production
-Environment=PORT=3000
-EnvironmentFile=/etc/karman.env
-ExecStart=/usr/bin/node reminders-worker.mjs
+Environment=PORT=@APP_PORT@
+EnvironmentFile=@ENV_FILE@
+ExecStart=@NODE_BIN@ reminders-worker.mjs
 Restart=always
 RestartSec=5
+MemoryMax=150M
+TasksMax=64
 
 [Install]
 WantedBy=multi-user.target

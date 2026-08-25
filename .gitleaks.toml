@@ -1,0 +1,260 @@
+# .gitleaks.toml — кастомные правила KARMAN.
+# Дополняют дефолтные 195 правил (extend.useDefault = true), НЕ заменяют их.
+# Покрыто дефолтом и своего правила не требует: SSH-приватник (rule `private-key`),
+# OIDC/JWT-ассертация паспорта (rule `jwt`).
+# Движок — RE2: lookahead/lookbehind недоступны, границы делаем через группы + secretGroup.
+
+title = "KARMAN custom rules"
+
+[extend]
+useDefault = true
+
+# ── 1. Собственный токен комнаты vault (удостоверение проекта-соседа) ──────────
+# skm_ + base64url(32B) = ровно 43 символа тела, полная длина 47.
+# Длина фиксирована генератором (lib/secrets/token.ts:23), поэтому 12-символьные
+# префиксы в UI/аудите/письмах (`skm_QQjtIuuM`) и плейсхолдеры `skm_…` НЕ матчатся.
+# Порог {43} НЕ снижать до {20,} — это ровно тот шаг, который превратит весь
+# архив префиксов в docs/ и mailbox/ в шум.
+[[rules]]
+  id = "karman-vault-room-token"
+  description = "KARMAN vault room token (skm_)"
+  regex = '''skm_[A-Za-z0-9_-]{43}'''
+  keywords = ["skm_"]
+  [rules.allowlist]
+    paths = ['''lib/secrets/.*\.test\.ts$''']
+
+# ── 2. Одноразовая времянка комнаты (bootstrap-код) ───────────────────────────
+# skb_ + base64url(24B) = ровно 32 символа тела, полная длина 36
+# (lib/secrets/bootstrap-code.ts:34). Живёт минуты — правило нужно не столько для
+# предотвращения, сколько для посмертного разбора: сработка означает, что код был
+# ЗАПИСАН в файл, а не назван голосом. Держать ОТДЕЛЬНО от skm_, чтобы класс
+# читался прямо из алерта — ради этого префиксы и сделаны разными.
+[[rules]]
+  id = "karman-vault-bootstrap-code"
+  description = "KARMAN vault one-time bootstrap code (skb_)"
+  regex = '''skb_[A-Za-z0-9_-]{32}'''
+  keywords = ["skb_"]
+
+# ── 3. Мастер-ключ шифрования vault (корень доверия всей экосистемы) ──────────
+# base64 ровно от 32 байт → 43 символа + '=' (lib/secrets/crypto.ts:23).
+[[rules]]
+  id = "karman-secrets-master-key"
+  description = "KARMAN SECRETS_MASTER_KEY (AES-256-GCM master key)"
+  regex = '''(?i)SECRETS_MASTER_KEY\s*[:=]\s*["']?([A-Za-z0-9+/]{43}=)["']?'''
+  secretGroup = 1
+  keywords = ["SECRETS_MASTER_KEY"]
+
+# ── 4. Прочие env-секреты KARMAN ──────────────────────────────────────────────
+[[rules]]
+  id = "karman-env-secrets"
+  description = "KARMAN env secrets (SESSION_SECRET / VAULT_PROVISION_KEY / REMINDERS_INTERNAL_SECRET)"
+  regex = '''(?i)\b(?:SESSION_SECRET|VAULT_PROVISION_KEY|REMINDERS_INTERNAL_SECRET)\s*[:=]\s*["']?([A-Za-z0-9+/_-]{20,}={0,2})["']?'''
+  secretGroup = 1
+  keywords = ["SESSION_SECRET", "VAULT_PROVISION_KEY", "REMINDERS_INTERNAL_SECRET"]
+  [rules.allowlist]
+    regexes = ['''change-me[A-Za-z0-9_-]*''', '''dev-insecure-secret-change-me''', '''ci-dummy-secret[A-Za-z0-9_-]*''', '''<[^>]*>''', '''\$\{?[A-Z_]+''']
+    paths = ['''\.env\.example$''']
+
+# ── 5. Telegram Bot API token — присваивание ──────────────────────────────────
+# Дефолтное правило `telegram-bot-api-token` заякорено на словарную границу слева
+# и на боевой URL-форме не срабатывает — поэтому правил ДВА.
+# Без \b слева: в RE2 lookbehind нет, границу даём группой.
+[[rules]]
+  id = "telegram-bot-token-any"
+  description = "Telegram Bot API token (любая форма)"
+  regex = '''(?:^|[^\w-])(\d{8,10}:AA[\w-]{32,34})(?:[^\w-]|$)'''
+  secretGroup = 1
+  keywords = [":AA"]
+  [rules.allowlist]
+    regexes = ['''<[^>]*>''', '''AA[xX]{5,}''', '''\$\{?TELEGRAM_BOT_TOKEN''']
+
+# ── 6. Telegram Bot API token ВНУТРИ URL ──────────────────────────────────────
+# Боевая форма `${API_BASE}/bot${token}/${method}` — lib/telegram/client.ts:32,
+# scripts/reminders-worker.mjs:54. Токен уезжает в путь HTTP-запроса и транзитом
+# через СТОРОННИЙ relay (TELEGRAM_API_BASE, обход блокировки) — у этого класса
+# доверенных сторон не одна, а две. В логах печатать `/bot***/${method}`.
+[[rules]]
+  id = "telegram-bot-token-in-url"
+  description = "Telegram Bot API token в URL (/bot<token>/<method>)"
+  regex = '''/bot(\d{8,10}:AA[\w-]{32,34})[/"']'''
+  secretGroup = 1
+  keywords = ["/bot"]
+
+# ── 7. VK access token (новый формат) ─────────────────────────────────────────
+# Дефолт gitleaks VK НЕ покрывает вообще. В KARMAN класс ходит ТРАНЗИТОМ —
+# как значение поля карточки / env-пары чужой комнаты, своей переменной нет.
+# Порог {50,} оставляет фикстуру `vk1.a.xxx` (crypto.test.ts:53) вне срабатываний.
+[[rules]]
+  id = "vk-access-token"
+  description = "VK API access token (vk1.a.…)"
+  regex = '''\bvk1\.a\.[A-Za-z0-9_-]{50,}\b'''
+  keywords = ["vk1.a."]
+
+# ── 8. VK legacy user/service token ───────────────────────────────────────────
+[[rules]]
+  id = "vk-legacy-token"
+  description = "VK legacy user/service token (hex)"
+  regex = '''(?i)vk[_-]?(?:access[_-]?|service[_-]?)?token["'\s:=]{1,10}\b([0-9a-f]{64,90})\b'''
+  secretGroup = 1
+  keywords = ["vk_token", "vk_access_token", "vk_service_token"]
+
+# ── 9. PostgreSQL URI с паролем ───────────────────────────────────────────────
+# Дефолт ловит отдельные облачные DSN, но не generic postgres://user:pass@host.
+# Unix-socket форму (postgres:///karman_db?host=/var/run/postgresql) правило
+# не трогает — там пароля нет, и это правильно.
+[[rules]]
+  id = "postgres-uri-with-password"
+  description = "PostgreSQL connection URI с паролем"
+  regex = '''(?i)\bpostgres(?:ql)?://[^\s:@/]+:([^\s:@/"']{3,})@[^\s/"']+'''
+  secretGroup = 1
+  keywords = ["postgres://", "postgresql://"]
+  [rules.allowlist]
+    # regexTarget обязателен: по умолчанию allowlist сверяется с ЗАХВАЧЕННЫМ значением
+    # (то есть с самим паролем), поэтому шаблон вида `postgres://karman:karman@` не
+    # совпал бы никогда. Поймано первым же прогоном: дев-DSN в .env.example и
+    # drizzle.config.ts срабатывали, хотя правило их специально исключало.
+    regexTarget = "line"
+    regexes = ['''postgres://(karman:karman|ci:ci)@''', '''<[^>]*>''', '''\$\{?[A-Z_]+''']
+    paths = ['''\.env\.example$''', '''drizzle\.config\.ts$''']
+
+# ── 10. Пароль приложения Яндекса / WebDAV Basic ──────────────────────────────
+# Дефолта нет. NB: scripts/backup_vault.sh:48,111 передают пароль через
+# `curl --user` в argv → он виден в `ps` на ОБЩЕЙ машине. Правило ловит запись
+# в файл; сам канал чинится переходом на --netrc-file/-K -.
+[[rules]]
+  id = "yandex-webdav-app-password"
+  description = "Пароль приложения Яндекса (WebDAV)"
+  regex = '''(?i)YANDEX_WEBDAV_PASSWORD\s*[:=]\s*["']?([A-Za-z0-9]{12,32})["']?'''
+  secretGroup = 1
+  keywords = ["YANDEX_WEBDAV_PASSWORD"]
+  [rules.allowlist]
+    regexes = ['''\$\{?YANDEX_WEBDAV''', '''<[^>]*>''']
+
+[[rules]]
+  id = "webdav-basic-inline"
+  description = "WebDAV Basic-креды инлайном рядом с webdav.yandex.ru"
+  regex = '''(?i)(?:--user\s+["']?|https?://)[^\s:/@"']+:([^\s:/@"']{8,})@?[^\s"']*webdav\.yandex\.ru'''
+  secretGroup = 1
+  keywords = ["webdav.yandex.ru"]
+  [rules.allowlist]
+    regexes = ['''\$\{?YANDEX_WEBDAV''', '''<[^>]*>''']
+
+# ── 11. Коды восстановления 2FA (формат xxxxx-xxxxx, base32 без i/l/o/0/1) ────
+# Голый паттерн ставить НЕЛЬЗЯ — он ловит обычные дефисные слова (`check-based`).
+# Поэтому два варианта: контекстный и «пачкой» (коды всегда выпускаются списком по 10).
+[[rules]]
+  id = "karman-2fa-recovery-code"
+  description = "KARMAN 2FA recovery code (контекстный)"
+  regex = '''(?i)(?:recovery|восстановлен\w*|backup[ _-]?code)[^\n]{0,60}?\b([a-hjkmnp-z2-9]{5}-[a-hjkmnp-z2-9]{5})\b'''
+  secretGroup = 1
+  [rules.allowlist]
+    # Первый прогон дал 10 срабатываний, и все — на ОПИСАНИИ формата, а не на кодах:
+    # генератор, его тесты и подсказка `xxxxx-xxxxx` в форме входа (буква x входит
+    # в алфавит p-z, поэтому плейсхолдер неотличим от настоящего кода). Исключения —
+    # по точному пути, а не ослаблением регекса: ослабить его значит перестать ловить
+    # настоящие коды, ради которых правило и заведено.
+    paths = [
+      '''lib/auth/totp\.ts$''',
+      '''lib/auth/totp\.test\.ts$''',
+      '''app/\(auth\)/login/page\.tsx$''',
+    ]
+
+[[rules]]
+  id = "karman-2fa-recovery-code-batch"
+  description = "KARMAN 2FA recovery codes (два подряд — признак выгрузки пачки)"
+  regex = '''\b[a-hjkmnp-z2-9]{5}-[a-hjkmnp-z2-9]{5}\b[\s,"']{1,10}\b[a-hjkmnp-z2-9]{5}-[a-hjkmnp-z2-9]{5}\b'''
+
+# ── 12. TOTP-секрет и otpauth-URI второго фактора владельца ───────────────────
+# Контекстный якорь обязателен: голый [A-Z2-7]{32} совпадёт с любым UPPER-хэшем.
+[[rules]]
+  id = "karman-totp-secret"
+  description = "KARMAN TOTP base32 secret (otplib)"
+  regex = '''(?i)(?:totp|otp|2fa|secret)[^\n]{0,40}?\b([A-Z2-7]{32})\b'''
+  secretGroup = 1
+
+[[rules]]
+  id = "karman-otpauth-uri"
+  description = "otpauth:// URI с TOTP-секретом"
+  regex = '''otpauth://totp/[^\s"'?]*\?[^\s"']*secret=[A-Z2-7]{16,64}'''
+  keywords = ["otpauth://"]
+
+# ── 13. Признаки дампа vault-таблиц ───────────────────────────────────────────
+# Не секреты сами по себе (хэш необратим, конверт бесполезен без мастер-ключа),
+# но появление в тексте = утёк дамп secrets_token / secrets_item / auth_totp.
+# Голый [0-9a-f]{64} как отдельное правило НЕ ставить — это любой sha256.
+[[rules]]
+  id = "karman-vault-hash-dump"
+  description = "KARMAN vault: token_hash/code_hash (признак дампа таблицы)"
+  regex = '''(?i)(?:token_hash|code_hash)\s*[=:"']{1,3}\s*([0-9a-f]{64})\b'''
+  secretGroup = 1
+  keywords = ["token_hash", "code_hash"]
+
+[[rules]]
+  id = "karman-vault-gcm-envelope"
+  description = "KARMAN AES-256-GCM конверт секрета (дамп vault-таблиц)"
+  regex = '''"(?:iv|secret_iv|title_iv)"\s*:\s*"[A-Za-z0-9+/]{16}"\s*,?[^\n]{0,200}?"(?:auth_?[Tt]ag|secret_tag|title_tag)"\s*:\s*"[A-Za-z0-9+/]{22}=="'''
+  keywords = ["authTag", "auth_tag", "secret_tag"]
+
+# ── 14. Telegram link-code (hex32, plaintext в БД!) ───────────────────────────
+# В отличие от skm_/skb_ хранится в telegram_link.link_code ПЛЕЙНТЕКСТОМ,
+# поэтому дамп таблицы = живые коды. Контекст обязателен: голый [0-9a-f]{32} — любой MD5.
+[[rules]]
+  id = "karman-telegram-link-code"
+  description = "KARMAN telegram link code (/start <code>)"
+  regex = '''(?i)(?:link[_-]?code|/start)\s*[=:"']{0,3}\s*([0-9a-f]{32})\b'''
+  secretGroup = 1
+
+# ── 15. Django/KARMAN pbkdf2 password hash (маркер дампа auth_user) ───────────
+[[rules]]
+  id = "karman-django-password-hash"
+  description = "pbkdf2 хэш пароля (дамп auth_user)"
+  regex = '''\bpbkdf2_(?:sha256|sha1)\$[0-9]{1,9}\$[A-Za-z0-9]{1,32}\$[A-Za-z0-9+/]{20,}={0,2}'''
+  keywords = ["pbkdf2_sha256", "pbkdf2_sha1"]
+  [rules.allowlist]
+    paths = [
+      '''scripts/bootstrap\.sql$''',       # локальный дев-сид admin/admin123, devsalt
+      '''lib/auth/password\.test\.ts$''',  # фикстура теста verifyDjangoPassword
+    ]
+
+# ── 16. Часовой на канал: чужие секреты, вставленные литералом в пример push'а ─
+# Класс значения тут заранее неизвестен (через vault ходят VK, SMTP, S3 соседей),
+# регексом ловится не класс, а КАНАЛ: срабатывает, только если в примере curl
+# подставлено НЕ многоточие / не переменная / не плейсхолдер.
+[[rules]]
+  id = "vault-push-inline-literal"
+  description = "Литеральное значение в примере POST /api/secrets"
+  # Движок gitleaks — RE2: lookahead/lookbehind НЕТ. Отсечение плейсхолдеров
+  # делается allowlist'ом по захваченному значению, а не (?!…) в самом регексе.
+  # Наступили на это 2026-08-25: с lookahead конфиг не компилировался вовсе,
+  # и гейт падал ПАНИКОЙ на каждом прогоне — то есть не мог позеленеть никогда.
+  regex = '''"secrets"\s*:\s*\{[^}]*"[A-Z0-9_]{3,}"\s*:\s*"([^"\s]{8,})"'''
+  secretGroup = 1
+  keywords = ["\"secrets\""]
+  [rules.allowlist]
+    regexes = ['''…''', '''\.\.\.''', '''^\$''', '''^<''', '''^\{''']
+
+# ── Точечное исключение для ДЕФОЛТНОГО правила private-key ────────────────────
+# Тест D-035 (lib/validation/secret.test.ts) намеренно держит PEM-образную фикстуру:
+# он доказывает, что многострочное значение проходит схему байт-в-байт. Исключение
+# сделано через targetRules, то есть глушит РОВНО правило private-key РОВНО в этом
+# файле — любой другой класс секрета там же по-прежнему ловится.
+[[allowlists]]
+  description = "синтетический PEM в тесте многострочных значений (D-035)"
+  targetRules = ["private-key"]
+  paths = ['''lib/validation/secret\.test\.ts$''']
+
+# ── Глобальный allowlist ──────────────────────────────────────────────────────
+# Формат [[allowlists]] (множественный), а не устаревший [allowlist]: gitleaks 8.30
+# отказывается грузить конфиг, где встречаются оба сразу.
+[[allowlists]]
+  description = "Общие исключения KARMAN"
+  paths = [
+    '''package-lock\.json$''',      # base64 в полях integrity
+    '''(^|/)\.next/''',
+    '''(^|/)node_modules/''',
+  ]
+  regexes = [
+    '''change-me[A-Za-z0-9_-]*''',
+    '''<[^>]{1,40}>''',             # плейсхолдеры вида <токен от @BotFather>
+    '''(skm_|skb_)(…|\.\.\.)''',    # короткие префиксы в доках и аудите
+  ]

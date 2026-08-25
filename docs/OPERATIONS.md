@@ -49,8 +49,8 @@ DATABASE_URL=postgres://... npm run db:pull       # генерирует схе�
 Первичная настройка:
 
 ```bash
-# Роль приложения (peer-auth для valstan на боевом сервере НЕ работает — нужен
-# отдельный логин-роль с паролем; см. историю деплоя 2026-06-04):
+# Роль приложения (peer-auth для системного пользователя на боевом сервере НЕ работает —
+# нужен отдельный логин-роль с паролем; см. историю деплоя 2026-06-04):
 sudo -u postgres psql -d karman_db <<'SQL'
 CREATE ROLE karman_app LOGIN PASSWORD '<openssl rand -hex 24>';
 GRANT CONNECT ON DATABASE karman_db TO karman_app;
@@ -60,35 +60,38 @@ GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO karman_app;
 SQL
 
 sudo cp scripts/karman.service /etc/systemd/system/karman.service
-sudo tee /etc/karman.env >/dev/null <<'EOF'
+# $ENV_FILE — env-файл сервиса на боксе; фактический путь смотреть в директиве
+# EnvironmentFile systemd-юнита (в репозитории не фиксируем):
+sudo tee "$ENV_FILE" >/dev/null <<'EOF'
 SESSION_SECRET=<openssl rand -base64 48>
 DATABASE_URL=postgres://karman_app:<пароль роли>@/karman_db?host=/var/run/postgresql
 EOF
-sudo chmod 600 /etc/karman.env
+sudo chmod 600 "$ENV_FILE"
 sudo systemctl daemon-reload && sudo systemctl enable --now karman
 sudo systemctl disable --now karman-api      # старый Express-сервис больше не нужен
 
-# nginx: взять за основу scripts/nginx.karman.conf (единый proxy_pass на :3000,
-# обязателен проброс X-Forwarded-Proto). Затем:
+# nginx: взять за основу scripts/nginx.karman.conf (единый proxy_pass на :$APP_PORT —
+# порт берётся из systemd-юнита; обязателен проброс X-Forwarded-Proto). Затем:
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
 Регулярный деплой — **CI-artifact** (`.github/workflows/deploy-prod.yml`): push в main
 собирает standalone-бандл в GitHub Actions, по SSH кладёт его в
-`/home/valstan/karman/releases/<sha>`, переключает симлинк `current`, рестартит сервис и
-гонит smoke. On-box `next build` запрещён (мандат brain 2026-06-11 — на общем боксе мешает
-соседям). Ручной повторный запуск: `bash scripts/deploy_remote.sh` (gh workflow run + watch).
+`<база релизов>/releases/<sha>`, переключает симлинк `current`, рестартит сервис и
+гонит smoke. On-box `next build` запрещён (мандат brain 2026-06-11 — сборка на проде
+отбирает ресурсы у рантайма, собираем в CI). Ручной повторный запуск:
+`bash scripts/deploy_remote.sh` (gh workflow run + watch).
 
 Миграции standalone-бандл не несёт: новые `lib/db/migrations/*.sql` применяются вручную
 ДО деплоя (push с новой миграцией CI-guard роняет; после ручного применения — деплой через
-`workflow_dispatch`). Смена deploy-target (миграция на Бокс 1) = правка repo-vars
+`workflow_dispatch`). Смена deploy-target (переезд на другой бокс) = правка repo-vars
 `DEPLOY_SSH_HOST` / `DEPLOY_SSH_PORT` / `DEPLOY_APP_PORT` + secret `SSH_PRIVATE_KEY`.
 
 ## Медиа-каталог (сканы документов)
 
-- Пользовательские сканы хранятся на ФС в `MEDIA_ROOT` (env в systemd-юните;
-  `/home/valstan/karman/media` — вне релиз-директорий, переживает деплои).
-  должен быть writable для пользователя сервиса (`valstan`). В БД хранится только относительный
+- Пользовательские сканы хранятся на ФС в `MEDIA_ROOT` (env в systemd-юните; каталог лежит
+  вне релиз-директорий, поэтому переживает деплои). Каталог должен быть writable для
+  пользователя сервиса. В БД хранится только относительный
   путь вида `documents/<userId>/<docId>/<slot>-<token>.<ext>`.
 - **Бэкап:** каталог `media/` не входит в git и не восстановится из репозитория — включить его
   в регулярный бэкап вместе с дампом БД, иначе ссылки в БД будут указывать на отсутствующие файлы.
@@ -98,7 +101,8 @@ sudo nginx -t && sudo systemctl reload nginx
 ## Здоровье и логи
 
 ```bash
-curl -sS http://127.0.0.1:3000/api/health      # {"status":"ok"}
+# $APP_PORT — порт приложения, берётся из systemd-юнита
+curl -sS "http://127.0.0.1:$APP_PORT/api/health"      # {"status":"ok"}
 sudo systemctl status karman --no-pager
 sudo journalctl -u karman -f
 ```

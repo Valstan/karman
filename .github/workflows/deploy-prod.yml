@@ -1,17 +1,20 @@
 name: Deploy to production
 
-# CI-artifact-деплой (мандат brain 2026-06-11, подготовка к Боксу 1): сборка едет
-# в GitHub Actions, на прод по SSH уезжает готовый standalone-артефакт + рестарт
-# systemd-сервиса. On-box `next build` запрещён — на общем боксе он мешает соседям
-# (а на текущем tiny уже рвал SSH).
+# CI-artifact-деплой (мандат brain 2026-06-11): сборка едет в GitHub Actions,
+# на прод по SSH уезжает готовый standalone-артефакт + рестарт systemd-сервиса.
+# On-box `next build` запрещён: сборка на проде отбирает RAM/CPU у рантайма —
+# на прежнем хосте она уже рвала SSH.
 #
-# Требуется:
-#   secrets.SSH_PRIVATE_KEY  — приватная часть изолированного ключа karman-ci-deploy
-#   vars.DEPLOY_SSH_HOST     — <hex>.vps.myjino.ru (myjino ротирует — потому в vars)
-#   vars.DEPLOY_SSH_PORT     — внешний ssh-порт
-#   vars.DEPLOY_APP_PORT     — порт приложения (сейчас 3000; на Боксе 1 → 3002)
+# Требуется (значения — в repo-vars/secrets, в коде их нет: D-038, репозиторий публичный):
+#   secrets.SSH_PRIVATE_KEY       — приватная часть изолированного ключа karman-ci-deploy
+#   vars.DEPLOY_SSH_HOST          — DNS-имя прод-хоста (провайдер ротирует техимя)
+#   vars.DEPLOY_SSH_PORT          — внешний ssh-порт
+#   vars.DEPLOY_SSH_USER          — системный логин деплоя
+#   vars.DEPLOY_SSH_KNOWN_HOSTS   — ОЖИДАЕМЫЙ публичный ключ хоста (строка known_hosts)
+#   vars.DEPLOY_BASE              — база релизов на прод-хосте
+#   vars.DEPLOY_APP_PORT          — порт приложения
 #
-# Смена deploy-target при миграции = правка трёх vars, код не трогаем.
+# Смена deploy-target при миграции = правка vars, код не трогаем.
 
 on:
   push:
@@ -84,6 +87,13 @@ jobs:
           # Воркер напоминаний (тонкое реле, без зависимостей) едет рядом с server.js;
           # его запускает karman-reminders.service из current/. См. docs/telegram-reminders.md.
           cp scripts/reminders-worker.mjs .next/standalone/reminders-worker.mjs
+          # Операционные скрипты едут вместе с артефактом. Без этого каталог scripts/
+          # на проде — РУЧНАЯ копия, и она расходится молча: 2026-08-25 обнаружено, что
+          # прод крутит backup_vault.sh от 11 июля, то есть правка от 10 августа
+          # (добавить secrets_grant / secrets_bootstrap / passport_* в дамп vault'а)
+          # так и не доехала — реестр личностей и карта grant'ов не бэкапились вовсе.
+          mkdir -p .next/standalone/scripts
+          cp scripts/*.sh .next/standalone/scripts/
           tar czf karman-app.tgz -C .next/standalone .
           echo "bundle: $(du -h karman-app.tgz | cut -f1)"
 
@@ -92,41 +102,64 @@ jobs:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           DEPLOY_SSH_HOST: ${{ vars.DEPLOY_SSH_HOST }}
           DEPLOY_SSH_PORT: ${{ vars.DEPLOY_SSH_PORT }}
+          DEPLOY_SSH_USER: ${{ vars.DEPLOY_SSH_USER }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ vars.DEPLOY_SSH_KNOWN_HOSTS }}
         run: |
           set -e
-          if [ -z "$SSH_PRIVATE_KEY" ] || [ -z "$DEPLOY_SSH_HOST" ] || [ -z "$DEPLOY_SSH_PORT" ]; then
-            echo "::error::Заданы не все: secrets.SSH_PRIVATE_KEY / vars.DEPLOY_SSH_HOST / vars.DEPLOY_SSH_PORT"
+          MISSING=""
+          [ -z "$SSH_PRIVATE_KEY" ] && MISSING="$MISSING secrets.SSH_PRIVATE_KEY"
+          [ -z "$DEPLOY_SSH_HOST" ] && MISSING="$MISSING vars.DEPLOY_SSH_HOST"
+          [ -z "$DEPLOY_SSH_PORT" ] && MISSING="$MISSING vars.DEPLOY_SSH_PORT"
+          [ -z "$DEPLOY_SSH_USER" ] && MISSING="$MISSING vars.DEPLOY_SSH_USER"
+          [ -z "$DEPLOY_SSH_KNOWN_HOSTS" ] && MISSING="$MISSING vars.DEPLOY_SSH_KNOWN_HOSTS"
+          if [ -n "$MISSING" ]; then
+            echo "::error::Не заданы:$MISSING"
             exit 1
           fi
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519_karman_ci
           chmod 600 ~/.ssh/id_ed25519_karman_ci
-          ssh-keyscan -p "$DEPLOY_SSH_PORT" -H "$DEPLOY_SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          # Ключ хоста ПИНУЕТСЯ из vars, а не добывается ssh-keyscan'ом на месте.
+          # Было: `ssh-keyscan … || true` в паре со `StrictHostKeyChecking accept-new`.
+          # При сбое keyscan шаг молча шёл дальше с пустым known_hosts, а accept-new
+          # принимал ЛЮБОЙ предъявленный ключ — то есть окно MITM ровно на том канале,
+          # по которому уезжает артефакт и выполняется `sudo systemctl restart`.
+          # Ключ хоста не секрет (это публичная половина), поэтому живёт в vars.
+          echo "$DEPLOY_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
           cat > ~/.ssh/config <<CFG
           Host karman
             HostName $DEPLOY_SSH_HOST
             Port $DEPLOY_SSH_PORT
-            User valstan
+            User $DEPLOY_SSH_USER
             IdentityFile ~/.ssh/id_ed25519_karman_ci
             IdentitiesOnly yes
-            StrictHostKeyChecking accept-new
+            StrictHostKeyChecking yes
             ServerAliveInterval 30
           CFG
           chmod 600 ~/.ssh/config
 
       - name: Ship artifact + restart
+        env:
+          DEPLOY_BASE: ${{ vars.DEPLOY_BASE }}
         run: |
           set -e
+          if [ -z "$DEPLOY_BASE" ]; then echo "::error::Не задан vars.DEPLOY_BASE"; exit 1; fi
           scp -q karman-app.tgz karman:/tmp/karman-app.tgz
-          ssh karman 'bash -s' "${{ github.sha }}" <<'REMOTE'
+          ssh karman 'bash -s' "${{ github.sha }}" "$DEPLOY_BASE" <<'REMOTE'
           set -e
           SHA="$1"
-          BASE=/home/valstan/karman
+          BASE="$2"
           REL="$BASE/releases/$SHA"
           rm -rf "$REL"; mkdir -p "$REL"
           tar xzf /tmp/karman-app.tgz -C "$REL"
           rm -f /tmp/karman-app.tgz
           ln -sfn "$REL" "$BASE/current"
+          # Синхронизация операционных скриптов (их запускает cron, а не приложение,
+          # поэтому они живут вне релиз-каталога). Только копирование, без удаления:
+          # чистка прод-путей автоматикой — не то, что стоит делать молча.
+          mkdir -p "$BASE/scripts"
+          cp -f "$REL/scripts/"*.sh "$BASE/scripts/" 2>/dev/null || true
           sudo systemctl restart karman
           # держим последние 5 релизов
           ls -1dt "$BASE"/releases/*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf
@@ -136,9 +169,12 @@ jobs:
       # #011 smoke: health + корень (307 → логин без сессии — норма).
       - name: Smoke check
         env:
-          APP_PORT: ${{ vars.DEPLOY_APP_PORT || '3000' }}
+          # Без дефолта намеренно: прежний `|| '3000'` расходился с боевым портом,
+          # то есть смоук стучался бы не в то приложение и молчал бы об этом.
+          APP_PORT: ${{ vars.DEPLOY_APP_PORT }}
         run: |
           set -e
+          if [ -z "$APP_PORT" ]; then echo "::error::Не задан vars.DEPLOY_APP_PORT"; exit 1; fi
           ssh karman 'bash -s' "$APP_PORT" <<'REMOTE'
           set -e
           PORT="$1"

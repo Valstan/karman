@@ -1,31 +1,37 @@
-# systemd-юнит KARMAN (единое приложение Next.js, standalone-артефакт из CI).
-# Деплой кладёт релизы в /home/valstan/karman/releases/<sha> и переключает
-# симлинк /home/valstan/karman/current (см. .github/workflows/deploy-prod.yml).
-# Установка / обновление юнита (деплой его НЕ синхронизирует — только restart):
-#   sudo cp scripts/karman.service /etc/systemd/system/karman.service
-#   sudo systemctl daemon-reload && sudo systemctl restart karman
+# ШАБЛОН systemd-юнита KARMAN (единое приложение Next.js, standalone-артефакт из CI).
 #
-# Сверено с боевым юнитом Бокса 1 2026-08-10. До этой сверки файл расходился
-# с продом молча (PORT=3000, /etc/karman.env, /usr/bin/node) — то есть
-# «установка по инструкции» из шапки положила бы прод.
+# ЭТО НЕ ГОТОВЫЙ ФАЙЛ — не копировать `cp`. Значения подставляются рендером:
+#   DEPLOY_USER=… APP_BASE=… APP_PORT=… ENV_FILE=… NODE_BIN=… \
+#     bash scripts/render_unit.sh scripts/karman.service | sudo tee /etc/systemd/system/karman.service
+#   sudo systemctl daemon-reload && sudo systemctl restart karman
+# Откуда брать значения — см. шапку scripts/render_unit.sh.
+#
+# Деплой кладёт релизы в <APP_BASE>/releases/<sha> и переключает симлинк
+# <APP_BASE>/current (см. .github/workflows/deploy-prod.yml). Юнит деплой
+# НЕ синхронизирует — только `systemctl restart`.
+#
+# Почему шаблон: до 2026-08-25 файл лежал с боевыми значениями и молча расходился
+# с продом (karman.service — к 08-10 по трём полям, karman-reminders.service —
+# к 08-25 по четырём). У шаблона расходиться нечему. Заодно координаты боевой
+# машины перестают лежать в публичном репозитории (D-038).
 [Unit]
 Description=KARMAN (Next.js)
 After=network.target postgresql.service
 
 [Service]
 Type=simple
-User=valstan
-WorkingDirectory=/home/valstan/karman/current
+User=@DEPLOY_USER@
+WorkingDirectory=@APP_BASE@/current
 Environment=NODE_ENV=production
-Environment=PORT=3002
+Environment=PORT=@APP_PORT@
 Environment=HOSTNAME=127.0.0.1
 # Сканы документов живут вне релиз-директорий и переживают деплои.
-Environment=MEDIA_ROOT=/home/valstan/karman/media
+Environment=MEDIA_ROOT=@APP_BASE@/media
 # Idle-таймаут keep-alive сокета (G234). Дефолт Node — 5 с, и если перед
 # приложением появится прокси с пулом upstream-соединений (nginx
 # `upstream { keepalive N }`), прокси начнёт отправлять запросы в сокеты,
 # которые Node только что закрыл → случайные 502 при пустых логах приложения.
-# Сегодня пула нет (проверено 2026-08-10: ни одного upstream-блока на Боксе 1),
+# Сегодня пула нет (проверено 2026-08-10: ни одного upstream-блока на проде),
 # так что это ремень поверх подтяжек — он взводится в тот день, когда пул заведут.
 # Значение больше типичных 60 с у nginx. Standalone-сервер Next читает
 # именно эту переменную (.next/standalone/server.js → startServer).
@@ -34,9 +40,10 @@ Environment=MEDIA_ROOT=/home/valstan/karman/media
 Environment=KEEP_ALIVE_TIMEOUT=65000
 # SESSION_SECRET и DATABASE_URL — в env-файле (обязательны!):
 #   SESSION_SECRET=<openssl rand -base64 48>
-#   DATABASE_URL=postgres:///karman_db?host=/var/run/postgresql
-EnvironmentFile=/etc/karman/karman.env
-ExecStart=/opt/node22/bin/node server.js
+#   DATABASE_URL=postgres:///<база>?host=/var/run/postgresql
+EnvironmentFile=@ENV_FILE@
+ExecStart=@NODE_BIN@ server.js
+# Квоты подобраны под нынешнее выделение прод-машины — при переезде пересмотреть.
 MemoryHigh=448M
 MemoryMax=512M
 CPUQuota=150%
