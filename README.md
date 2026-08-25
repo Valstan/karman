@@ -22,7 +22,7 @@ PostgreSQL, **Tailwind CSS + shadcn/ui**. Чтение — через React Serv
 app/          маршруты: (auth)/login, (app)/{дашборд,credits,banks,documents}, api/{auth,health}
 components/   ui/ (shadcn) и app/ (компоненты приложения)
 lib/          db/ (схема+клиент), auth/, services/ (чтение), actions/ (мутации), validation/ (zod)
-scripts/      bootstrap.sql (локальная БД), deploy.sh, karman.service, nginx.karman.conf
+scripts/      bootstrap.sql (локальная БД), deploy_remote.sh, karman.service, nginx.karman.conf
 docs/         ARCHITECTURE.md, OPERATIONS.md
 ```
 
@@ -53,11 +53,19 @@ npm run typecheck   # только типы
 См. [docs/OPERATIONS.md](docs/OPERATIONS.md). Кратко:
 
 ```bash
-scripts/deploy.sh   # git pull → npm ci → build → (migrate) → restart karman.service
+bash scripts/deploy_remote.sh   # ручной перезапуск деплоя: триггерит deploy-prod.yml
+                                # и ждёт результата
 ```
 
-Приложение работает одним процессом `node .next/standalone/server.js` на `127.0.0.1:3000`
+Сборка идёт **в CI** (`.github/workflows/deploy-prod.yml`): standalone-артефакт собирается
+в GitHub Actions и уезжает на прод готовым; on-box `next build` запрещён (мандат brain
+2026-06-11). Штатный путь — авто-деплой на push в `main`; скрипт нужен, когда деплой надо
+перезапустить руками (например, после ручного применения миграций).
+
+Приложение работает одним процессом `node .next/standalone/server.js` на loopback
 за nginx (`scripts/nginx.karman.conf`), systemd-юнит — `scripts/karman.service`.
+Порт задаётся в systemd-юните (приезжает при деплое из repo-var `DEPLOY_APP_PORT`),
+а не в коде и не в репозитории.
 
 ## Переменные окружения
 

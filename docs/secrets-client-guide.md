@@ -13,25 +13,17 @@
   нельзя прочитать или перезаписать чужие секреты. Знать slug/id комнаты для работы не нужно:
   токен сам приводит запрос в нужную комнату.
 
+Базовый URL менеджера владелец выдаёт вместе с токеном; ниже по тексту он обозначен как
+`$VAULT_URL` — экспортируйте его один раз (`export VAULT_URL=https://…`), и примеры
+заработают как есть. Переменная, а не сам адрес, по простой причине: репозиторий публичный,
+а адрес хранилища секретов экосистемы в публичный репозиторий не кладём.
+
 ## Каждому проекту — своя комната
 
-Заведены комнаты (slug — человекочитаемая метка в UI владельца; для подключения он не нужен):
-
-| Проект | slug комнаты |
-|---|---|
-| MatricaRMZ | `matricarmz` |
-| GONBA | `gonba` |
-| SARAFAN | `setka` |
-| SabantuyMalmyzh | `sabantuymalmyzh` |
-| vMalmyzhe | `vmalmyzhe` |
-| DKMalmyzh | `dkmalmyzh` |
-| KalininoCKS | `kalininocks` |
-| trener | `trener` |
-| brain | `brain` |
-| KARMAN | `karman` |
-
-> Этот список — снимок; источник истины — страница `/secrets`. Новая комната заводится
-> self-serve (ниже) или владельцем в KARMAN → `/secrets`.
+У каждого проекта экосистемы — **своя комната**, и знать её slug для подключения **не нужно**:
+slug — лишь человекочитаемая метка в UI владельца, а в нужную комнату запрос приводит сам токен.
+Актуальный список комнат (он же источник истины) владелец видит на странице `/secrets`; новая
+комната заводится self-serve (ниже) или владельцем там же.
 
 ## Паспортный вход (штатный путь с волны 2 ADR-0012)
 
@@ -41,7 +33,7 @@
 ```bash
 # в GitHub Actions, permissions: id-token: write
 ASSERTION="$(curl -sf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"   "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=karman-vault" | jq -r .value)"
-curl -sf -X POST https://831d0ce99bdf.vps.myjino.ru/api/secrets/session   -H "Authorization: Bearer $ASSERTION"
+curl -sf -X POST "$VAULT_URL/api/secrets/session"   -H "Authorization: Bearer $ASSERTION"
 # → 201 {"ok":true,"token":"skm_…","expiresAt":"…","slug":"myproject","canWrite":false}
 ```
 
@@ -58,7 +50,7 @@ curl -sf -X POST https://831d0ce99bdf.vps.myjino.ru/api/secrets/session   -H "Au
 продиктовать или прислать в чат — настоящий токен по нему заберёте вы сами.
 
 ```bash
-curl -fsS -X POST https://831d0ce99bdf.vps.myjino.ru/api/secrets/claim   -H "Authorization: Bearer skb_<код-от-владельца>"
+curl -fsS -X POST "$VAULT_URL/api/secrets/claim"   -H "Authorization: Bearer skb_<код-от-владельца>"
 # → 201 {"ok":true,"token":"skm_...","tokenPrefix":"skm_...","slug":"myproject","canWrite":false}
 ```
 
@@ -82,7 +74,7 @@ curl -fsS -X POST https://831d0ce99bdf.vps.myjino.ru/api/secrets/claim   -H "Aut
 комнатам им нельзя).
 
 ```bash
-curl -X POST https://831d0ce99bdf.vps.myjino.ru/api/secrets/provision \
+curl -X POST "$VAULT_URL/api/secrets/provision" \
   -H "Authorization: Bearer $VAULT_PROVISION_KEY" \
   -H "Content-Type: application/json" \
   -d '{"slug":"myproject","name":"MyProject"}'
@@ -118,7 +110,7 @@ curl -X POST https://831d0ce99bdf.vps.myjino.ru/api/secrets/provision \
 ## Эндпоинт
 
 ```
-https://831d0ce99bdf.vps.myjino.ru/api/secrets
+$VAULT_URL/api/secrets
 ```
 
 ## Первое подключение (smoke)
@@ -126,14 +118,14 @@ https://831d0ce99bdf.vps.myjino.ru/api/secrets
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" \
   -H "Authorization: Bearer $SECRETS_TOKEN" \
-  https://831d0ce99bdf.vps.myjino.ru/api/secrets
+  "$VAULT_URL/api/secrets"
 # 200 — токен валиден (пустая комната вернёт {"secrets":{}}); 401 — токен битый/отозван.
 ```
 
 ## Сохранить свои секреты (POST, bulk upsert)
 
 ```bash
-curl -X POST https://831d0ce99bdf.vps.myjino.ru/api/secrets \
+curl -X POST "$VAULT_URL/api/secrets" \
   -H "Authorization: Bearer $SECRETS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"secrets":{"DB_PASSWORD":"…","SOME_API_KEY":"…"}}'
@@ -144,18 +136,18 @@ curl -X POST https://831d0ce99bdf.vps.myjino.ru/api/secrets \
 
 ```bash
 # все секреты проекта:
-curl -H "Authorization: Bearer $SECRETS_TOKEN" https://831d0ce99bdf.vps.myjino.ru/api/secrets
+curl -H "Authorization: Bearer $SECRETS_TOKEN" "$VAULT_URL/api/secrets"
 # → {"secrets":{"DB_PASSWORD":"…","SOME_API_KEY":"…"}}
 
 # один ключ:
 curl -H "Authorization: Bearer $SECRETS_TOKEN" \
-  "https://831d0ce99bdf.vps.myjino.ru/api/secrets?key=DB_PASSWORD"
+  "$VAULT_URL/api/secrets?key=DB_PASSWORD"
 ```
 
 ## Node-сниппет
 
 ```js
-const BASE = 'https://831d0ce99bdf.vps.myjino.ru/api/secrets';
+const BASE = `${process.env.VAULT_URL}/api/secrets`;
 const headers = {
   Authorization: `Bearer ${process.env.SECRETS_TOKEN}`,
   'Content-Type': 'application/json',
@@ -179,7 +171,7 @@ export async function loadSecrets() {
 ```python
 import os, requests
 
-BASE = "https://831d0ce99bdf.vps.myjino.ru/api/secrets"
+BASE = os.environ["VAULT_URL"] + "/api/secrets"
 HEADERS = {"Authorization": f"Bearer {os.environ['SECRETS_TOKEN']}"}
 
 def save_secrets(secrets: dict) -> dict:
@@ -210,7 +202,7 @@ if (!local || Object.keys(local).length === 0) {
 
 ```bash
 curl -H "Authorization: Bearer $SECRETS_TOKEN" \
-  "https://831d0ce99bdf.vps.myjino.ru/api/secrets?key=VMALMYZHE_INGEST_KEY"
+  "$VAULT_URL/api/secrets?key=VMALMYZHE_INGEST_KEY"
 # → {"secrets":{"VMALMYZHE_INGEST_KEY":"…"}}
 ```
 
@@ -227,6 +219,75 @@ curl -H "Authorization: Bearer $SECRETS_TOKEN" \
 
 Запросить общий ключ — через владельца (или brain, если ключ ecosystem-wide): нужны
 имя ключа у источника, ваша комната и имя, под которым вы хотите его видеть.
+
+## SSH-ключи к продам: комната вместо диска (D-035)
+
+Решение владельца [D-035]: **новая машина больше не генерирует SSH-ключ и не относит его
+на прод руками.** Ключи владельца зеркалируются в комнатах КАРМАНа, новая машина берёт
+свой ключ из комнаты **в `ssh-agent`, а не на диск**.
+
+Честная граница: один секрет на новую машину всё равно приносится руками — **токен комнаты**.
+Это один секрет вместо пяти ключей, а не ноль. И vault здесь — **копия и канал доставки**;
+источник истины доступа по-прежнему `authorized_keys` на боксе.
+
+### Конвенция имён
+
+| Имя ключа | Что лежит |
+|---|---|
+| `SSH_KEY__<alias>__<machine>` | приватный ключ, PEM как есть, с переводами строк |
+| `SSH_PUB__<alias>__<machine>` | публичная половина (чтобы `authorized_keys` собирался из комнаты, а не с диска машины) |
+
+- `<alias>` — ssh-алиас прода, `<machine>` — имя машины, с которой ходят. Из имени обязаны
+  читаться оба: ключи остаются **по-машинными**, общий ключ на все машины не заводим,
+  и отзыв по имени поэтому не теряется.
+- **Дефис в алиасе не пройдёт.** Имя ключа валидируется как env-переменная
+  (`^[A-Za-z_][A-Za-z0-9_]*$`) — дефисы и точки заменяйте на `_`, разделитель между
+  частями — двойное подчёркивание.
+
+### Забрать ключ в агент (не на диск)
+
+```bash
+curl -fsS -H "Authorization: Bearer $SECRETS_TOKEN" "$VAULT_URL/api/secrets?key=SSH_KEY__myprod__PC79"   | jq -r '.secrets.SSH_KEY__myprod__PC79' | ssh-add -
+```
+
+Ключ попадает в агент на время сессии и **не печатается** — ИИ-агент, работающий в этой
+консоли, его не видит. `ssh-add -l` покажет отпечаток, но не материал.
+
+Нужен постоянный доступ (машина ваша, не общая) — тогда на диск, но без вывода в консоль
+и сразу с правами:
+
+```bash
+umask 077
+curl -fsS -H "Authorization: Bearer $SECRETS_TOKEN" "$VAULT_URL/api/secrets?key=SSH_KEY__myprod__PC79"   | jq -r '.secrets.SSH_KEY__myprod__PC79' > ~/.ssh/id_myprod
+chmod 600 ~/.ssh/id_myprod
+ssh-keygen -y -f ~/.ssh/id_myprod > /dev/null && echo "ключ читается"
+```
+
+Последняя строка — приёмка: `ssh-keygen -y` разбирает ключ по-настоящему и падает на
+испорченном. Она нужна именно здесь, см. ниже.
+
+### Переводы строк: проверено, а не обещано
+
+Многострочное значение — классическое место, где ключ ломается молча. Что проверено
+на нашей стороне:
+
+- **Хранение и отдача.** Значение секрета не проходит `trim()` и не нормализуется;
+  кап — 64 КБ (ed25519 ~400 Б, RSA-4096 ~3.4 КБ). В `GET /api/secrets` значение уезжает
+  обычной JSON-строкой с `
+`, `jq -r` возвращает исходный текст байт-в-байт.
+- **Ввод через GUI — здесь была настоящая дыра, закрыта 2026-08-25.** Поле значения было
+  однострочным `<input type="password">`, а такой input по спеке HTML применяет *value
+  sanitization algorithm* и **молча вырезает переводы строк** из вставленного текста.
+  Приватный ключ, вставленный в форму, стал бы одной строкой без единой ошибки — и узнали
+  бы об этом только при первом `ssh`. Теперь поле многострочное.
+
+Поэтому `ssh-keygen -y -f <файл>` в приёмке выше — не формальность: это единственная
+проверка, которая отличает целый ключ от склеенного.
+
+### Что остаётся ходом владельца
+
+Завести ключ в комнату и снять с ревизии мёртвые — операция владельца в GUI vault'а.
+Реестр выданного ведёт brain (`access/INDEX`), сверка — на quarterly.
 
 ## Правила и коды
 

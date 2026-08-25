@@ -15,7 +15,7 @@
   (`deploy-prod.yml`, шаг Assemble).
 - Эндпоинты `/api/*` не закрыты `proxy.ts` → защищаются сами `REMINDERS_INTERNAL_SECRET`.
 
-## Переменные окружения (прод: `/etc/karman.env`)
+## Переменные окружения (прод: env-файл сервиса, путь — см. `EnvironmentFile` в systemd-юните)
 
 Добавить к существующим (`SESSION_SECRET`, `DATABASE_URL`):
 
@@ -30,9 +30,9 @@ TELEGRAM_API_BASE=https://<relay-host>
 Веб-приложение НЕ падает без них (ядро самодостаточно) — фича напоминаний просто
 выключена: эндпоинты вернут 401, воркер простаивает с логом.
 
-## ⚠️ RKN блокирует api.telegram.org на проде (myjino, РФ)
+## ⚠️ RKN блокирует api.telegram.org с прод-хоста (РФ)
 
-На текущем прод-боксе IP Telegram заблокированы (TCP :443 в таймаут; DNS и общий
+На текущем прод-хосте IP Telegram заблокированы (TCP :443 в таймаут; DNS и общий
 egress живые — проверка: `curl -m10 https://api.telegram.org/botX/getMe` → таймаут,
 `curl https://www.google.com` → 200). И отправка (`sendMessage`), и опрос
 (`getUpdates`) ходят на `api.telegram.org` → оба не работают напрямую.
@@ -54,7 +54,7 @@ export default {
 Задеплоить (workers.dev URL вида `https://karman-tg.<sub>.workers.dev`), затем на проде:
 
 ```
-TELEGRAM_API_BASE=https://karman-tg.<sub>.workers.dev   # в /etc/karman.env
+TELEGRAM_API_BASE=https://karman-tg.<sub>.workers.dev   # в env-файле сервиса (см. EnvironmentFile в systemd-юните)
 sudo systemctl restart karman-reminders karman
 ```
 
@@ -92,7 +92,7 @@ journalctl -u karman-reminders -n 50 --no-pager
 1. Смержить PR (CI-гейты зелёные). Push в main запустит `deploy-prod.yml`, но
    migration-guard **завалит** его (в коммите новый `*.sql`) — это ожидаемо.
 2. Применить миграцию на проде (psql, см. выше).
-3. Прописать env-переменные в `/etc/karman.env`.
+3. Прописать env-переменные в env-файл сервиса (путь — см. `EnvironmentFile` в systemd-юните).
 4. Запустить деплой: `gh workflow run deploy-prod.yml` (или `bash scripts/deploy_remote.sh`)
    — guard при `workflow_dispatch` пропускается.
 5. Установить/перезапустить воркер-сервис (см. выше).
@@ -101,7 +101,8 @@ journalctl -u karman-reminders -n 50 --no-pager
 
 1. В приложении: «Настройки» → «Сгенерировать ссылку» → открыть `t.me/<bot>?start=<code>`.
 2. Нажать Start → бот отвечает «✅ Telegram привязан».
-3. Проверка секрета: `curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:3000/api/reminders/dispatch`
+3. Проверка секрета (`<APP_PORT>` — порт из systemd-юнита, repo-var `DEPLOY_APP_PORT`):
+   `curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:<APP_PORT>/api/reminders/dispatch`
    → 401; с `-H "Authorization: Bearer $REMINDERS_INTERNAL_SECRET"` → 200.
 
 ## Бот

@@ -21,6 +21,10 @@ jobs:
       SESSION_SECRET: ci-dummy-secret-not-used-in-prod
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Сканеру секретов нужна ИСТОРИЯ, а не один коммит: без этого гейт
+          # зелен ровно в том сценарии, ради которого ставится.
+          fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -35,3 +39,24 @@ jobs:
       # увидеть их можно было, только запустив audit руками. Dev-зависимости
       # исключены намеренно: они не едут в прод-артефакт, а их шум глушил бы гейт.
       - run: npm audit --omit=dev --audit-level=high
+      # Сканер секретов (мандат brain 2026-08-17 / D-030). Репозиторий публичный
+      # с 17.08, а у публичного репо утёкший секрет скомпрометирован С СЕКУНДЫ
+      # пуша — форки и кэши не отозвать, «удалить коммит» не лечит.
+      #
+      # Бинарь с явными флагами, а не gitleaks-action: три обязательных свойства
+      # видны прямо здесь и не зависят от умолчаний обёртки —
+      #   fetch-depth: 0 (выше)  ·  --redact  ·  --exit-code 1.
+      # --redact критичен: без него найденный секрет печатается в лог CI, то есть
+      # утекает второй раз, уже в публичный вечный лог Actions.
+      #
+      # Конфиг .gitleaks.toml расширяет дефолтные 195 правил, а не заменяет их:
+      # дефолт НЕ видит VK-токен вовсе и пропускает Telegram-токен внутри URL
+      # (замерено Сарафаном, оба класса в портфеле реально утекали), а наши
+      # собственные skm_/skb_ и SECRETS_MASTER_KEY не знает никто, кроме нас.
+      - name: Secret scan (gitleaks)
+        run: |
+          set -euo pipefail
+          VER=8.30.1
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" | tar -xz gitleaks
+          ./gitleaks version
+          ./gitleaks git . --config .gitleaks.toml --redact --exit-code 1 --no-banner --verbose

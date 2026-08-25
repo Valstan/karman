@@ -16,6 +16,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Table,
   TableBody,
@@ -40,6 +41,7 @@ function SecretItemDialog({
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  const [shown, setShown] = useState(false);
   const isEdit = Boolean(existingKey);
   const {
     register,
@@ -66,7 +68,10 @@ function SecretItemDialog({
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
-        if (next) reset({ key: existingKey ?? '', value: '' });
+        if (next) {
+          setShown(false);
+          reset({ key: existingKey ?? '', value: '' });
+        }
       }}
     >
       <DialogTrigger asChild>{trigger}</DialogTrigger>
@@ -87,11 +92,40 @@ function SecretItemDialog({
             />
           </div>
           <div className="grid gap-2">
-            <Label htmlFor="value">Значение</Label>
-            <Input id="value" required type="password" autoComplete="off" {...register('value')} />
-            {isEdit && (
-              <p className="text-xs text-muted-foreground">Будет записано новое значение.</p>
-            )}
+            <div className="flex items-center justify-between">
+              <Label htmlFor="value">Значение</Label>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={() => setShown((v) => !v)}
+              >
+                {shown ? <EyeOff className="mr-1 size-3.5" /> : <Eye className="mr-1 size-3.5" />}
+                {shown ? 'Скрыть' : 'Показать'}
+              </Button>
+            </div>
+            {/*
+              Textarea, а НЕ <input type="password">: по спеке HTML однострочный input
+              применяет value sanitization algorithm и МОЛЧА вырезает переводы строк из
+              вставленного текста. Приватный ключ SSH или PEM-сертификат при вставке
+              превращался бы в одну строку без единой ошибки — узнали бы об этом только
+              на проде, при первом использовании ключа. Маскировка сохранена блюром.
+            */}
+            <Textarea
+              id="value"
+              required
+              rows={3}
+              autoComplete="off"
+              spellCheck={false}
+              className={`font-mono text-xs${shown ? '' : ' blur-[3px] focus:blur-none'}`}
+              {...register('value')}
+            />
+            <p className="text-xs text-muted-foreground">
+              {isEdit ? 'Будет записано новое значение. ' : ''}
+              Многострочные значения (PEM-ключи, сертификаты) вставляются как есть — переводы
+              строк сохраняются.
+            </p>
           </div>
           <DialogFooter>
             <Button type="submit" disabled={isSubmitting}>

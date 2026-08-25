@@ -3,12 +3,12 @@
 Скрипт `scripts/backup_vault.sh` делает шифрованный бэкап секретов и сканов
 документов и выгружает на Яндекс.Диск.
 
-**Состояние на 2026-08-10 (проверено на Боксе 1, а не по документации):** бэкап
+**Состояние на 2026-08-10 (проверено на проде, а не по документации):** бэкап
 **работает ежедневно** с 11 июля. Cron владельца — 03:30 МСК, лог
 `~/backups/vault-backup.log`, на Диске 14 архивов (ретенция гасит старые),
 шифрование — на подключ `620308C1E7BFB120` ключа
 `99ECCA03BEDF6997D4F636DE9B610B3F2817F37A` (`KARMAN Vault Backup`).
-**Закрытого ключа на боксе нет** — так и задумано (pool #008).
+**Закрытого ключа на прод-хосте нет** — так и задумано (pool #008).
 
 Отсюда единственная незакрытая часть: **учебное восстановление ни разу не
 прогоняли**, а прогнать его может только владелец — расшифровка требует его
@@ -34,7 +34,8 @@
 
 Основной пароль при 2FA не подходит — нужен **пароль приложения**:
 Яндекс ID → Безопасность → Пароли приложений → создать для «WebDAV».
-Затем дописать в `/etc/karman/karman.env` на боксе (значения — не в git):
+Затем дописать в env-файл сервиса на прод-хосте (путь — `EnvironmentFile` в systemd-юните;
+значения — не в git):
 
 ```
 YANDEX_WEBDAV_USER=<логин-яндекса>
@@ -43,12 +44,12 @@ YANDEX_WEBDAV_PASSWORD=<пароль-приложения>
 
 ### 2. Публичный gpg-ключ владельца (для шифрования)
 
-Экспортировать свой публичный ключ и импортировать на боксе:
+Экспортировать свой публичный ключ и импортировать на прод-хосте:
 
 ```bash
 # на своей машине:
 gpg --export --armor <ваш-ключ> > karman-owner.pub.asc
-# скопировать на бокс и импортировать под valstan:
+# скопировать на прод-хост и импортировать под deploy-пользователем:
 scp karman-owner.pub.asc karman:~/
 ssh karman 'gpg --import ~/karman-owner.pub.asc && rm ~/karman-owner.pub.asc'
 ```
@@ -84,7 +85,8 @@ BACKUP_GPG_RECIPIENT=<fingerprint-или-email-ключа>
 ## Ручной запуск (проверка)
 
 ```bash
-ssh karman 'set -a; . /etc/karman/karman.env; set +a; cd ~/karman && bash scripts/backup_vault.sh'
+# ENV_FILE — env-файл сервиса (путь: `systemctl show karman -p EnvironmentFile`).
+ssh karman 'ENV_FILE=<путь-из-юнита>; set -a; . "$ENV_FILE"; set +a; cd ~/karman && bash scripts/backup_vault.sh'
 ```
 
 Успех: строка `backup_vault: ГОТОВО — karman-vault-….tar.gpg`. Проверить, что файл
@@ -95,7 +97,10 @@ ssh karman 'set -a; . /etc/karman/karman.env; set +a; cd ~/karman && bash script
 Ночной запуск через user-crontab (root не нужен):
 
 ```bash
-ssh karman 'crontab -l 2>/dev/null; echo "30 3 * * * set -a; . /etc/karman/karman.env; set +a; bash /home/valstan/karman/scripts/backup_vault.sh >> /home/valstan/backups/vault-backup.log 2>&1" | crontab -'
+# APP_BASE — корень рабочей копии на прод-хосте, ENV_FILE — env-файл сервиса
+# (путь: `systemctl show karman -p EnvironmentFile`). Литералы в git не держим.
+# `\$HOME` намеренно не раскрывается здесь — его подставит sh при запуске из cron.
+ssh karman 'APP_BASE=<корень-рабочей-копии>; ENV_FILE=<путь-из-юнита>; crontab -l 2>/dev/null; echo "30 3 * * * set -a; . $ENV_FILE; set +a; bash $APP_BASE/scripts/backup_vault.sh >> \$HOME/backups/vault-backup.log 2>&1" | crontab -'
 ```
 
 (03:30 ежедневно; лог — `~/backups/vault-backup.log`.)
@@ -127,8 +132,8 @@ grep -c "^INSERT\|^COPY" vault.sql     # дамп не пустой
 учебное восстановление (`last-run:`). Без даты «мы это проверяли» превращается в
 воспоминание.
 
-> ⚠️ **Единственная точка отказа — не бокс, а хранение закрытого ключа.** На боксе его
-> нет (проверено). Если единственная копия закрытого gpg-ключа лежит на одной машине
+> ⚠️ **Единственная точка отказа — не прод-хост, а хранение закрытого ключа.** На прод-хосте
+> его нет (проверено). Если единственная копия закрытого gpg-ключа лежит на одной машине
 > и она умрёт, **все** архивы станут нечитаемыми — данные при этом целы, а бэкап нет.
 > То же про `SECRETS_MASTER_KEY`: без него дамп отдаёт шифротекст.
 
@@ -149,5 +154,5 @@ tar -xzf media.tar.gz -C <куда-нужно>
 
 ## Слои
 
-`scripts/backup_vault.sh` · env в `/etc/karman/karman.env` (box-side) ·
+`scripts/backup_vault.sh` · env в env-файле сервиса (только на прод-хосте) ·
 Яндекс.Диск `/KARMAN-backups`. План — `docs/secrets-vault-plan.md` (Ф4).

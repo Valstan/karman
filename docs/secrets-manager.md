@@ -48,10 +48,10 @@ VAULT_PROVISION_KEY=<строка ≥ 32 символов, например open
 > ⚠️ Потеря мастер-ключа = невозможность расшифровать уже сохранённые секреты.
 > Хранить ключ надёжно и отдельно от бэкапов БД.
 
-## Миграция (прод — через brain)
+## Миграция (прод)
 
 Таблицы заводит `lib/db/migrations/0002_secrets_manager.sql` (рукописная, аддитивная).
-На Боксе 1 у меня нет SSH → миграцию применяет brain через psql **до** деплоя
+Миграцию применяют на проде через psql **до** деплоя
 (migration-guard в `deploy-prod.yml` заблокирует авто-деплой при новой миграции —
 деплой через `workflow_dispatch` после применения SQL). Локально:
 
@@ -95,9 +95,9 @@ read-only (нет права записи); `404` — нет запрошенн�
 
 Под владельцем (`auth_user.id` владельца) заведены комнаты для проектов экосистемы; у каждой —
 read-write токен (`can_write`), выданный соответствующему проекту один раз (plaintext вне репо).
-Slug'и: `trener`, `matricarmz`, `gonba`, `setka` (SARAFAN), `sabantuymalmyzh`, `vmalmyzhe`,
-`dkmalmyzh`, `kalininocks`, `brain`, `karman`. Источник истины — `/secrets`; клиентский контракт —
-`docs/secrets-client-guide.md`. Новые комнаты заводятся self-serve
+Источник истины по составу комнат — страница `/secrets`; в репозитории не дублируем: две копии
+расходятся молча. Клиентский контракт — `docs/secrets-client-guide.md`. Новые комнаты
+заводятся self-serve
 (`POST /api/secrets/provision` под `VAULT_PROVISION_KEY`, см. client-guide) или владельцем в UI;
 raw-INSERT-bootstrap по SSH — разовый workaround прошлого, больше не применять (ADR-0006 §6).
 
@@ -169,7 +169,7 @@ TOTP (RFC 6238, otplib v13) — включается в «Настройках»
 
 ## Ограничения / на будущее
 
-- **Rate-limit** — in-memory fixed window (60/мин на токен+IP), per-instance. На Боксе 1
+- **Rate-limit** — in-memory fixed window (60/мин на токен+IP), per-instance. На проде
   один инстанс — ок; при масштабировании заменить на общий стор (Redis). См. `lib/secrets/rate-limit.ts`.
 - Запись по токену — bulk upsert (`POST`), скоуп — проект токена; удаление секретов — только UI владельца.
 - Ротация мастер-ключа (re-encrypt всех значений), envelope-ключи на проект, scoped-по-ключам/

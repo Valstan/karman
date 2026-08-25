@@ -19,14 +19,14 @@
 #                              (ключ импортирован в keyring: gpg --import owner.asc)
 #   YANDEX_WEBDAV_USER       — логин Яндекса
 #   YANDEX_WEBDAV_PASSWORD   — ПАРОЛЬ ПРИЛОЖЕНИЯ Яндекса (не основной; при 2FA обязателен)
-# Необязательные:
-#   BACKUP_MEDIA_ROOT        — каталог сканов (по умолч. /home/valstan/karman/media)
+# Обязательные (продолжение):
+#   BACKUP_MEDIA_ROOT        — каталог сканов (ОБЯЗАТЕЛЕН; равен MEDIA_ROOT из systemd-юнита)
 #   BACKUP_WEBDAV_DIR        — папка на Диске (по умолч. /KARMAN-backups)
 #   BACKUP_KEEP              — сколько последних бэкапов хранить (по умолч. 14)
 
 set -euo pipefail
 
-MEDIA_ROOT="${BACKUP_MEDIA_ROOT:-/home/valstan/karman/media}"
+MEDIA_ROOT="${BACKUP_MEDIA_ROOT:?BACKUP_MEDIA_ROOT не задан (каталог сканов; значение — MEDIA_ROOT из systemd-юнита)}"
 WEBDAV_DIR="${BACKUP_WEBDAV_DIR:-/KARMAN-backups}"
 KEEP="${BACKUP_KEEP:-14}"
 WEBDAV_HOST="https://webdav.yandex.ru"
@@ -44,11 +44,18 @@ command -v curl >/dev/null || die "curl не найден"
 gpg --list-keys "$BACKUP_GPG_RECIPIENT" >/dev/null 2>&1 \
   || die "gpg-ключ '$BACKUP_GPG_RECIPIENT' не найден в keyring (gpg --import owner.asc)"
 
-# curl к WebDAV Яндекса. -f — падать на HTTP-ошибке; учётка через --user.
-wd() { curl -fsS --user "${YANDEX_WEBDAV_USER}:${YANDEX_WEBDAV_PASSWORD}" "$@"; }
-
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+chmod 700 "$WORK"
+
+# curl к WebDAV Яндекса. -f — падать на HTTP-ошибке.
+# Учётка идёт файлом, а НЕ через --user: аргументы командной строки видны в `ps`
+# любому пользователю машины, а бокс делится с соседями. Файл лежит в mktemp-каталоге
+# под 700 и убирается trap'ом вместе с ним.
+NETRC="$WORK/netrc"
+( umask 077
+  echo "machine webdav.yandex.ru login $YANDEX_WEBDAV_USER password $YANDEX_WEBDAV_PASSWORD" > "$NETRC" )
+wd() { curl -fsS --netrc-file "$NETRC" "$@"; }
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 NAME="karman-vault-${STAMP}"
 

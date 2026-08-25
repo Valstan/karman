@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -11,11 +11,21 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 export default function LoginPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
+  // Засов от повторной отправки. Одного `disabled={loading}` мало: setState
+  // применяется к следующему рендеру, и три нажатия Enter подряд успевают
+  // выстрелить тремя POST'ами до того, как кнопка станет неактивной. Цена
+  // ровно такая: 2026-08-25 у владельца так сгорели все 10 попыток за 29 с
+  // (в auth_audit три login_fail внутри одной секунды), и он получил
+  // 15-минутную блокировку, гадая, чем плох пароль. Ref обновляется
+  // синхронно — именно поэтому засов на нём, а не на состоянии.
+  const inFlight = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [totpStep, setTotpStep] = useState(false);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (inFlight.current) return;
+    inFlight.current = true;
     setLoading(true);
     setError(null);
 
@@ -46,12 +56,15 @@ export default function LoginPage() {
     } catch {
       setError('Сеть недоступна');
     } finally {
+      inFlight.current = false;
       setLoading(false);
     }
   }
 
   async function onSubmitTotp(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (inFlight.current) return;
+    inFlight.current = true;
     setLoading(true);
     setError(null);
 
@@ -73,6 +86,7 @@ export default function LoginPage() {
     } catch {
       setError('Сеть недоступна');
     } finally {
+      inFlight.current = false;
       setLoading(false);
     }
   }

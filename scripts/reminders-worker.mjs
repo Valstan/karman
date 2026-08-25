@@ -5,7 +5,7 @@
 //   1) long-poll Telegram getUpdates → POST /api/telegram/ingest (Bearer);
 //   2) по таймеру POST /api/reminders/dispatch (Bearer).
 // Вся работа с БД/сервисами — внутри Next-роутов. Запускается systemd-сервисом
-// karman-reminders.service из /home/valstan/karman/current. См. docs/telegram-reminders.md.
+// karman-reminders.service из текущего релиза (симлинк current). См. docs/telegram-reminders.md.
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const SECRET = process.env.REMINDERS_INTERNAL_SECRET || '';
