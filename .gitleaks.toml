@@ -109,7 +109,13 @@ useDefault = true
   secretGroup = 1
   keywords = ["postgres://", "postgresql://"]
   [rules.allowlist]
+    # regexTarget обязателен: по умолчанию allowlist сверяется с ЗАХВАЧЕННЫМ значением
+    # (то есть с самим паролем), поэтому шаблон вида `postgres://karman:karman@` не
+    # совпал бы никогда. Поймано первым же прогоном: дев-DSN в .env.example и
+    # drizzle.config.ts срабатывали, хотя правило их специально исключало.
+    regexTarget = "line"
     regexes = ['''postgres://(karman:karman|ci:ci)@''', '''<[^>]*>''', '''\$\{?[A-Z_]+''']
+    paths = ['''\.env\.example$''', '''drizzle\.config\.ts$''']
 
 # ── 10. Пароль приложения Яндекса / WebDAV Basic ──────────────────────────────
 # Дефолта нет. NB: scripts/backup_vault.sh:48,111 передают пароль через
@@ -141,6 +147,17 @@ useDefault = true
   description = "KARMAN 2FA recovery code (контекстный)"
   regex = '''(?i)(?:recovery|восстановлен\w*|backup[ _-]?code)[^\n]{0,60}?\b([a-hjkmnp-z2-9]{5}-[a-hjkmnp-z2-9]{5})\b'''
   secretGroup = 1
+  [rules.allowlist]
+    # Первый прогон дал 10 срабатываний, и все — на ОПИСАНИИ формата, а не на кодах:
+    # генератор, его тесты и подсказка `xxxxx-xxxxx` в форме входа (буква x входит
+    # в алфавит p-z, поэтому плейсхолдер неотличим от настоящего кода). Исключения —
+    # по точному пути, а не ослаблением регекса: ослабить его значит перестать ловить
+    # настоящие коды, ради которых правило и заведено.
+    paths = [
+      '''lib/auth/totp\.ts$''',
+      '''lib/auth/totp\.test\.ts$''',
+      '''app/\(auth\)/login/page\.tsx$''',
+    ]
 
 [[rules]]
   id = "karman-2fa-recovery-code-batch"
@@ -194,7 +211,10 @@ useDefault = true
   regex = '''\bpbkdf2_(?:sha256|sha1)\$[0-9]{1,9}\$[A-Za-z0-9]{1,32}\$[A-Za-z0-9+/]{20,}={0,2}'''
   keywords = ["pbkdf2_sha256", "pbkdf2_sha1"]
   [rules.allowlist]
-    paths = ['''scripts/bootstrap\.sql$''']   # локальный дев-сид admin/admin123, devsalt
+    paths = [
+      '''scripts/bootstrap\.sql$''',       # локальный дев-сид admin/admin123, devsalt
+      '''lib/auth/password\.test\.ts$''',  # фикстура теста verifyDjangoPassword
+    ]
 
 # ── 16. Часовой на канал: чужие секреты, вставленные литералом в пример push'а ─
 # Класс значения тут заранее неизвестен (через vault ходят VK, SMTP, S3 соседей),
@@ -203,12 +223,30 @@ useDefault = true
 [[rules]]
   id = "vault-push-inline-literal"
   description = "Литеральное значение в примере POST /api/secrets"
-  regex = '''"secrets"\s*:\s*\{[^}]*"[A-Z0-9_]{3,}"\s*:\s*"(?![…\.]|\$|<)([^"\s]{8,})"'''
+  # Движок gitleaks — RE2: lookahead/lookbehind НЕТ. Отсечение плейсхолдеров
+  # делается allowlist'ом по захваченному значению, а не (?!…) в самом регексе.
+  # Наступили на это 2026-08-25: с lookahead конфиг не компилировался вовсе,
+  # и гейт падал ПАНИКОЙ на каждом прогоне — то есть не мог позеленеть никогда.
+  regex = '''"secrets"\s*:\s*\{[^}]*"[A-Z0-9_]{3,}"\s*:\s*"([^"\s]{8,})"'''
   secretGroup = 1
   keywords = ["\"secrets\""]
+  [rules.allowlist]
+    regexes = ['''…''', '''\.\.\.''', '''^\$''', '''^<''', '''^\{''']
+
+# ── Точечное исключение для ДЕФОЛТНОГО правила private-key ────────────────────
+# Тест D-035 (lib/validation/secret.test.ts) намеренно держит PEM-образную фикстуру:
+# он доказывает, что многострочное значение проходит схему байт-в-байт. Исключение
+# сделано через targetRules, то есть глушит РОВНО правило private-key РОВНО в этом
+# файле — любой другой класс секрета там же по-прежнему ловится.
+[[allowlists]]
+  description = "синтетический PEM в тесте многострочных значений (D-035)"
+  targetRules = ["private-key"]
+  paths = ['''lib/validation/secret\.test\.ts$''']
 
 # ── Глобальный allowlist ──────────────────────────────────────────────────────
-[allowlist]
+# Формат [[allowlists]] (множественный), а не устаревший [allowlist]: gitleaks 8.30
+# отказывается грузить конфиг, где встречаются оба сразу.
+[[allowlists]]
   description = "Общие исключения KARMAN"
   paths = [
     '''package-lock\.json$''',      # base64 в полях integrity
