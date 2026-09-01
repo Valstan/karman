@@ -8,9 +8,11 @@ Gemini CLI и будущих агентов (ADR-0011 мозга). Инстру�
 ## Состояние проекта
 
 - Продукт: учёт кредитов. Единое приложение Next.js 16 + TypeScript + Drizzle + Postgres.
-- Прод живой: PG16, единый Next.js за nginx. Адрес, ssh-порт и порт приложения —
-  в repo-vars `DEPLOY_SSH_HOST` / `DEPLOY_SSH_PORT` / `DEPLOY_APP_PORT` (значения
-  видны только с доступом к репозиторию); у владельца доступ по ssh-алиасу `karman`.
+- Прод живой: PG16, единый Next.js за nginx. Адрес и системный логин — в **secrets**
+  (`DEPLOY_SSH_HOST` / `DEPLOY_SSH_USER` / `DEPLOY_SSH_KNOWN_HOSTS` / `DEPLOY_BASE`), порты
+  осознанно остаются в repo-vars (`DEPLOY_SSH_PORT` / `DEPLOY_APP_PORT`). Различие не
+  косметическое: `vars` раскрываются в логе прогона, а логи публичного репозитория публичны —
+  маскируются только `secrets` (письмо brain 08-29). У владельца доступ по ssh-алиасу `karman`.
 - Нитка последней сессии — `docs/SESSION_HANDOFF.md`; отложенное — `docs/PENDING_FOLLOWUPS.md`;
   архитектура и операции — `docs/`.
 - Почта мозгу — `mailbox/to-brain/*.md` этого репозитория; входящие —
