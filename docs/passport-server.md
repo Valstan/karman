@@ -106,7 +106,7 @@ gh api repos/Valstan/trener --jq .id
 ssh karman 'ENV_FILE=<путь-из-юнита>; set -a; . "$ENV_FILE"; psql "$DATABASE_URL" -c \
   "select id, slug from secrets_project order by id"'
 
-# 3. Строка реестра (can_write=false — читателю запись не нужна):
+# 3. Строка реестра:
 ssh karman 'ENV_FILE=<путь-из-юнита>; set -a; . "$ENV_FILE"; psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f -' <<SQL
 insert into passport_identity (issuer_id, identity_value, label, project_id, can_write, note)
 select i.id, '<REPO_ID>', 'Valstan/trener', <PROJECT_ID>, false, 'пилот волны 2'
@@ -114,6 +114,12 @@ from passport_issuer i
 where i.issuer = 'https://token.actions.githubusercontent.com';
 SQL
 ```
+
+**`can_write` — по факту записи, а не по умолчанию.** `false` потребителю, который секреты
+только читает; `true` — проекту, который **пишет свои** секреты в комнату (зеркалирование
+ADR-0006: `POST /api/secrets` под ro-токеном отвечает `403`, и снаружи это выглядит как
+«паспорт не работает»). Право берётся со строки личности и переносится в каждую выданную
+сессию — поменять его у живого токена нельзя, только завести личность заново.
 
 ### Runbook владельца: отозвать личность (каскад)
 

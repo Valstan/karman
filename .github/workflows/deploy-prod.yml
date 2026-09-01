@@ -6,15 +6,22 @@ name: Deploy to production
 # на прежнем хосте она уже рвала SSH.
 #
 # Требуется (значения — в repo-vars/secrets, в коде их нет: D-038, репозиторий публичный):
-#   secrets.SSH_PRIVATE_KEY       — приватная часть изолированного ключа karman-ci-deploy
-#   vars.DEPLOY_SSH_HOST          — DNS-имя прод-хоста (провайдер ротирует техимя)
-#   vars.DEPLOY_SSH_PORT          — внешний ssh-порт
-#   vars.DEPLOY_SSH_USER          — системный логин деплоя
-#   vars.DEPLOY_SSH_KNOWN_HOSTS   — ОЖИДАЕМЫЙ публичный ключ хоста (строка known_hosts)
-#   vars.DEPLOY_BASE              — база релизов на прод-хосте
-#   vars.DEPLOY_APP_PORT          — порт приложения
+#   secrets.SSH_PRIVATE_KEY        — приватная часть изолированного ключа karman-ci-deploy
+#   secrets.DEPLOY_SSH_HOST        — DNS-имя прод-хоста (провайдер ротирует техимя)
+#   secrets.DEPLOY_SSH_USER        — системный логин деплоя
+#   secrets.DEPLOY_SSH_KNOWN_HOSTS — ОЖИДАЕМЫЙ публичный ключ хоста (строка known_hosts)
+#   secrets.DEPLOY_BASE            — база релизов на прод-хосте
+#   vars.DEPLOY_SSH_PORT           — внешний ssh-порт (22: маскировать нечего и нельзя)
+#   vars.DEPLOY_APP_PORT           — порт приложения на localhost за nginx
 #
-# Смена deploy-target при миграции = правка vars, код не трогаем.
+# ПОЧЕМУ ИМЕННО ТАК (письмо brain 08-29, находка Калинино). `vars` НЕ маскируются:
+# раннер печатает блок `env:` шага с раскрытыми значениями, и у публичного репо этот
+# лог публичен. D-038 вынес координаты прода из кода — но в `vars`, то есть на вторую
+# публичную поверхность. Здесь recon-чувствительное переведено в `secrets`, а в `vars`
+# осознанно оставлены только два порта: маскируется КАЖДОЕ вхождение значения, и
+# сверхкороткий секрет («22») изуродовал бы весь лог, не спрятав ничего ценного.
+#
+# Смена deploy-target при миграции = правка repo-vars/secrets, код не трогаем.
 
 on:
   push:
@@ -100,18 +107,24 @@ jobs:
       - name: Setup SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          DEPLOY_SSH_HOST: ${{ vars.DEPLOY_SSH_HOST }}
+          # Recon-чувствительное — в secrets, а НЕ в vars: раннер печатает блок `env:`
+          # с раскрытыми значениями, и у публичного репо этот лог публичен (находка
+          # Калинино, письмо brain 08-29). Маскируется только заведённое как secrets.
+          DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+          # Порт остаётся в vars ОСОЗНАННО: маскируется каждое вхождение значения,
+          # и секрет "22" замазал бы в логе все двойки-двадцатки подряд — лог стал бы
+          # нечитаемым, а recon-ценность стандартного ssh-порта нулевая.
           DEPLOY_SSH_PORT: ${{ vars.DEPLOY_SSH_PORT }}
-          DEPLOY_SSH_USER: ${{ vars.DEPLOY_SSH_USER }}
-          DEPLOY_SSH_KNOWN_HOSTS: ${{ vars.DEPLOY_SSH_KNOWN_HOSTS }}
         run: |
           set -e
           MISSING=""
           [ -z "$SSH_PRIVATE_KEY" ] && MISSING="$MISSING secrets.SSH_PRIVATE_KEY"
-          [ -z "$DEPLOY_SSH_HOST" ] && MISSING="$MISSING vars.DEPLOY_SSH_HOST"
+          [ -z "$DEPLOY_SSH_HOST" ] && MISSING="$MISSING secrets.DEPLOY_SSH_HOST"
           [ -z "$DEPLOY_SSH_PORT" ] && MISSING="$MISSING vars.DEPLOY_SSH_PORT"
-          [ -z "$DEPLOY_SSH_USER" ] && MISSING="$MISSING vars.DEPLOY_SSH_USER"
-          [ -z "$DEPLOY_SSH_KNOWN_HOSTS" ] && MISSING="$MISSING vars.DEPLOY_SSH_KNOWN_HOSTS"
+          [ -z "$DEPLOY_SSH_USER" ] && MISSING="$MISSING secrets.DEPLOY_SSH_USER"
+          [ -z "$DEPLOY_SSH_KNOWN_HOSTS" ] && MISSING="$MISSING secrets.DEPLOY_SSH_KNOWN_HOSTS"
           if [ -n "$MISSING" ]; then
             echo "::error::Не заданы:$MISSING"
             exit 1
@@ -124,7 +137,9 @@ jobs:
           # При сбое keyscan шаг молча шёл дальше с пустым known_hosts, а accept-new
           # принимал ЛЮБОЙ предъявленный ключ — то есть окно MITM ровно на том канале,
           # по которому уезжает артефакт и выполняется `sudo systemctl restart`.
-          # Ключ хоста не секрет (это публичная половина), поэтому живёт в vars.
+          # Сам ключ хоста не секрет (это публичная половина) — но строка known_hosts
+          # начинается с ИМЕНИ хоста, а оно recon-чувствительно и печаталось бы в
+          # публичный лог из блока `env:`. Поэтому строка целиком живёт в secrets.
           echo "$DEPLOY_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
           cat > ~/.ssh/config <<CFG
@@ -141,10 +156,12 @@ jobs:
 
       - name: Ship artifact + restart
         env:
-          DEPLOY_BASE: ${{ vars.DEPLOY_BASE }}
+          # В secrets: путь несёт системный логин (`/home/<user>/…`) и раскрывал бы
+          # раскладку прод-бокса в публичном логе. См. комментарий в «Setup SSH».
+          DEPLOY_BASE: ${{ secrets.DEPLOY_BASE }}
         run: |
           set -e
-          if [ -z "$DEPLOY_BASE" ]; then echo "::error::Не задан vars.DEPLOY_BASE"; exit 1; fi
+          if [ -z "$DEPLOY_BASE" ]; then echo "::error::Не задан secrets.DEPLOY_BASE"; exit 1; fi
           scp -q karman-app.tgz karman:/tmp/karman-app.tgz
           ssh karman 'bash -s' "${{ github.sha }}" "$DEPLOY_BASE" <<'REMOTE'
           set -e
@@ -196,6 +213,23 @@ jobs:
 
       - name: On failure — журналы прода
         if: failure()
+        env:
+          DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
         run: |
-          ssh karman "sudo systemctl status karman --no-pager -l" 2>&1 || true
-          ssh karman "sudo journalctl -u karman -n 80 --no-pager" 2>&1 || true
+          # Дамп журнала — третий канал утечки (письмо brain 08-29), и переводом
+          # переменных в secrets он НЕ лечится:
+          #   - маскируется только точное вхождение значения целиком, а journal
+          #     печатает КОРОТКИЙ хостнейм (`box`, не `box.vps.example.ru`) —
+          #     префикс секрета маскировщик не трогает;
+          #   - `systemctl status` несёт путь юнита в `Loaded:` и хвост журнала;
+          #   - ошибка подключения к БД печатает целую строку соединения.
+          # Поэтому: формат без префиксов + собственная редакция на выходе.
+          SHORT="${DEPLOY_SSH_HOST%%.*}"
+          redact() {
+            if [ -n "$SHORT" ]; then sed -E "s/${SHORT}/[host]/g"; else cat; fi \
+              | sed -E 's#(://)[^:/@[:space:]]+:[^@[:space:]]+@#\1***:***@#g'
+          }
+          # `show` вместо `status`: состояние и счётчик падений без путей и журнала.
+          ssh karman "sudo systemctl show karman -p ActiveState -p SubState -p Result -p ExecMainStatus -p NRestarts" 2>&1 | redact || true
+          # `-o cat` — только сообщение, без метки времени и хостнейма в каждой строке.
+          ssh karman "sudo journalctl -u karman -n 80 --no-pager -o cat" 2>&1 | redact || true

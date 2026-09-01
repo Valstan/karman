@@ -84,8 +84,11 @@ sudo nginx -t && sudo systemctl reload nginx
 
 Миграции standalone-бандл не несёт: новые `lib/db/migrations/*.sql` применяются вручную
 ДО деплоя (push с новой миграцией CI-guard роняет; после ручного применения — деплой через
-`workflow_dispatch`). Смена deploy-target (переезд на другой бокс) = правка repo-vars
-`DEPLOY_SSH_HOST` / `DEPLOY_SSH_PORT` / `DEPLOY_APP_PORT` + secret `SSH_PRIVATE_KEY`.
+`workflow_dispatch`). Смена deploy-target (переезд на другой бокс) = правка secrets
+`DEPLOY_SSH_HOST` / `DEPLOY_SSH_USER` / `DEPLOY_SSH_KNOWN_HOSTS` / `DEPLOY_BASE` +
+repo-vars `DEPLOY_SSH_PORT` / `DEPLOY_APP_PORT` + secret `SSH_PRIVATE_KEY`.
+Координаты хоста лежат именно в secrets, а не в vars: `vars` печатаются в публичный лог
+прогона с раскрытыми значениями, маскируются только secrets.
 
 ## Медиа-каталог (сканы документов)
 
