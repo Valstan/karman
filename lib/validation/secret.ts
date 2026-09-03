@@ -22,6 +22,22 @@ const secretKeyName = z
   .max(200);
 const secretValue = z.string().min(1, 'Пустое значение').max(65536, 'Слишком большое значение (макс 64 КБ)');
 
+/**
+ * Необязательная пометка формы: пустое поле обязано стать `undefined`, а не `''`,
+ * иначе в nullable-колонку уезжает пустая строка вместо NULL.
+ *
+ * Прежняя форма — `.optional().or(z.literal('').transform(...))` — здесь молча
+ * не работает: ветка `.or` срабатывает, только если ПЕРВАЯ отвергает пустую
+ * строку. У полей с регэкспом (`aliasKey`) так и есть, а у свободного текста
+ * первая ветка пустую строку принимает, и до `.or` дело не доходит.
+ */
+const optionalNote = z
+  .string()
+  .trim()
+  .max(500)
+  .optional()
+  .transform((v) => (v ? v : undefined));
+
 export const secretItemUpsertSchema = z.object({
   projectId: z.coerce.number().int().positive(),
   key: secretKeyName,
@@ -79,7 +95,7 @@ export const secretGrantCreateSchema = z
     sourceKey: secretKeyName,
     targetProjectId: z.coerce.number().int().positive(),
     aliasKey: secretKeyName.optional().or(z.literal('').transform(() => undefined)),
-    note: z.string().trim().max(500).optional().or(z.literal('').transform(() => undefined)),
+    note: optionalNote,
   })
   .refine((v) => v.sourceProjectId !== v.targetProjectId, {
     message: 'Комната-источник и комната-получатель совпадают',
@@ -114,7 +130,34 @@ export const secretBootstrapCreateSchema = z.object({
   projectId: z.coerce.number().int().positive(),
   ttlMinutes: z.coerce.number().optional().default(30),
   canWrite: z.coerce.boolean().optional().default(false),
-  note: z.string().trim().max(500).optional().or(z.literal('').transform(() => undefined)),
+  note: optionalNote,
+});
+
+/**
+ * Заведение личности в реестре паспорта (веха 2 ADR-0012). Формы GUI приходят
+ * строками, поэтому числа приводятся `coerce`, а флаг — `coerce.boolean`.
+ *
+ * `identityValue` — значение claim'а из `identity_claim` издателя; у GitHub это
+ * `repository_id`, то есть цифры. Регэксп нарочно шире цифр: другой издатель
+ * может нумеровать иначе, а вот пробел или кавычка внутри — всегда опечатка,
+ * которая позже проявится безмолвным `403` на входе проекта.
+ */
+export const passportIdentityCreateSchema = z.object({
+  issuerId: z.coerce.number().int().positive(),
+  identityValue: z
+    .string()
+    .trim()
+    .min(1, 'Укажите идентификатор личности')
+    .max(200)
+    .regex(/^[A-Za-z0-9_.:@/-]+$/, 'Идентификатор: латиница, цифры и . _ : @ / - без пробелов'),
+  label: z
+    .string()
+    .trim()
+    .min(1, 'Укажите метку (например, Valstan/MyRepo)')
+    .max(200),
+  projectId: z.coerce.number().int().positive({ message: 'Выберите комнату' }),
+  canWrite: z.coerce.boolean().optional().default(false),
+  note: optionalNote,
 });
 
 /** Тело POST /api/secrets — машинная запись секретов по токену (bulk upsert). */
@@ -137,4 +180,5 @@ export type SecretCardCreateInput = z.infer<typeof secretCardCreateSchema>;
 export type SecretCardUpdateInput = z.infer<typeof secretCardUpdateSchema>;
 export type SecretCardFieldUpsertInput = z.infer<typeof secretCardFieldUpsertSchema>;
 export type SecretGrantCreateInput = z.infer<typeof secretGrantCreateSchema>;
+export type PassportIdentityCreateInput = z.infer<typeof passportIdentityCreateSchema>;
 export type SecretBootstrapCreateInput = z.infer<typeof secretBootstrapCreateSchema>;
