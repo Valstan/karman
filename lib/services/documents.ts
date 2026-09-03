@@ -254,23 +254,6 @@ export async function getDocumentFilePathById(
   return row?.path ?? null;
 }
 
-/** Все файлы документа с путями — для выгрузки. Пустой массив, если чужой. */
-export async function listDocumentFilePaths(
-  user: SessionUser,
-  docId: number,
-): Promise<{ id: number; path: string; originalName: string }[]> {
-  return db
-    .select({
-      id: documentFile.id,
-      path: documentFile.path,
-      originalName: documentFile.originalName,
-    })
-    .from(documentFile)
-    .innerJoin(documentsDocument, eq(documentsDocument.id, documentFile.documentId))
-    .where(and(eq(documentFile.documentId, docId), ownership(user, documentsDocument.userId)))
-    .orderBy(asc(documentFile.position), asc(documentFile.id));
-}
-
 /** Сколько файлов уже прикреплено (для лимита). */
 export async function countDocumentFiles(docId: number): Promise<number> {
   const [row] = await db
