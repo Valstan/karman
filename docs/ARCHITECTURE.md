@@ -38,8 +38,12 @@
 - Пароли: `verifyDjangoPassword` (pbkdf2_sha256 / pbkdf2_sha1) — совместимость с историческими хешами.
 - Сессия: JWT (HS256, `jose`) в HttpOnly-cookie `karman_session_v2`, срок 14 дней.
 - Гард в два слоя: `proxy.ts` (Edge, без БД) + `(app)/layout.tsx` (`getCurrentUser`, ловит `is_active`).
-- Фильтрация по владельцу: `ownership(user, column)` — для superuser фильтр снимается.
+- Фильтрация по владельцу: `ownership(user, column)` — `column = user.id`, **без исключений,
+  включая superuser** (решение владельца 2026-09-03; регрессия — `lib/auth/rbac.test.ts`).
+  Superuser администрирует аккаунты, но чужие данные видит только по согласию человека.
   Владение платежом — через join к `credits_credit.user_id` (на `credits_payment` нет `user_id`).
+- Новые люди появляются ТОЛЬКО приглашением владельца (`createAccount`): самостоятельной
+  регистрации нет, вход через ЕСА только впускает уже заведённых.
 
 ## Данные
 

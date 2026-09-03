@@ -30,9 +30,13 @@ async function ownerOfPayment(paymentId: number): Promise<number | null> {
   return rows[0]?.userId ?? null;
 }
 
+// Владение платежом наследуется от кредита. Исключения для суперпользователя
+// здесь нет намеренно — оно снято вместе с исключением в `ownership()`
+// (решение владельца 2026-09-03), иначе платежи остались бы единственной
+// доменной сущностью, которую владелец видит у чужого человека.
 function canAccess(user: SessionUser, ownerId: number | null): boolean {
   if (ownerId === null) return false;
-  return user.isSuperuser || ownerId === user.id;
+  return ownerId === user.id;
 }
 
 async function ownsCredit(user: SessionUser, creditId: number): Promise<boolean> {

@@ -566,6 +566,10 @@ export const authOidcIdentity = pgTable('auth_oidc_identity', {
     .notNull()
     .references(() => authUser.id, { onDelete: 'cascade' }),
   email: varchar('email', { length: 254 }),
+  // Значение по умолчанию 'provisioned' — рудимент: с 2026-09-03 ЕСА новых
+  // пользователей не заводит, единственный записываемый origin — 'linked_by_email',
+  // и он всегда передаётся явно. Умолчание в БД оставлено как есть (менять его
+  // ради косметики = миграция на живой схеме), но опираться на него нельзя.
   origin: varchar('origin', { length: 32 }).notNull().default('provisioned'),
   createdAt: tstz('created_at').notNull().defaultNow(),
   lastLoginAt: tstz('last_login_at'),
