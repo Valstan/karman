@@ -7,7 +7,6 @@ import {
   buildRelPath,
   extForMime,
   MAX_FILE_BYTES,
-  type DocumentFileSlot,
   type FileValidationError,
 } from './media-paths';
 
@@ -20,7 +19,6 @@ export * from './media-paths';
 export async function saveDocumentFile(
   userId: number,
   docId: number,
-  slot: DocumentFileSlot,
   file: File,
 ): Promise<string> {
   if (!file || file.size === 0) throw new Error('empty' satisfies FileValidationError);
@@ -28,8 +26,10 @@ export async function saveDocumentFile(
   const ext = extForMime(file.type);
   if (!ext) throw new Error('type' satisfies FileValidationError);
 
-  const token = randomBytes(4).toString('hex');
-  const relPath = buildRelPath(userId, docId, slot, ext, token);
+  // 8 байт, а не 4: файлов на документе теперь до двадцати, и при 4 байтах
+  // (32 бита) совпадение внутри одного каталога перестаёт быть невероятным.
+  const token = randomBytes(8).toString('hex');
+  const relPath = buildRelPath(userId, docId, ext, token);
   const abs = absolutePathFor(relPath);
   await mkdir(path.dirname(abs), { recursive: true });
   const buffer = Buffer.from(await file.arrayBuffer());

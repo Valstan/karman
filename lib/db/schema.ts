@@ -149,6 +149,11 @@ export const documentsDocument = pgTable('documents_document', {
   issueDate: date('issue_date', { mode: 'string' }),
   expiryDate: date('expiry_date', { mode: 'string' }),
   issuingAuthority: varchar('issuing_authority', { length: 200 }).notNull().$defaultFn(() => ''),
+  // РУДИМЕНТ. До 2026-09-04 файлы жили в трёх фиксированных слотах по одному
+  // пути в каждом, и второй файл в занятый слот затирал первый. Заменено
+  // таблицей `documentFile` (много файлов на документ). Колонки оставлены:
+  // `drop column` на живой схеме необратим, а выигрыш — три пустых varchar.
+  // Код их не читает и не пишет — опираться на них нельзя.
   frontImage: varchar('front_image', { length: 100 }),
   backImage: varchar('back_image', { length: 100 }),
   additionalFiles: varchar('additional_files', { length: 100 }),
@@ -611,6 +616,45 @@ export const personProfile = pgTable('person_profile', {
 });
 
 export type PersonProfileRow = typeof personProfile.$inferSelect;
+
+/**
+ * Произвольное поле документа: «Серия», «Код подразделения», «Кем выдан».
+ * Ядро документа (название, тип, номер, даты) осталось колонками
+ * `documentsDocument` — оно общее у всех и по нему идёт поиск; всё остальное
+ * человек добавляет сам, потому что у паспорта и у полиса ОМС общих реквизитов
+ * почти нет, а шаблон на каждый вид документа устаревает быстрее, чем пишется.
+ */
+export const documentField = pgTable('document_field', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  documentId: bigint('document_id', { mode: 'number' })
+    .notNull()
+    .references(() => documentsDocument.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 100 }).notNull(),
+  value: text('value').notNull().default(''),
+  position: integer('position').notNull().default(0),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+});
+
+/**
+ * Файл документа. Много на документ — многостраничный скан, развороты паспорта,
+ * выгрузка из госуслуг. `originalName` хранится отдельно от пути: в ZIP-выгрузке
+ * и в списке человеку нужно «паспорт разворот 2.jpg», а не `a3f9c1.jpg`.
+ */
+export const documentFile = pgTable('document_file', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  documentId: bigint('document_id', { mode: 'number' })
+    .notNull()
+    .references(() => documentsDocument.id, { onDelete: 'cascade' }),
+  path: varchar('path', { length: 255 }).notNull(),
+  originalName: varchar('original_name', { length: 255 }).notNull().default(''),
+  mime: varchar('mime', { length: 100 }).notNull().default(''),
+  sizeBytes: integer('size_bytes').notNull().default(0),
+  position: integer('position').notNull().default(0),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+});
+
+export type DocumentFieldRow = typeof documentField.$inferSelect;
+export type DocumentFileRow = typeof documentFile.$inferSelect;
 
 export type SecretsProjectRow = typeof secretsProject.$inferSelect;
 export type SecretsItemRow = typeof secretsItem.$inferSelect;

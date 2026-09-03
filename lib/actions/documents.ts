@@ -1,8 +1,39 @@
 'use server';
 
-import { documentCreateSchema, documentUpdateSchema } from '@/lib/validation/document';
-import { createDocument, updateDocument, deleteDocument } from '@/lib/services/documents';
+import {
+  documentCreateSchema,
+  documentFieldsSchema,
+  documentUpdateSchema,
+} from '@/lib/validation/document';
+import {
+  createDocument,
+  updateDocument,
+  deleteDocument,
+  replaceDocumentFields,
+} from '@/lib/services/documents';
 import { currentUserOrNull, revalidateAll, type ActionResult } from './_internal';
+
+/**
+ * Заменяет набор произвольных полей документа целиком. Строки с пустым
+ * названием выбрасываются здесь, а не отвергаются валидатором: человек добавил
+ * строку, не заполнил и нажал «Сохранить» — терять из-за этого весь остальной
+ * ввод было бы наказанием за пустую строку.
+ */
+export async function saveDocumentFieldsAction(values: unknown): Promise<ActionResult> {
+  const user = await currentUserOrNull();
+  if (!user) return { ok: false, error: 'Требуется авторизация' };
+
+  const parsed = documentFieldsSchema.safeParse(values);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? 'Некорректные данные' };
+  }
+
+  const fields = parsed.data.fields.filter((f) => f.name !== '');
+  const saved = await replaceDocumentFields(user, parsed.data.id, fields);
+  if (!saved) return { ok: false, error: 'Документ не найден' };
+  revalidateAll();
+  return { ok: true };
+}
 
 export async function createDocumentAction(values: unknown): Promise<ActionResult<{ id: number }>> {
   const user = await currentUserOrNull();
