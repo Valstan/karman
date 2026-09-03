@@ -656,6 +656,47 @@ export const documentFile = pgTable('document_file', {
 export type DocumentFieldRow = typeof documentField.$inferSelect;
 export type DocumentFileRow = typeof documentFile.$inferSelect;
 
+/**
+ * Круг — общее пространство родни по согласию. Имя редактируемое: семья
+ * называет себя сама, и правописание фамилии не стоит фиксировать миграцией.
+ */
+export const circle = pgTable('circle', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  name: varchar('name', { length: 100 }).notNull(),
+  ownerUserId: integer('owner_user_id')
+    .notNull()
+    .references(() => authUser.id, { onDelete: 'cascade' }),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+  updatedAt: tstz('updated_at').notNull().defaultNow(),
+});
+
+/**
+ * Участие в круге. Видимость чужих данных даёт ТОЛЬКО непустой `consentedAt`:
+ * приглашение — предложение, а не факт. Владелец круга не может втащить в него
+ * человека своей волей, и это не формальность — с 2026-09-03 суперпользователь
+ * не видит чужого в обход (`lib/auth/rbac.ts`), так что согласие здесь
+ * единственный способ показать свою карточку кому-то ещё.
+ *
+ * Отказ (`declinedAt`) и выход (`leftAt`) хранятся отдельно от «ещё не ответил»:
+ * иначе отклонённое приглашение выглядит как новое и всплывает снова.
+ */
+export const circleMember = pgTable('circle_member', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  circleId: bigint('circle_id', { mode: 'number' })
+    .notNull()
+    .references(() => circle.id, { onDelete: 'cascade' }),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => authUser.id, { onDelete: 'cascade' }),
+  invitedAt: tstz('invited_at').notNull().defaultNow(),
+  consentedAt: tstz('consented_at'),
+  declinedAt: tstz('declined_at'),
+  leftAt: tstz('left_at'),
+});
+
+export type CircleRow = typeof circle.$inferSelect;
+export type CircleMemberRow = typeof circleMember.$inferSelect;
+
 export type SecretsProjectRow = typeof secretsProject.$inferSelect;
 export type SecretsItemRow = typeof secretsItem.$inferSelect;
 export type SecretsTokenRow = typeof secretsToken.$inferSelect;

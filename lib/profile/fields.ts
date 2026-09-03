@@ -92,11 +92,6 @@ export function profileFieldLabel(key: string): string {
   return LABELS[key] ?? key;
 }
 
-/** Заполнено ли хоть одно поле — для подсказки «карточка пуста» на экранах. */
-export function profileIsEmpty(profile: ProfileValues): boolean {
-  return Object.values(profile).every((v) => (v ?? '').trim() === '');
-}
-
 /**
  * Как называть человека на экранах: ФИО из карточки, а если она пуста — логин.
  * Логин здесь именно запасной вариант: в круге родня узнаёт друг друга по имени,
