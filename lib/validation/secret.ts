@@ -87,6 +87,23 @@ export const secretGrantCreateSchema = z
   });
 
 /**
+ * Тело POST /api/secrets/grants — выдача доступа машинным путём (D-061, второй ход):
+ * токен комнаты-ИСТОЧНИКА выдаёт свой ключ комнате target_slug. note обязателен —
+ * это «основание» (номер решения Мозга или причина), оно уходит в аудит обеих комнат.
+ */
+export const secretGrantApiCreateSchema = z.object({
+  key: secretKeyName,
+  target_slug: secretProjectCreateSchema.shape.slug,
+  alias: secretKeyName.optional().or(z.literal('').transform(() => undefined)),
+  note: z.string().trim().min(1, 'Основание обязательно (номер решения или причина выдачи)').max(500),
+});
+
+/** Тело DELETE /api/secrets/grants — отзыв выдачи тем же токеном комнаты-источника. */
+export const secretGrantApiRevokeSchema = z.object({
+  id: z.coerce.number().int().positive(),
+});
+
+/**
  * Тело POST /api/secrets/provision — self-serve onboarding комнаты (мандат brain
  * 2026-07-12). name опционально: по умолчанию совпадает со slug.
  */
@@ -127,4 +144,5 @@ export type SecretCardCreateInput = z.infer<typeof secretCardCreateSchema>;
 export type SecretCardUpdateInput = z.infer<typeof secretCardUpdateSchema>;
 export type SecretCardFieldUpsertInput = z.infer<typeof secretCardFieldUpsertSchema>;
 export type SecretGrantCreateInput = z.infer<typeof secretGrantCreateSchema>;
+export type SecretGrantApiCreateInput = z.infer<typeof secretGrantApiCreateSchema>;
 export type SecretBootstrapCreateInput = z.infer<typeof secretBootstrapCreateSchema>;

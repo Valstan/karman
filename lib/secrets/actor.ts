@@ -24,5 +24,14 @@ export function actorToken(tokenPrefix: string): string {
   return `token:${tokenPrefix}`;
 }
 
+/**
+ * Комната как принципал (D-061, второй ход): выдача/отзыв grant машинным путём под
+ * токеном комнаты-источника. «Кто» здесь — комната, а не владелец и не удостоверение;
+ * что именно предъявили (паспорт/токен) — в detail строки.
+ */
+export function actorRoom(slug: string): string {
+  return `room:${slug}`.slice(0, 120);
+}
+
 /** Операция самого сервиса (фоновые задачи, self-serve provisioning). */
 export const ACTOR_SYSTEM = 'system';
