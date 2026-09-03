@@ -1,8 +1,9 @@
 import Link from 'next/link';
-import { ArrowLeft, FileText } from 'lucide-react';
+import { ArrowLeft, Download, FileText } from 'lucide-react';
 import { requireUser } from '@/lib/auth/current-user';
 import { listVisibleDocuments, listVisiblePeople } from '@/lib/services/circle';
 import { PROFILE_FIELDS, formatProfileValue } from '@/lib/profile/fields';
+import { buttonVariants } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
@@ -46,8 +47,9 @@ export default async function CirclePeoplePage() {
             {people.length} человек. Здесь только те, кто согласился участвовать, — и вы.
           </p>
         </div>
-        {/* Экран выгрузки появляется вехой 4 — ссылку добавим вместе с ним,
-            чтобы здесь не висел мёртвый переход. */}
+        <Link href="/circle/export" className={buttonVariants({ variant: 'outline' })}>
+          <Download className="mr-1 h-4 w-4" /> Выгрузить
+        </Link>
       </div>
 
       {people.map((person) => {

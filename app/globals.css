@@ -118,3 +118,53 @@
     @apply bg-background text-foreground;
   }
 }
+
+/**
+ * Печать. Задача узкая: на бумагу уходит ТОЛЬКО собранная выгрузка
+ * (`.print-area` на экране «Круг → Выгрузка»), а не снимок интерфейса с шапкой,
+ * кнопками и карточками.
+ *
+ * Сделано скрытием всего остального, а не отдельной страницей для печати:
+ * отдельная страница — это второе место, где решается «что показывать», и оно
+ * неизбежно разойдётся с предпросмотром. Человек печатает ровно то, что видит.
+ *
+ * Тёмная тема на бумаге принудительно снимается: печатать белым по чёрному —
+ * это полкартриджа за страницу.
+ */
+@media print {
+  /* Скрываем ВИДИМОСТЬЮ, а не display: элементы остаются в потоке, поэтому
+     разметка не зависит от того, на каком уровне вложенности лежит выгрузка.
+     Селектор по структуре DOM (`main > * > *:not(:has(…))`) ломался бы от
+     любой перестановки обёрток. */
+  body :not(.print-area):not(.print-area *) {
+    visibility: hidden;
+  }
+
+  .print-area,
+  .print-area * {
+    visibility: visible;
+  }
+
+  .print-area {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    max-height: none !important;
+    overflow: visible !important;
+    border: 0 !important;
+    background: transparent !important;
+    padding: 0 !important;
+    color: #000 !important;
+    font-size: 12pt;
+    /* Длинный адрес не должен уезжать за поле листа. */
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+}
