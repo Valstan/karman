@@ -45,7 +45,7 @@ import {
   upsertItemAction,
   revealItemAction,
 } from '@/lib/actions/secrets';
-import { formatDate } from '@/lib/format';
+import { formatDateTime } from '@/lib/format';
 import type { SecretCardListItem, SecretItemMeta } from '@/lib/services/secrets';
 
 const KIND_LABELS: Record<string, string> = { text: 'Текст', secret: 'Секрет', url: 'Ссылка' };
@@ -597,7 +597,7 @@ export function SecretCardsPanel({
                 </TableCell>
                 <TableCell className="font-mono text-sm">{c.envKey ?? '—'}</TableCell>
                 <TableCell className="text-sm text-muted-foreground">{c.fields.length}</TableCell>
-                <TableCell className="text-sm text-muted-foreground">{formatDate(c.updatedAt)}</TableCell>
+                <TableCell className="text-sm text-muted-foreground">{formatDateTime(c.updatedAt)}</TableCell>
                 <TableCell>
                   <div className="flex items-center justify-end gap-1">
                     <CardMetaDialog

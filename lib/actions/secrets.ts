@@ -32,12 +32,8 @@ import {
   revokeGrant,
 } from '@/lib/services/secrets';
 import { createBootstrap, revokeBootstrap } from '@/lib/services/bootstrap';
+import { isUniqueViolation } from '@/lib/db/pg-error';
 import { requireSecretsAccess, revalidateAll, type ActionResult } from './_internal';
-
-/** Уникальное нарушение Postgres (слаг занят). */
-function isUniqueViolation(e: unknown): boolean {
-  return typeof e === 'object' && e !== null && (e as { code?: string }).code === '23505';
-}
 
 export async function createProjectAction(values: unknown): Promise<ActionResult<{ id: number }>> {
   const guard = await requireSecretsAccess();

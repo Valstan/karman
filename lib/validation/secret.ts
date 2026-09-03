@@ -22,6 +22,41 @@ const secretKeyName = z
   .max(200);
 const secretValue = z.string().min(1, 'Пустое значение').max(65536, 'Слишком большое значение (макс 64 КБ)');
 
+/**
+ * Необязательная пометка формы: пустое поле обязано стать `undefined`, а не `''`,
+ * иначе в nullable-колонку уезжает пустая строка вместо NULL.
+ *
+ * Прежняя форма — `.optional().or(z.literal('').transform(...))` — здесь молча
+ * не работает: ветка `.or` срабатывает, только если ПЕРВАЯ отвергает пустую
+ * строку. У полей с регэкспом (`aliasKey`) так и есть, а у свободного текста
+ * первая ветка пустую строку принимает, и до `.or` дело не доходит.
+ */
+const optionalNote = z
+  .string()
+  .trim()
+  .max(500)
+  .optional()
+  .transform((v) => (v ? v : undefined));
+
+/**
+ * Флаг из формы. НЕ `z.coerce.boolean()`: под ним обычный `Boolean(v)`, а он
+ * непустую строку считает истиной — `'false'` и `'0'` дают `true`.
+ *
+ * Здесь это не теория: единственный флаг наших форм — `canWrite`, то есть право
+ * писать в комнату с чужими секретами. Пока поле рисуется галочкой, RHF отдаёт
+ * настоящий boolean и всё сходится; но выбор «нельзя», приехавший строкой из
+ * `<select>` или из ручного запроса, молча превратился бы в «можно». Право
+ * доступа не должно зависеть от того, чем нарисовано поле.
+ */
+const formBoolean = z
+  .union([z.boolean(), z.string()])
+  // `.optional()` обязателен: union, включающий `undefined`, не делает КЛЮЧ
+  // необязательным — Zod продолжает требовать его наличия в объекте.
+  .optional()
+  .transform((v) =>
+    typeof v === 'string' ? ['true', 'on', '1', 'yes'].includes(v.trim().toLowerCase()) : Boolean(v),
+  );
+
 export const secretItemUpsertSchema = z.object({
   projectId: z.coerce.number().int().positive(),
   key: secretKeyName,
@@ -32,7 +67,7 @@ export const secretTokenCreateSchema = z.object({
   projectId: z.coerce.number().int().positive(),
   name: z.string().trim().min(1, 'Введите название токена').max(200),
   // read-write токен (проект сможет писать секреты). По умолчанию read-only.
-  canWrite: z.coerce.boolean().optional().default(false),
+  canWrite: formBoolean,
 });
 
 // --- Карточки секретов (vault Ф1) -------------------------------------------
@@ -79,7 +114,7 @@ export const secretGrantCreateSchema = z
     sourceKey: secretKeyName,
     targetProjectId: z.coerce.number().int().positive(),
     aliasKey: secretKeyName.optional().or(z.literal('').transform(() => undefined)),
-    note: z.string().trim().max(500).optional().or(z.literal('').transform(() => undefined)),
+    note: optionalNote,
   })
   .refine((v) => v.sourceProjectId !== v.targetProjectId, {
     message: 'Комната-источник и комната-получатель совпадают',
@@ -113,8 +148,35 @@ export const secretProvisionSchema = z.object({
 export const secretBootstrapCreateSchema = z.object({
   projectId: z.coerce.number().int().positive(),
   ttlMinutes: z.coerce.number().optional().default(30),
-  canWrite: z.coerce.boolean().optional().default(false),
-  note: z.string().trim().max(500).optional().or(z.literal('').transform(() => undefined)),
+  canWrite: formBoolean,
+  note: optionalNote,
+});
+
+/**
+ * Заведение личности в реестре паспорта (веха 2 ADR-0012). Формы GUI приходят
+ * строками, поэтому числа приводятся `coerce`, а флаг — через `formBoolean`.
+ *
+ * `identityValue` — значение claim'а из `identity_claim` издателя; у GitHub это
+ * `repository_id`, то есть цифры. Регэксп нарочно шире цифр: другой издатель
+ * может нумеровать иначе, а вот пробел или кавычка внутри — всегда опечатка,
+ * которая позже проявится безмолвным `403` на входе проекта.
+ */
+export const passportIdentityCreateSchema = z.object({
+  issuerId: z.coerce.number().int().positive(),
+  identityValue: z
+    .string()
+    .trim()
+    .min(1, 'Укажите идентификатор личности')
+    .max(200)
+    .regex(/^[A-Za-z0-9_.:@/-]+$/, 'Идентификатор: латиница, цифры и . _ : @ / - без пробелов'),
+  label: z
+    .string()
+    .trim()
+    .min(1, 'Укажите метку (например, Valstan/MyRepo)')
+    .max(200),
+  projectId: z.coerce.number().int().positive({ message: 'Выберите комнату' }),
+  canWrite: formBoolean,
+  note: optionalNote,
 });
 
 /** Тело POST /api/secrets — машинная запись секретов по токену (bulk upsert). */
@@ -137,4 +199,5 @@ export type SecretCardCreateInput = z.infer<typeof secretCardCreateSchema>;
 export type SecretCardUpdateInput = z.infer<typeof secretCardUpdateSchema>;
 export type SecretCardFieldUpsertInput = z.infer<typeof secretCardFieldUpsertSchema>;
 export type SecretGrantCreateInput = z.infer<typeof secretGrantCreateSchema>;
+export type PassportIdentityCreateInput = z.infer<typeof passportIdentityCreateSchema>;
 export type SecretBootstrapCreateInput = z.infer<typeof secretBootstrapCreateSchema>;

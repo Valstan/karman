@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, eq, isNull, lt } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { decodeJwt } from 'jose';
 import { db } from '@/lib/db/client';
 import {
@@ -12,7 +12,10 @@ import {
 } from '@/lib/db/schema';
 import { getJwks } from '@/lib/passport/jwks';
 import { verifyAssertion } from '@/lib/passport/verify';
-import { actorPassport } from '@/lib/secrets/actor';
+import { actorOwner, actorPassport } from '@/lib/secrets/actor';
+import { isUniqueViolation } from '@/lib/db/pg-error';
+import { ownership, type SessionUser } from '@/lib/auth/rbac';
+import type { PassportIdentityCreateInput } from '@/lib/validation/secret';
 import { rateLimit } from '@/lib/secrets/rate-limit';
 import { generateToken, hashToken, looksLikeToken } from '@/lib/secrets/token';
 
@@ -328,11 +331,285 @@ export async function revokeSession(rawToken: string, ip: string | null): Promis
   return true;
 }
 
+// --- Реестр личностей: чтение и мутации из GUI (веха 2 ADR-0012) ------------
+//
+// До вехи 2 реестр вёлся SQL-runbook'ом: владелец ходил в psql на прод, и так
+// заведены все живые строки. Здесь тот же runbook, но функциями — с проверкой
+// владения комнатой, аудитом и каскадом отзыва в одной транзакции.
+//
+// Владения у самой строки реестра нет: `passport_identity` не несёт `user_id`,
+// а указывает на комнату. Значит, право на личность — это право на её КОМНАТУ,
+// и проверяется оно ровно так же, как везде в менеджере секретов (`ownership`).
+
+export type PassportIdentityRow = {
+  id: number;
+  label: string;
+  identityValue: string;
+  issuerId: number;
+  issuerName: string;
+  projectId: number;
+  projectSlug: string;
+  projectName: string;
+  canWrite: boolean;
+  note: string | null;
+  createdAt: string;
+  revokedAt: string | null;
+  /** Сколько сессий этой личности живы прямо сейчас (не отозваны и не истекли). */
+  liveSessions: number;
+  /**
+   * Когда личность в последний раз открывала сессию. `null` — ни разу.
+   *
+   * Это единственный признак опечатки в идентификаторе, доступный владельцу
+   * комнаты: отказ «личность вне реестра» пишется строкой с `project_id = NULL`,
+   * а её в комнате не видно. Личность, которая неделю числится заведённой и ни
+   * разу не входила, — почти всегда неверный номер репозитория.
+   */
+  lastSessionAt: string | null;
+};
+
+export type PassportIssuerOption = {
+  id: number;
+  issuer: string;
+  identityClaim: string;
+};
+
 /**
- * Отзыв личности владельцем — SQL-руками по runbook'у `docs/passport-server.md`
- * (GUI-раздел паспорта — следующая веха). Каскад там же одной транзакцией:
- * строка реестра + её живые сессии. Сверх каскада отзыв проверяется на КАЖДОМ
- * чтении (`pullByToken`/`pushByToken` джойнят `passport_identity`), поэтому
- * забытый каскад не оставляет работающих артефактов — в отличие от голого
- * `enabled=false`, который ADR-0012 §5 называет декорацией.
+ * Строки реестра, видимые пользователю: только личности его комнат (superuser
+ * видит все). Отозванные не прячутся — по ним читают историю, и без них экран
+ * врёт, будто личности никогда не было.
  */
+export async function listIdentities(user: SessionUser): Promise<PassportIdentityRow[]> {
+  const rows = await db
+    .select({
+      id: passportIdentity.id,
+      label: passportIdentity.label,
+      identityValue: passportIdentity.identityValue,
+      issuerId: passportIdentity.issuerId,
+      issuerName: passportIssuer.issuer,
+      projectId: passportIdentity.projectId,
+      projectSlug: secretsProject.slug,
+      projectName: secretsProject.name,
+      canWrite: passportIdentity.canWrite,
+      note: passportIdentity.note,
+      createdAt: passportIdentity.createdAt,
+      revokedAt: passportIdentity.revokedAt,
+    })
+    .from(passportIdentity)
+    .innerJoin(secretsProject, eq(secretsProject.id, passportIdentity.projectId))
+    .innerJoin(passportIssuer, eq(passportIssuer.id, passportIdentity.issuerId))
+    .where(ownership(user, secretsProject.userId))
+    .orderBy(desc(passportIdentity.id));
+  if (rows.length === 0) return [];
+
+  // Сессии считаем одним запросом на всех, а не построчно: реестр сейчас
+  // маленький, но N+1 здесь вырос бы вместе с ним молча.
+  const ids = rows.map((r) => r.id);
+  const now = isoNow();
+  const stats = await db
+    .select({
+      identityId: secretsToken.identityId,
+      live: count(
+        // Живая = не отозвана И не истекла. Бессрочная (`expires_at IS NULL`)
+        // считается живой: ровно так её читает `resolveApiToken`, а разойтись
+        // с ним значило бы показывать владельцу не то, что решает доступ.
+        // Паспортная сессия срок получает всегда, но предикат обязан описывать
+        // правило, а не сегодняшнее везение.
+        sql`case when ${secretsToken.revokedAt} is null
+                  and (${secretsToken.expiresAt} is null or ${secretsToken.expiresAt} > ${now})
+             then 1 end`,
+      ),
+      lastSessionAt: sql<string | null>`max(${secretsToken.createdAt})`,
+    })
+    .from(secretsToken)
+    .where(inArray(secretsToken.identityId, ids))
+    .groupBy(secretsToken.identityId);
+  const byIdentity = new Map(stats.map((s) => [s.identityId, s]));
+
+  return rows.map((r) => {
+    const s = byIdentity.get(r.id);
+    return {
+      ...r,
+      liveSessions: Number(s?.live ?? 0),
+      lastSessionAt: s?.lastSessionAt ?? null,
+    };
+  });
+}
+
+/**
+ * Доверенные издатели для формы. Выключенный не предлагается: он всё равно не пустит.
+ *
+ * Отдаются только те поля, которые нужны форме. `audience` и `subject_pattern` —
+ * настройки акцептора, и уезжать в браузер им незачем: пропсы клиентского
+ * компонента сериализуются в payload страницы независимо от того, отрисованы
+ * они или нет.
+ */
+export async function listIssuers(): Promise<PassportIssuerOption[]> {
+  return db
+    .select({
+      id: passportIssuer.id,
+      issuer: passportIssuer.issuer,
+      identityClaim: passportIssuer.identityClaim,
+    })
+    .from(passportIssuer)
+    .where(eq(passportIssuer.enabled, true))
+    .orderBy(passportIssuer.id);
+}
+
+export type IdentityMutationResult = { ok: true; id: number } | { ok: false; error: string };
+
+/**
+ * Заводит личность.
+ *
+ * **Заведение — только владелец vault (superuser), и это не перестраховка.**
+ * Пространство `(issuer_id, identity_value)` ГЛОБАЛЬНО: уникальный индекс не
+ * знает про пользователя. Комнату при этом заводит любой вошедший, а вошедшим
+ * становится любой, кто успешно прошёл вход через ЕСА (`resolveOidcLogin`
+ * заводит активного пользователя без аллоулиста). Без этого гейта посторонний
+ * зарегистрировал бы `repository_id` ЧУЖОГО репозитория на свою комнату — и
+ * увёл бы туда чужой CI. До вехи 2 реестр был «только руками владельца»;
+ * интерфейс не должен молча превращать это в самообслуживание.
+ *
+ * Комната обязана существовать и принадлежать пользователю: автозаведение
+ * комнаты и автовывод slug'а из имени репозитория запрещены (ADR-0012 §5 —
+ * вывод не инъективен, а в vault уже заводились мусорные комнаты).
+ */
+export async function createIdentity(
+  user: SessionUser,
+  input: PassportIdentityCreateInput,
+): Promise<IdentityMutationResult> {
+  if (!user.isSuperuser) {
+    return { ok: false, error: 'Заводить личности может только владелец vault' };
+  }
+
+  const [project] = await db
+    .select({ id: secretsProject.id, slug: secretsProject.slug })
+    .from(secretsProject)
+    .where(and(eq(secretsProject.id, input.projectId), ownership(user, secretsProject.userId)))
+    .limit(1);
+  if (!project) return { ok: false, error: 'Комната не найдена' };
+
+  const [issuer] = await db
+    .select({ id: passportIssuer.id })
+    .from(passportIssuer)
+    .where(and(eq(passportIssuer.id, input.issuerId), eq(passportIssuer.enabled, true)))
+    .limit(1);
+  if (!issuer) return { ok: false, error: 'Издатель удостоверений не найден или выключен' };
+
+  // Уникальный индекс частичный — (issuer_id, identity_value) WHERE revoked_at IS NULL.
+  // Отозванная личность НЕ мешает завести её заново, и это штатный путь смены
+  // прав: `can_write` у выданной сессии поменять нельзя, только перевыпустить.
+  // Предпроверка нужна ради внятного текста; корректность даёт индекс (ниже).
+  const [dup] = await db
+    .select({
+      id: passportIdentity.id,
+      label: passportIdentity.label,
+      ownerId: secretsProject.userId,
+    })
+    .from(passportIdentity)
+    .innerJoin(secretsProject, eq(secretsProject.id, passportIdentity.projectId))
+    .where(
+      and(
+        eq(passportIdentity.issuerId, input.issuerId),
+        eq(passportIdentity.identityValue, input.identityValue),
+        isNull(passportIdentity.revokedAt),
+      ),
+    )
+    .limit(1);
+  if (dup) {
+    // Запрос дубля идёт БЕЗ фильтра владения — иначе он не увидел бы занятую
+    // строку и INSERT всё равно упал бы индексом. Но метку чужой личности в
+    // текст не подставляем: форма превратилась бы в перебор чужого реестра.
+    const mine = user.isSuperuser || dup.ownerId === user.id;
+    return {
+      ok: false,
+      error: mine
+        ? `Идентификатор ${input.identityValue} уже заведён — «${dup.label}». Чтобы сменить комнату или права, отзовите личность и заведите заново.`
+        : `Идентификатор ${input.identityValue} уже заведён в этом vault.`,
+    };
+  }
+
+  let id: number;
+  try {
+    const [created] = await db
+      .insert(passportIdentity)
+      .values({
+        issuerId: input.issuerId,
+        identityValue: input.identityValue,
+        label: input.label,
+        projectId: project.id,
+        canWrite: input.canWrite,
+        note: input.note ?? null,
+      })
+      .returning({ id: passportIdentity.id });
+    id = created!.id;
+  } catch (e) {
+    // Гонка: между предпроверкой и вставкой успел встрять параллельный запрос.
+    // `onConflictDoNothing` здесь неприменим — индекс частичный, на такой target
+    // Postgres отвечает 42P10.
+    if (isUniqueViolation(e)) {
+      return { ok: false, error: `Идентификатор ${input.identityValue} уже заведён в этом vault.` };
+    }
+    throw e;
+  }
+
+  await logAudit(
+    project.id,
+    null,
+    'identity_created',
+    `личность ${input.label} (${input.identityValue}) → комната «${project.slug}», ${input.canWrite ? 'запись разрешена' : 'только чтение'}`,
+    null,
+    actorOwner(user.id),
+  );
+  return { ok: true, id };
+}
+
+/**
+ * Отзыв личности владельцем — КАСКАДОМ: строка реестра и её живые сессии гаснут
+ * одной транзакцией. Голый `revoked_at` у личности без каскада — декорация:
+ * она уже выпустила токены, и они пережили бы отзыв до конца своего TTL.
+ *
+ * Сверх каскада отзыв проверяется на КАЖДОМ чтении (`resolveApiToken` джойнит
+ * `passport_identity`), поэтому даже недогашенный токен читать уже не может.
+ * Каскад закрывает окно, проверка на чтении — само право; вместе они дают то,
+ * что ADR-0012 §5 противопоставляет голому `enabled=false`.
+ */
+export async function revokeIdentity(
+  user: SessionUser,
+  identityId: number,
+): Promise<({ ok: true; id: number; killed: number } | { ok: false; error: string })> {
+  const [row] = await db
+    .select({
+      id: passportIdentity.id,
+      label: passportIdentity.label,
+      projectId: passportIdentity.projectId,
+      projectSlug: secretsProject.slug,
+      revokedAt: passportIdentity.revokedAt,
+    })
+    .from(passportIdentity)
+    .innerJoin(secretsProject, eq(secretsProject.id, passportIdentity.projectId))
+    .where(and(eq(passportIdentity.id, identityId), ownership(user, secretsProject.userId)))
+    .limit(1);
+  if (!row) return { ok: false, error: 'Личность не найдена' };
+  if (row.revokedAt) return { ok: false, error: 'Личность уже отозвана' };
+
+  const now = isoNow();
+  const killed = await db.transaction(async (tx) => {
+    await tx.update(passportIdentity).set({ revokedAt: now }).where(eq(passportIdentity.id, row.id));
+    const sessions = await tx
+      .update(secretsToken)
+      .set({ revokedAt: now })
+      .where(and(eq(secretsToken.identityId, row.id), isNull(secretsToken.revokedAt)))
+      .returning({ id: secretsToken.id });
+    return sessions.length;
+  });
+
+  await logAudit(
+    row.projectId,
+    null,
+    'identity_revoked',
+    `личность ${row.label} отозвана; погашено сессий: ${killed}`,
+    null,
+    actorOwner(user.id),
+  );
+  return { ok: true, id: row.id, killed };
+}

@@ -6,6 +6,8 @@ import {
   secretCardCreateSchema,
   secretCardFieldUpsertSchema,
   secretGrantApiRevokeSchema,
+  secretBootstrapCreateSchema,
+  passportIdentityCreateSchema,
 } from './secret';
 
 describe('secretPushSchema', () => {
@@ -45,6 +47,46 @@ describe('secretTokenCreateSchema — canWrite', () => {
     const r = secretTokenCreateSchema.safeParse({ projectId: 1, name: 'trener', canWrite: true });
     expect(r.success && r.data.canWrite).toBe(true);
   });
+});
+
+// canWrite решает, сможет ли предъявитель ПИСАТЬ в комнату с чужими секретами.
+// Под `z.coerce.boolean()` лежит `Boolean(v)`, а он считает истиной любую
+// непустую строку: выбор «нельзя», приехавший строкой 'false' или '0', молча
+// стал бы «можно». Пока поле рисуется галочкой, беды нет — но право доступа не
+// должно зависеть от того, чем нарисовано поле.
+describe('флаг canWrite: строковое «нет» остаётся «нет»', () => {
+  const cases: Array<[unknown, boolean]> = [
+    [true, true],
+    [false, false],
+    ['true', true],
+    ['on', true],
+    ['1', true],
+    ['yes', true],
+    ['false', false],
+    ['0', false],
+    ['no', false],
+    ['', false],
+    [undefined, false],
+  ];
+
+  for (const [input, expected] of cases) {
+    it(`${JSON.stringify(input)} → ${expected}`, () => {
+      const t = secretTokenCreateSchema.safeParse({ projectId: 1, name: 'ci', canWrite: input });
+      expect(t.success && t.data.canWrite).toBe(expected);
+
+      const i = passportIdentityCreateSchema.safeParse({
+        issuerId: '1',
+        identityValue: '123',
+        label: 'Valstan/X',
+        projectId: '1',
+        canWrite: input,
+      });
+      expect(i.success && i.data.canWrite).toBe(expected);
+
+      const b = secretBootstrapCreateSchema.safeParse({ projectId: 1, canWrite: input });
+      expect(b.success && b.data.canWrite).toBe(expected);
+    });
+  }
 });
 
 describe('secretCardCreateSchema', () => {
@@ -147,5 +189,60 @@ describe('secretGrantApiRevokeSchema', () => {
   it('id приводится к числу и должен быть положительным', () => {
     expect(secretGrantApiRevokeSchema.safeParse({ id: '7' }).success).toBe(true);
     expect(secretGrantApiRevokeSchema.safeParse({ id: 0 }).success).toBe(false);
+  });
+});
+
+describe('passportIdentityCreateSchema — реестр личностей (веха 2)', () => {
+  const valid = {
+    issuerId: '1',
+    identityValue: '1296082925',
+    label: 'Valstan/KazanskayaMalmyzh',
+    projectId: '11',
+    canWrite: 'on',
+    note: 'мандат 03.09',
+  };
+
+  it('форма приходит строками — числа и флаг приводятся', () => {
+    const r = passportIdentityCreateSchema.safeParse(valid);
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.issuerId).toBe(1);
+      expect(r.data.projectId).toBe(11);
+      expect(r.data.canWrite).toBe(true);
+    }
+  });
+
+  it('право записи по умолчанию не выдаётся', () => {
+    const { canWrite: _omit, ...noFlag } = valid;
+    const r = passportIdentityCreateSchema.safeParse(noFlag);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.canWrite).toBe(false);
+  });
+
+  it('комната обязательна — без неё личность повисла бы ни на чём', () => {
+    expect(passportIdentityCreateSchema.safeParse({ ...valid, projectId: '' }).success).toBe(false);
+    expect(passportIdentityCreateSchema.safeParse({ ...valid, projectId: '0' }).success).toBe(false);
+  });
+
+  // Опечатка в идентификаторе не видна сразу: она проявится безмолвным отказом
+  // на входе чужого CI, где искать причину будет уже некому.
+  it('пробел или кавычка в идентификаторе — отказ', () => {
+    expect(passportIdentityCreateSchema.safeParse({ ...valid, identityValue: '129 608' }).success).toBe(false);
+    expect(passportIdentityCreateSchema.safeParse({ ...valid, identityValue: "'129'" }).success).toBe(false);
+    expect(passportIdentityCreateSchema.safeParse({ ...valid, identityValue: '' }).success).toBe(false);
+  });
+
+  it('нецифровой идентификатор допустим — другой издатель нумерует иначе', () => {
+    expect(passportIdentityCreateSchema.safeParse({ ...valid, identityValue: 'repo:acme/app' }).success).toBe(true);
+  });
+
+  it('метка обязательна: без неё аудит нечитаем', () => {
+    expect(passportIdentityCreateSchema.safeParse({ ...valid, label: '   ' }).success).toBe(false);
+  });
+
+  it('пустое основание → undefined, а не пустая строка в БД', () => {
+    const r = passportIdentityCreateSchema.safeParse({ ...valid, note: '' });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.note).toBeUndefined();
   });
 });

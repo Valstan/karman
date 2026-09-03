@@ -1,4 +1,5 @@
-import { Plus } from 'lucide-react';
+import Link from 'next/link';
+import { KeyRound, Plus } from 'lucide-react';
 import { requireSecretsUser } from '@/lib/auth/current-user';
 import { listProjects } from '@/lib/services/secrets';
 import { secretsConfigured } from '@/lib/secrets/crypto';
@@ -18,13 +19,20 @@ export default async function SecretsPage() {
           <h1 className="text-2xl font-semibold">Секреты</h1>
           <p className="text-sm text-muted-foreground">Зашифрованное хранилище ключей проектов</p>
         </div>
-        <SecretProjectDialog
-          trigger={
-            <Button>
-              <Plus className="mr-1 h-4 w-4" /> Новый проект
-            </Button>
-          }
-        />
+        <div className="flex items-center gap-2">
+          <Button variant="outline" asChild>
+            <Link href="/secrets/identities">
+              <KeyRound className="mr-1 h-4 w-4" /> Реестр личностей
+            </Link>
+          </Button>
+          <SecretProjectDialog
+            trigger={
+              <Button>
+                <Plus className="mr-1 h-4 w-4" /> Новый проект
+              </Button>
+            }
+          />
+        </div>
       </div>
 
       {!configured && (

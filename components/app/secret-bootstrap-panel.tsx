@@ -20,7 +20,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ConfirmDialog } from './confirm-dialog';
 import { createBootstrapAction, revokeBootstrapAction } from '@/lib/actions/secrets';
-import { formatDate } from '@/lib/format';
+import { formatDateTime } from '@/lib/format';
 import type { BootstrapMeta } from '@/lib/services/bootstrap';
 
 type FormValues = { ttlMinutes: number; canWrite: boolean; note: string };
@@ -67,7 +67,7 @@ function CreateBootstrapDialog({ projectId }: { projectId: number }) {
           <div className="grid gap-3">
             <p className="text-sm text-muted-foreground">
               Этот код <b>можно передать в чат или продиктовать</b>: он одноразовый, гаснет в момент
-              обмена и действует до {formatDate(issued.expiresAt)}. Настоящий токен по нему проект
+              обмена и действует до {formatDateTime(issued.expiresAt)}. Настоящий токен по нему проект
               получит сам — и токен нигде не прозвучит.
             </p>
             <div className="flex items-center gap-2">
@@ -190,10 +190,10 @@ export function SecretBootstrapPanel({
                     {b.canWrite ? 'read-write' : 'read-only'}
                   </Badge>
                 </TableCell>
-                <TableCell className="text-sm text-muted-foreground">{formatDate(b.expiresAt)}</TableCell>
+                <TableCell className="text-sm text-muted-foreground">{formatDateTime(b.expiresAt)}</TableCell>
                 <TableCell>
                   {b.usedAt ? (
-                    <Badge variant="secondary">Обменяна {formatDate(b.usedAt)}</Badge>
+                    <Badge variant="secondary">Обменяна {formatDateTime(b.usedAt)}</Badge>
                   ) : b.revokedAt ? (
                     <Badge variant="secondary">Погашена</Badge>
                   ) : b.active ? (
