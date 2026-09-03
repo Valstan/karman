@@ -105,7 +105,15 @@ export async function GET(req: Request) {
       `esa_resolve_fail:${resolved.reason}`,
       ip,
     );
-    return deny(req, resolved.reason === 'user_inactive' ? 'inactive' : 'ambiguous');
+    // Причина показывается человеку дословно: «не приглашён» и «несколько
+    // учёток на одну почту» лечатся по-разному, и общая формулировка отправила
+    // бы приглашённого родственника искать несуществующую вторую учётку.
+    const DENY_MARKER = {
+      user_inactive: 'inactive',
+      ambiguous_email: 'ambiguous',
+      not_invited: 'not_invited',
+    } as const;
+    return deny(req, DENY_MARKER[resolved.reason]);
   }
 
   const { userId, username, outcome } = resolved.login;

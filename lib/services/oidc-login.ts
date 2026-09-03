@@ -2,7 +2,6 @@ import 'server-only';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { authOidcIdentity, authUser } from '@/lib/db/schema';
-import { hashDjangoPassword } from '@/lib/auth/password';
 import type { OidcClaims } from '@/lib/auth/oidc';
 
 /**
@@ -24,62 +23,32 @@ import type { OidcClaims } from '@/lib/auth/oidc';
  *     Поэтому `email_verified` обязателен, и совпадение обязано быть РОВНО
  *     одно — иначе непонятно, к кому привязывать, и мы отказываемся угадывать.
  *
- *  3. **Иначе — заводим нового пользователя без прав** (решение владельца
- *     2026-08-25: «любой ЕСА-аккаунт заводит пользователя»). `is_superuser`
- *     остаётся false, а весь доступ к данным фильтруется по владельцу
- *     (`lib/auth/rbac.ts`), поэтому новый человек не видит ни чужих кредитов,
- *     ни чужих комнат vault. Пароль ставится заведомо непроверяемый: войти
- *     этой учёткой можно только через ЕСА.
+ *  3. **Иначе — отказ.** До 2026-09-03 здесь заводился новый пользователь:
+ *     решение владельца 2026-08-25 звучало как «любой ЕСА-аккаунт заводит
+ *     пользователя КАРМАНа». Оно отменено вместе с приходом персональных
+ *     данных: теперь аккаунт заводит владелец приглашением
+ *     (`lib/services/users.ts` → `createAccount`), а ЕСА остаётся способом
+ *     ВОЙТИ, а не способом ЗАРЕГИСТРИРОВАТЬСЯ.
+ *
+ *     Причина смены решения конкретная, а не вкусовая: с ЕСА-регистрацией
+ *     список пользователей КАРМАНа определялся списком пользователей чужой
+ *     системы. Пока в базе лежали только кредиты владельца, это ничего не
+ *     стоило; с паспортами и СНИЛСами родственников — круг людей, у которых
+ *     есть учётка рядом с этими данными, обязан быть решением владельца.
  */
 
 export type ResolvedLogin = {
   userId: number;
   username: string;
   /** Как разрешилась личность — уходит в аудит, чтобы отличать заведённых снаружи. */
-  outcome: 'existing_identity' | 'linked_by_email' | 'provisioned';
+  outcome: 'existing_identity' | 'linked_by_email';
 };
 
-export type ResolveFailure = { ok: false; reason: 'user_inactive' | 'ambiguous_email' };
+export type ResolveFailure = {
+  ok: false;
+  reason: 'user_inactive' | 'ambiguous_email' | 'not_invited';
+};
 export type ResolveResult = { ok: true; login: ResolvedLogin } | ResolveFailure;
-
-/**
- * Пароль, который не пройдёт проверку никогда. Django для этого пишет `!`
- * с мусором; наш `verifyDjangoPassword` на такой строке вернёт false, потому
- * что она не разбирается как `algo$iterations$salt$hash`. Пустую строку сюда
- * класть нельзя: колонка `NOT NULL`, а пустое значение слишком легко принять
- * за «пароль не задан, пустите так».
- */
-function unusablePassword(): string {
-  return `!oidc-only-${Date.now().toString(36)}`;
-}
-
-/** Логин из почты/имени, приведённый к тому, что допускает колонка `username`. */
-function candidateUsername(claims: OidcClaims): string {
-  const base =
-    claims.email?.split('@')[0] ??
-    claims.name ??
-    `esa-${claims.subject.slice(0, 12)}`;
-  const cleaned = base
-    .normalize('NFKD')
-    .replace(/[^A-Za-z0-9._-]/g, '')
-    .slice(0, 100);
-  return cleaned.length >= 2 ? cleaned : `esa-${claims.subject.slice(0, 12)}`;
-}
-
-/** Свободное имя: к занятому дописывается суффикс, а не падает вставка. */
-async function freeUsername(base: string): Promise<string> {
-  for (let i = 0; i < 50; i++) {
-    const candidate = i === 0 ? base : `${base}-${i}`;
-    const [taken] = await db
-      .select({ id: authUser.id })
-      .from(authUser)
-      .where(sql`lower(${authUser.username}) = lower(${candidate})`)
-      .limit(1);
-    if (!taken) return candidate;
-  }
-  // 50 занятых подряд — что-то не так; уникальность гарантируем временем.
-  return `${base}-${Date.now().toString(36)}`;
-}
 
 export async function resolveOidcLogin(
   issuer: string,
@@ -146,34 +115,9 @@ export async function resolveOidcLogin(
     }
   }
 
-  // --- 3. Новый пользователь без прав ----------------------------------------
-  const username = await freeUsername(candidateUsername(claims));
-  const [inserted] = await db
-    .insert(authUser)
-    .values({
-      username,
-      email: claims.email ?? '',
-      password: hashDjangoPassword(unusablePassword()),
-      firstName: claims.name?.split(' ')[0]?.slice(0, 150) ?? '',
-      lastName: claims.name?.split(' ').slice(1).join(' ').slice(0, 150) ?? '',
-      isActive: true,
-      isSuperuser: false,
-      isStaff: false,
-    })
-    .returning({ id: authUser.id, username: authUser.username });
-  if (!inserted) throw new Error('не удалось завести пользователя для личности ЕСА');
-
-  await db.insert(authOidcIdentity).values({
-    issuer,
-    subject: claims.subject,
-    userId: inserted.id,
-    email: claims.email,
-    origin: 'provisioned',
-    lastLoginAt: now,
-  });
-
-  return {
-    ok: true,
-    login: { userId: inserted.id, username: inserted.username, outcome: 'provisioned' },
-  };
+  // --- 3. Незнакомая личность — отказ, аккаунт не заводим ---------------------
+  // Ничего не пишем в БД: ни пользователя, ни строку личности. Запись «личность
+  // приходила, но её развернули» жила бы вечно и без хозяина — а факт попытки
+  // и так фиксируется в auth_audit вызывающим роутом (esa_resolve_fail:*).
+  return { ok: false, reason: 'not_invited' };
 }

@@ -25,7 +25,7 @@ export default async function SettingsPage() {
       />
       <TwoFactorPanel enabled={enabled} recoveryLeft={recoveryLeft} />
       <PasswordPanel />
-      {accounts && <UsersPanel accounts={accounts} />}
+      {accounts && <UsersPanel accounts={accounts} currentUserId={user.id} />}
     </div>
   );
 }
