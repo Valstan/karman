@@ -53,6 +53,17 @@ export async function verifySessionPayload(
   try {
     const { payload } = await jwtVerify(token, getSecretKey());
     if (typeof payload.uid !== 'number') return null;
+    // Токен ЭТАПА входа не является сессией. Промежуточный токен второго
+    // фактора (`signTotpPending`) подписан ТЕМ ЖЕ ключом и несёт тот же `uid`,
+    // поэтому без этой проверки его достаточно переложить из cookie
+    // `karman_totp_pending` в `karman_session_v2` — и второй фактор обойдён:
+    // пароль уже принят, а TOTP-код спрашивать больше некому.
+    //
+    // Проверяется НАЛИЧИЕ метки, а не её значение: сессионный токен метки не
+    // несёт вовсе, поэтому уже выданные сессии остаются рабочими (иначе правка
+    // разлогинила бы всех), а любой будущий этапный токен отсекается сам —
+    // даже если про эту функцию забудут.
+    if (payload.stage !== undefined) return null;
     return { uid: payload.uid, mfa: payload.mfa === true };
   } catch {
     return null;

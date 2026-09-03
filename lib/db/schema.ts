@@ -692,6 +692,13 @@ export const circleMember = pgTable('circle_member', {
   consentedAt: tstz('consented_at'),
   declinedAt: tstz('declined_at'),
   leftAt: tstz('left_at'),
+  /**
+   * Исключён владельцем. Отдельно от `leftAt` намеренно: «ушёл сам» и «меня
+   * убрали» — разные события, и из второго человек не возвращается по своей
+   * воле, только по новому приглашению. Пока это была одна метка, исключённый
+   * возвращал себе доступ кнопкой «Вернуться» (разбор 2026-09-04).
+   */
+  removedAt: tstz('removed_at'),
 });
 
 export type CircleRow = typeof circle.$inferSelect;

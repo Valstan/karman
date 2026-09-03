@@ -44,6 +44,7 @@ const STATE_LABEL: Record<string, string> = {
   invited: 'приглашён, не ответил',
   declined: 'отказался',
   left: 'вышел',
+  removed: 'исключён',
 };
 
 function CreateCircleDialog() {
@@ -318,6 +319,7 @@ export function CirclePanel({
                   {circle.isOwner && <Badge variant="secondary">вы владелец</Badge>}
                   {circle.myState === 'declined' && <Badge variant="outline">вы отказались</Badge>}
                   {circle.myState === 'left' && <Badge variant="outline">вы вышли</Badge>}
+                  {circle.myState === 'removed' && <Badge variant="outline">вас исключили</Badge>}
                 </CardTitle>
                 <CardDescription>
                   {circle.members.filter((m) => m.state === 'consented').length} участников с
@@ -369,7 +371,10 @@ export function CirclePanel({
                     </Badge>
                     {member.userId === currentUserId && <Badge variant="outline">это вы</Badge>}
                   </span>
-                  {circle.isOwner && member.userId !== currentUserId && member.state !== 'left' && (
+                  {circle.isOwner &&
+                    member.userId !== currentUserId &&
+                    member.state !== 'left' &&
+                    member.state !== 'removed' && (
                     <ConfirmDialog
                       title={`Исключить ${member.name}?`}
                       description="Человек перестанет видеть данные круга, а участники — его данные."
@@ -402,6 +407,16 @@ export function CirclePanel({
                 <Button size="sm" disabled={busy} onClick={() => respond(circle.id, true)}>
                   Вернуться
                 </Button>
+              </div>
+            )}
+            {/* Исключённому кнопки «Вернуться» НЕТ: исключение — решение
+                владельца, и отменять его самому нельзя. Вернуть может только
+                новое приглашение. Сервер это же проверяет в WHERE, кнопка
+                просто не обещает того, что не выйдет. */}
+            {circle.myState === 'removed' && (
+              <div className="rounded-md border p-3 text-sm text-muted-foreground">
+                Владелец исключил вас из круга. Вернуться можно, только если он пригласит
+                снова — ваши данные участникам больше не видны, а их данные не видны вам.
               </div>
             )}
           </CardContent>

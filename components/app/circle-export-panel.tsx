@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { PROFILE_FIELDS, type ProfileFieldKey } from '@/lib/profile/fields';
+import { sanitizeFileName, uniqueFileName } from '@/lib/files/name';
 import {
   composeExport,
   exportFileName,
@@ -92,7 +93,10 @@ export function CircleExportPanel({ people, documents, today }: Props) {
           doc.files.map((file, index) => ({
             id: file.id,
             isImage: file.isImage,
-            name: file.originalName || `${doc.title}-${index + 1}`,
+            // Исходное имя санируется при загрузке, а вот запасное собирается
+            // из названия документа — его человек вводит свободно, и без
+            // чистки «Паспорт ../..» стал бы путём внутри архива.
+            name: file.originalName || sanitizeFileName(`${doc.title}-${index + 1}`) || 'файл',
             docTitle: doc.title,
           })),
         ),
@@ -172,15 +176,26 @@ export function CircleExportPanel({ people, documents, today }: Props) {
       zip.file(exportFileName('txt', today || TODAY_FALLBACK), `﻿${text}`);
 
       let failed = 0;
+      // Галочка «Вместе с файлами» распространяется и на архив. До правки
+      // 04.09 downloadZip брал selectedFiles напрямую, и сканы уезжали даже
+      // при снятой галочке — то есть человек отдавал наружу больше, чем
+      // показывали предпросмотр и счётчик, по которым он и решал.
+      const wanted = withFiles ? selectedFiles : [];
+
+      // Имена в архиве разводятся: JSZip кладёт записи в объект по имени и при
+      // совпадении молча перезаписывает — два паспорта, снятые на один телефон
+      // и потому названные одинаково, дали бы в архиве один файл.
+      const usedNames = new Set<string>();
+
       // Файлы качаются по одному через авторизованный роут: сервер архив не
       // собирает и не держит его в памяти.
-      for (const file of selectedFiles) {
+      for (const file of wanted) {
         const res = await fetch(`/api/circle/files/${file.id}`);
         if (!res.ok) {
           failed += 1;
           continue;
         }
-        zip.file(`Файлы/${file.name}`, await res.blob());
+        zip.file(`Файлы/${uniqueFileName(file.name, usedNames)}`, await res.blob());
       }
 
       const blob = await zip.generateAsync({ type: 'blob' });
@@ -209,7 +224,16 @@ export function CircleExportPanel({ people, documents, today }: Props) {
       // делиться файлами умеет не везде, и без проверки вызов падает.
       const images = withFiles ? selectedFiles.filter((f) => f.isImage).slice(0, 10) : [];
       let files: File[] = [];
-      if (images.length > 0) {
+      // Умеет ли браузер делиться файлами, выясняем ДО загрузки — пустышкой
+      // того же типа. Иначе на платформе без поддержки файлов мы качаем
+      // мегабайты сканов, чтобы затем их выбросить, и вдобавок тратим на это
+      // пользовательский жест, с которым navigator.share ещё связан.
+      const canShareFiles =
+        images.length > 0 &&
+        navigator.canShare?.({
+          files: [new File([new Uint8Array()], 'probe.jpg', { type: 'image/jpeg' })],
+        }) === true;
+      if (canShareFiles) {
         const fetched = await Promise.all(
           images.map(async (image) => {
             const res = await fetch(`/api/circle/files/${image.id}`);
