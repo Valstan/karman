@@ -57,6 +57,28 @@ export async function visiblePeopleIds(user: SessionUser): Promise<number[]> {
   return rows.map((r) => r.userId);
 }
 
+/**
+ * Путь файла, доступного мне ЧЕРЕЗ КРУГ (или своего). Отдельная функция, а не
+ * ветка в `getDocumentFilePathById`: там проверка владения, здесь — проверка
+ * согласия, и одна функция с флагом «а можно ещё и по кругу» рано или поздно
+ * получила бы этот флаг там, где его быть не должно.
+ *
+ * null — файла нет либо его владелец мне доступ не открывал.
+ */
+export async function circleFilePath(
+  user: SessionUser,
+  fileId: number,
+): Promise<{ path: string; originalName: string } | null> {
+  const ids = [user.id, ...(await visiblePeopleIds(user))];
+  const [row] = await db
+    .select({ path: documentFile.path, originalName: documentFile.originalName })
+    .from(documentFile)
+    .innerJoin(documentsDocument, eq(documentsDocument.id, documentFile.documentId))
+    .where(and(eq(documentFile.id, fileId), inArray(documentsDocument.userId, ids)))
+    .limit(1);
+  return row ?? null;
+}
+
 export type CirclePerson = {
   userId: number;
   username: string;
