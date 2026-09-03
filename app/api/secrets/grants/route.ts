@@ -1,19 +1,34 @@
 import { NextResponse } from 'next/server';
-import { createGrantByToken, listGrantsByToken, revokeGrantByToken } from '@/lib/services/secrets';
+import { listGrantsByToken, revokeGrantByToken } from '@/lib/services/secrets';
 import { rateLimit } from '@/lib/secrets/rate-limit';
-import { secretGrantApiCreateSchema, secretGrantApiRevokeSchema } from '@/lib/validation/secret';
+import { secretGrantApiRevokeSchema } from '@/lib/validation/secret';
 
 // hashToken (node:crypto) требует Node runtime.
 export const runtime = 'nodejs';
 
 /**
- * Выдача доступа к своему ключу другой комнате — машинным путём (D-061, второй ход).
+ * Выдачи комнаты машинным путём (D-061, второй ход).
  *   GET    /api/secrets/grants → { slug, issued: [...] } — что комната выдала
- *   POST   /api/secrets/grants { key, target_slug, alias?, note } → 201 { ok, id, ... }
- *   DELETE /api/secrets/grants { id } → { ok, id }
- * Авторизация: `Authorization: Bearer skm_…` — токен комнаты-ИСТОЧНИКА с правом записи.
- * Область — только секреты этой комнаты: комната-получатель выдать себе ничего не может,
- * полномочие остаётся у владельца данных. Принципал в аудите — `room:<slug>`.
+ *   DELETE /api/secrets/grants { id } → { ok, id } — отзыв своей выдачи
+ *   POST   /api/secrets/grants → 403, см. ниже
+ * Авторизация: `Authorization: Bearer skm_…` — токен комнаты-ИСТОЧНИКА с правом
+ * записи. Принципал в аудите — `room:<slug>`.
+ *
+ * ПОЧЕМУ СОЗДАНИЕ ЗАКРЫТО. Выдача пишет имя в ЧУЖОЕ пространство имён: значение
+ * приезжает получателю в общий ответ `GET /api/secrets` под именем, которое
+ * выбрал выдающий. Свой ключ получателя выигрывает, но НОВОЕ имя подмешивается
+ * молча, а клиентский рецепт учит раскладывать полученное в переменные
+ * окружения CI. То есть токен одной комнаты давал бы подстановку произвольной
+ * переменной в чужую сборку — ровно та операция, которую `docs/passport-server.md`
+ * («Границы v1») вырезал адверсариальной проверкой: цель выбирает вызывающий,
+ * согласия цели не требуется.
+ *
+ * Отзыв и чтение такой цены не имеют и остаются: они действуют на выдачи своей
+ * комнаты и ничего никому не подкладывают.
+ *
+ * Машинный путь вернётся ДВУСТОРОННИМ: источник предлагает, получатель принимает
+ * своим токеном. Тогда «ключи ходят без рук владельца» (D-061) выполняется,
+ * а согласие цели появляется. До тех пор выдача — операция владельца в GUI.
  */
 function bearerToken(req: Request): string | null {
   const m = /^Bearer\s+(.+)$/i.exec((req.headers.get('authorization') ?? '').trim());
@@ -53,33 +68,18 @@ export async function GET(req: Request) {
   return NextResponse.json({ slug: result.slug, issued: result.issued }, NO_STORE);
 }
 
-export async function POST(req: Request) {
-  const g = gate(req);
-  if (g instanceof NextResponse) return g;
-
-  const body = await req.json().catch(() => null);
-  const parsed = secretGrantApiCreateSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? 'Некорректное тело запроса' },
-      { status: 400 },
-    );
-  }
-
-  const result = await createGrantByToken(g.token, g.ip, parsed.data);
-  if (!result.ok) {
-    return NextResponse.json({ error: result.error }, { status: result.status });
-  }
+/**
+ * Создание выдачи по токену закрыто — причина в шапке файла. Отвечаем `403` с
+ * объяснением, а не `405`: у пути есть работающие методы, и клиенту нужно знать
+ * не «метода нет», а «эта операция сейчас за владельцем, и вот почему».
+ */
+export async function POST(): Promise<NextResponse> {
   return NextResponse.json(
     {
-      ok: true,
-      id: result.id,
-      source: result.sourceSlug,
-      target: result.targetSlug,
-      key: parsed.data.key,
-      alias: result.aliasKey,
+      error:
+        'Выдача доступа по токену закрыта: она пишет имя ключа в чужую комнату, а согласия получателя этот путь не спрашивает. Сейчас выдачу делает владелец в GUI; машинный путь вернётся двусторонним (источник предлагает, получатель принимает своим токеном).',
     },
-    { status: 201, ...NO_STORE },
+    { status: 403, ...NO_STORE },
   );
 }
 

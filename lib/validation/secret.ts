@@ -86,17 +86,10 @@ export const secretGrantCreateSchema = z
     path: ['targetProjectId'],
   });
 
-/**
- * Тело POST /api/secrets/grants — выдача доступа машинным путём (D-061, второй ход):
- * токен комнаты-ИСТОЧНИКА выдаёт свой ключ комнате target_slug. note обязателен —
- * это «основание» (номер решения Мозга или причина), оно уходит в аудит обеих комнат.
- */
-export const secretGrantApiCreateSchema = z.object({
-  key: secretKeyName,
-  target_slug: secretProjectCreateSchema.shape.slug,
-  alias: secretKeyName.optional().or(z.literal('').transform(() => undefined)),
-  note: z.string().trim().min(1, 'Основание обязательно (номер решения или причина выдачи)').max(500),
-});
+// Схемы тела POST /api/secrets/grants здесь нет: создание выдачи по токену
+// закрыто (причина — в `app/api/secrets/grants/route.ts` и в сервисе). Когда
+// машинный путь вернётся двусторонним, форма будет другой — «предложить» и
+// «принять» это два тела, а не одно, — поэтому старую схему не храним.
 
 /** Тело DELETE /api/secrets/grants — отзыв выдачи тем же токеном комнаты-источника. */
 export const secretGrantApiRevokeSchema = z.object({
@@ -144,5 +137,4 @@ export type SecretCardCreateInput = z.infer<typeof secretCardCreateSchema>;
 export type SecretCardUpdateInput = z.infer<typeof secretCardUpdateSchema>;
 export type SecretCardFieldUpsertInput = z.infer<typeof secretCardFieldUpsertSchema>;
 export type SecretGrantCreateInput = z.infer<typeof secretGrantCreateSchema>;
-export type SecretGrantApiCreateInput = z.infer<typeof secretGrantApiCreateSchema>;
 export type SecretBootstrapCreateInput = z.infer<typeof secretBootstrapCreateSchema>;
