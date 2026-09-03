@@ -10,7 +10,7 @@ import {
   documentsDocument,
   personProfile,
 } from '@/lib/db/schema';
-import { memberState, type MemberState } from '@/lib/circle/state';
+import { memberIsActive, memberState, type MemberState } from '@/lib/circle/state';
 import { displayName, emptyProfile, type ProfileValues } from '@/lib/profile/fields';
 import { isImagePath } from '@/lib/storage/media-paths';
 import type { SessionUser } from '@/lib/auth/rbac';
@@ -28,9 +28,18 @@ import type { SessionUser } from '@/lib/auth/rbac';
  * «а давайте тут тоже пустим» расширяла бы сразу оба.
  */
 
-/** Условие «строка участия действующая»: согласился и не вышел. */
+/**
+ * Условие «строка участия действующая»: согласился, не вышел и не исключён.
+ * Обязано совпадать с `memberIsActive` из `lib/circle/state.ts` — там та же
+ * логика для показа человеку, и расхождение означало бы, что интерфейс говорит
+ * одно, а выборка отдаёт другое.
+ */
 function activeMember() {
-  return and(isNotNull(circleMember.consentedAt), isNull(circleMember.leftAt));
+  return and(
+    isNotNull(circleMember.consentedAt),
+    isNull(circleMember.leftAt),
+    isNull(circleMember.removedAt),
+  );
 }
 
 /**
@@ -247,6 +256,7 @@ export async function listMyCircles(user: SessionUser): Promise<CircleView[]> {
       consentedAt: circleMember.consentedAt,
       declinedAt: circleMember.declinedAt,
       leftAt: circleMember.leftAt,
+      removedAt: circleMember.removedAt,
     })
     .from(circleMember)
     .innerJoin(circle, eq(circle.id, circleMember.circleId))
@@ -255,6 +265,10 @@ export async function listMyCircles(user: SessionUser): Promise<CircleView[]> {
 
   if (mine.length === 0) return [];
   const circleIds = mine.map((m) => m.circleId);
+  // Круги, где Я действующий участник: только в них мне положено видеть ФИО
+  // остальных. В остальных (приглашение, отказ, выход, исключение) я вижу
+  // список логинов и состояний — этого хватает, чтобы понять, кто там есть.
+  const myActiveCircles = new Set(mine.filter(memberIsActive).map((m) => m.circleId));
 
   const members = await db
     .select({
@@ -267,6 +281,7 @@ export async function listMyCircles(user: SessionUser): Promise<CircleView[]> {
       consentedAt: circleMember.consentedAt,
       declinedAt: circleMember.declinedAt,
       leftAt: circleMember.leftAt,
+      removedAt: circleMember.removedAt,
     })
     .from(circleMember)
     .innerJoin(authUser, eq(authUser.id, circleMember.userId))
@@ -276,15 +291,23 @@ export async function listMyCircles(user: SessionUser): Promise<CircleView[]> {
   const byCircle = new Map<number, CircleMemberView[]>();
   for (const m of members) {
     const list = byCircle.get(m.circleId) ?? [];
-    const name = displayName(
-      {
-        ...emptyProfile(),
-        lastName: m.lastName ?? '',
-        firstName: m.firstName ?? '',
-        middleName: m.middleName ?? '',
-      },
-      m.username,
-    );
+    // ФИО берётся из ЛИЧНОЙ карточки человека, поэтому показывается только при
+    // обоюдном согласии — как и всё остальное её содержимое. До правки 04.09
+    // фамилия, имя и отчество приглашённого становились видны пригласившему
+    // сразу, ещё до ответа: приглашение одностороннее, и помешать этому человек
+    // не мог. Свой логин он и так знает — его пригласивший и вводил.
+    const showRealName = myActiveCircles.has(m.circleId) && memberIsActive(m);
+    const name = showRealName
+      ? displayName(
+          {
+            ...emptyProfile(),
+            lastName: m.lastName ?? '',
+            firstName: m.firstName ?? '',
+            middleName: m.middleName ?? '',
+          },
+          m.username,
+        )
+      : m.username;
     list.push({ userId: m.userId, username: m.username, name, state: memberState(m) });
     byCircle.set(m.circleId, list);
   }
@@ -360,17 +383,39 @@ export async function inviteToCircle(
   if (target.id === user.id) return { ok: false, error: 'Вы уже в этом круге' };
 
   const [existing] = await db
-    .select({ id: circleMember.id, leftAt: circleMember.leftAt })
+    .select({
+      id: circleMember.id,
+      consentedAt: circleMember.consentedAt,
+      declinedAt: circleMember.declinedAt,
+      leftAt: circleMember.leftAt,
+      removedAt: circleMember.removedAt,
+    })
     .from(circleMember)
     .where(and(eq(circleMember.circleId, circleId), eq(circleMember.userId, target.id)))
     .limit(1);
 
   if (existing) {
-    // Повторное приглашение вышедшего или отказавшегося: обнуляем ответ, но
-    // НЕ проставляем согласие — согласие даёт только сам человек.
+    // Действующего участника повторное приглашение НЕ трогает. До правки 04.09
+    // ветка безусловно обнуляла `consented_at`, и владелец, нажав «Пригласить»
+    // на том, кто уже в круге (частый случай: «я вас не вижу», «отправлю ещё
+    // раз»), молча выкидывал человека из круга — данные переставали быть видны
+    // обоим, и причина была неочевидна ни одному из них.
+    if (memberIsActive(existing)) {
+      return { ok: false, error: 'Этот человек уже участвует в круге' };
+    }
+    // Отказавшийся, ушедший или ИСКЛЮЧЁННЫЙ приглашается заново: ответ
+    // обнуляется, метка исключения снимается — это и есть «новое приглашение»,
+    // единственный путь назад для того, кого исключили. Согласие при этом НЕ
+    // проставляется: его даёт только сам человек.
     await db
       .update(circleMember)
-      .set({ invitedAt: sql`NOW()`, declinedAt: null, leftAt: null, consentedAt: null })
+      .set({
+        invitedAt: sql`NOW()`,
+        declinedAt: null,
+        leftAt: null,
+        removedAt: null,
+        consentedAt: null,
+      })
       .where(eq(circleMember.id, existing.id));
     return { ok: true };
   }
@@ -391,9 +436,29 @@ export async function respondToInvite(
   const result = await db
     .update(circleMember)
     .set(patch)
-    .where(and(eq(circleMember.circleId, circleId), eq(circleMember.userId, user.id)))
+    .where(
+      and(
+        eq(circleMember.circleId, circleId),
+        eq(circleMember.userId, user.id),
+        // Исключённый не возвращает себе доступ САМ. Условие стоит в WHERE, а
+        // не в предварительной выборке: между «прочитать состояние» и
+        // «обновить» владелец может успеть исключить человека, и проверка
+        // отдельным запросом эту гонку бы не закрыла.
+        //
+        // Только на accept: отказаться исключённый вправе всегда — это его
+        // ответ на приглашение, а не попытка вернуть себе доступ.
+        accept ? isNull(circleMember.removedAt) : undefined,
+      ),
+    )
     .returning({ id: circleMember.id });
-  if (result.length === 0) return { ok: false, error: 'Приглашение не найдено' };
+  if (result.length === 0) {
+    return {
+      ok: false,
+      error: accept
+        ? 'Войти в круг нельзя: вас исключил владелец. Нужно новое приглашение'
+        : 'Приглашение не найдено',
+    };
+  }
   return { ok: true };
 }
 
@@ -427,9 +492,13 @@ export async function removeFromCircle(
     .limit(1);
   if (!owned) return { ok: false, error: 'Круг не найден или вы не его владелец' };
 
+  // Исключение пишется СВОЕЙ меткой, а не общей с добровольным выходом: из
+  // этого состояния человек не возвращается по своей воле. Пока метка была
+  // одна, исключённый видел у себя блок «вы вышли» с кнопкой «Вернуться» —
+  // и она работала.
   await db
     .update(circleMember)
-    .set({ leftAt: sql`NOW()` })
+    .set({ removedAt: sql`NOW()` })
     .where(and(eq(circleMember.circleId, circleId), eq(circleMember.userId, targetUserId)));
   return { ok: true };
 }

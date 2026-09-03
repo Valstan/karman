@@ -59,41 +59,6 @@ export function buildRelPath(userId: number, docId: number, ext: string, token: 
   return path.posix.join('documents', String(userId), String(docId), `${token}.${ext}`);
 }
 
-/**
- * Чистит имя файла: убирает разделители пути и символы, запрещённые в именах
- * файлов, схлопывает многоточия и снимает ведущие точки. Имя приходит от
- * человека и попадает в имя записи ZIP-архива, где `../` уводит распаковку за
- * пределы каталога (zip-slip), а ведущая точка прячет файл.
- *
- * Пробелы и дефисы НЕ трогаются: «паспорт разворот 2.jpg» обязан остаться
- * читаемым — ради того имя и хранится отдельно от пути на диске.
- */
-export function sanitizeFileName(value: string): string {
-  const withoutSeparators = value.replace(/[/\\]/g, '');
-  const withoutIllegal = withoutSeparators.replace(/[:*?"<>|]/g, '');
-  return withoutIllegal
-    .replace(/\.{2,}/g, '.')
-    .replace(/^\.+/, '')
-    .trim();
-}
-
-/**
- * Имя файла для выгрузки: то, под которым файл принесли, а если оно потеряно
- * или непригодно — осмысленная замена из названия документа и номера страницы.
- */
-export function safeDownloadName(
-  originalName: string,
-  fallbackBase: string,
-  index: number,
-  relPath: string,
-): string {
-  const ext = path.extname(relPath).slice(1).toLowerCase() || 'bin';
-  const cleaned = sanitizeFileName(originalName);
-  if (cleaned !== '' && cleaned.length <= 120) return cleaned;
-  const base = sanitizeFileName(fallbackBase) || 'документ';
-  return `${base}-${index + 1}.${ext}`;
-}
-
 /** true, если файл — растровое изображение (можно показать миниатюрой). PDF → false. */
 export function isImagePath(relPath: string): boolean {
   const ext = path.extname(relPath).slice(1).toLowerCase();

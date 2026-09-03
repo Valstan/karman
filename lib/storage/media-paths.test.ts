@@ -6,8 +6,6 @@ import {
   extForMime,
   isImagePath,
   mediaRoot,
-  safeDownloadName,
-  sanitizeFileName,
 } from './media-paths';
 
 describe('extForMime', () => {
@@ -33,61 +31,6 @@ describe('buildRelPath', () => {
   it('укладывается в varchar(255) при реальных id и 16-символьном token', () => {
     const p = buildRelPath(999999, 999999, 'webp', 'a'.repeat(16));
     expect(p.length).toBeLessThanOrEqual(255);
-  });
-});
-
-describe('sanitizeFileName', () => {
-  it('оставляет читаемое имя как есть — пробелы и дефисы значимы', () => {
-    expect(sanitizeFileName('паспорт разворот 2.jpg')).toBe('паспорт разворот 2.jpg');
-    expect(sanitizeFileName('скан-1.pdf')).toBe('скан-1.pdf');
-  });
-
-  it('вырезает разделители пути — иначе имя записи в ZIP уводит распаковку', () => {
-    // Разделители убираются, `....` схлопывается в точку, а она как ведущая
-    // снимается — от обхода каталога не остаётся даже скрытого файла.
-    expect(sanitizeFileName('../../etc/passwd')).toBe('etcpasswd');
-    expect(sanitizeFileName('a/b\\c.jpg')).toBe('abc.jpg');
-  });
-
-  it('снимает ведущие точки (скрытый файл) и схлопывает многоточия', () => {
-    expect(sanitizeFileName('...hidden.jpg')).toBe('hidden.jpg');
-    expect(sanitizeFileName('a..b.jpg')).toBe('a.b.jpg');
-  });
-
-  it('вырезает символы, запрещённые в именах файлов', () => {
-    expect(sanitizeFileName('от 12:30 <копия>?.jpg')).toBe('от 1230 копия.jpg');
-  });
-
-  it('пустое остаётся пустым', () => {
-    expect(sanitizeFileName('   ')).toBe('');
-  });
-});
-
-describe('safeDownloadName', () => {
-  it('берёт исходное имя, если оно пригодно', () => {
-    expect(safeDownloadName('паспорт 2.jpg', 'Паспорт', 1, 'documents/1/2/ab.jpg')).toBe(
-      'паспорт 2.jpg',
-    );
-  });
-
-  it('подставляет имя документа с номером, если исходного нет', () => {
-    expect(safeDownloadName('', 'Паспорт РФ', 0, 'documents/1/2/ab.jpg')).toBe('Паспорт РФ-1.jpg');
-    expect(safeDownloadName('   ', 'Паспорт РФ', 2, 'documents/1/2/ab.pdf')).toBe(
-      'Паспорт РФ-3.pdf',
-    );
-  });
-
-  it('не отдаёт наружу имя, состоящее из одних запрещённых символов', () => {
-    expect(safeDownloadName('///', 'Полис', 0, 'documents/1/2/ab.png')).toBe('Полис-1.png');
-  });
-
-  it('падает на запасное имя, если исходное чрезмерно длинное', () => {
-    const long = `${'я'.repeat(200)}.jpg`;
-    expect(safeDownloadName(long, 'Диплом', 0, 'documents/1/2/ab.jpg')).toBe('Диплом-1.jpg');
-  });
-
-  it('без расширения в пути даёт bin, а не пустой хвост', () => {
-    expect(safeDownloadName('', 'Справка', 0, 'documents/1/2/ab')).toBe('Справка-1.bin');
   });
 });
 

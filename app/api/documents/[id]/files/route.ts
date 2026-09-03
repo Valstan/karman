@@ -7,7 +7,8 @@ import {
   getDocumentOwnerId,
 } from '@/lib/services/documents';
 import { saveDocumentFile, deleteFileByRelPath } from '@/lib/storage/media';
-import { MAX_FILES_PER_DOCUMENT, sanitizeFileName } from '@/lib/storage/media-paths';
+import { MAX_FILES_PER_DOCUMENT } from '@/lib/storage/media-paths';
+import { sanitizeFileName } from '@/lib/files/name';
 
 // Файловый ввод-вывод требует Node runtime.
 export const runtime = 'nodejs';
