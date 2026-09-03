@@ -1,8 +1,8 @@
 import 'server-only';
-import { asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { creditsBank, creditsCredit } from '@/lib/db/schema';
-import type { SessionUser } from '@/lib/auth/rbac';
+import { ownership, type SessionUser } from '@/lib/auth/rbac';
 import type { BankCreateInput, BankUpdateInput } from '@/lib/validation/bank';
 
 export type BankListItem = {
@@ -15,9 +15,17 @@ export type BankListItem = {
   creditsCount: number;
 };
 
-// Банки — общий справочник (в схеме нет user_id). Любой аутентифицированный
-// пользователь видит весь список (нужно для выбора банка при создании кредита).
-export async function listBanks(_user: SessionUser): Promise<BankListItem[]> {
+/**
+ * Банки — ОБЩИЙ справочник на всех (решение владельца 2026-09-03): один человек
+ * завёл «Совкомбанк», остальные подтягивают его к своим кредитам, а не заводят
+ * четвёртую копию с опечаткой. Поэтому у `credits_bank` нет и не будет `user_id`.
+ *
+ * Счётчик кредитов при этом СВОЙ: до 03.09 здесь считались кредиты всех, и
+ * приглашённый человек видел на общем экране, сколько займов у остальных в
+ * каждом банке. Изоляция данных не нарушалась (сами кредиты не показывались),
+ * но число — тоже сведения: «у кого-то тут семь кредитов» говорит достаточно.
+ */
+export async function listBanks(user: SessionUser): Promise<BankListItem[]> {
   return db
     .select({
       id: creditsBank.id,
@@ -29,7 +37,13 @@ export async function listBanks(_user: SessionUser): Promise<BankListItem[]> {
       creditsCount: sql<number>`COUNT(${creditsCredit.id})::int`,
     })
     .from(creditsBank)
-    .leftJoin(creditsCredit, eq(creditsCredit.bankId, creditsBank.id))
+    // Условие владения — в ON, а не в WHERE: в WHERE оно превратило бы LEFT JOIN
+    // в INNER и выкинуло из справочника все банки, где у ЭТОГО человека кредитов
+    // нет, — то есть почти весь справочник у новичка.
+    .leftJoin(
+      creditsCredit,
+      and(eq(creditsCredit.bankId, creditsBank.id), ownership(user, creditsCredit.userId)),
+    )
     .groupBy(creditsBank.id)
     .orderBy(asc(creditsBank.name));
 }

@@ -575,6 +575,43 @@ export const authOidcIdentity = pgTable('auth_oidc_identity', {
   lastLoginAt: tstz('last_login_at'),
 });
 
+/**
+ * Карточка человека — то, что «постоянно спрашивают»: ФИО, дата рождения,
+ * СНИЛС, ИНН, прописка, работа. Один профиль на пользователя (unique user_id).
+ *
+ * Отдельная таблица, а не колонки в `auth_user`: учётные данные и персональные
+ * живут по-разному. Учётку владелец отключает, карточку человек отдаёт в круг
+ * по согласию — и отдаёт ЦЕЛИКОМ, чего со строкой `auth_user` делать нельзя
+ * никогда (там хеш пароля).
+ *
+ * Номера документов — строки, а не числа: СНИЛС «123-456-789 00» хранится как
+ * введён. Это реквизит документа, и его форма — часть значения.
+ */
+export const personProfile = pgTable('person_profile', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => authUser.id, { onDelete: 'cascade' }),
+  lastName: varchar('last_name', { length: 150 }).notNull().default(''),
+  firstName: varchar('first_name', { length: 150 }).notNull().default(''),
+  middleName: varchar('middle_name', { length: 150 }).notNull().default(''),
+  birthDate: date('birth_date', { mode: 'string' }),
+  birthPlace: text('birth_place').notNull().default(''),
+  snils: varchar('snils', { length: 20 }).notNull().default(''),
+  inn: varchar('inn', { length: 20 }).notNull().default(''),
+  registrationAddress: text('registration_address').notNull().default(''),
+  actualAddress: text('actual_address').notNull().default(''),
+  employer: text('employer').notNull().default(''),
+  jobTitle: text('job_title').notNull().default(''),
+  phone: varchar('phone', { length: 30 }).notNull().default(''),
+  email: varchar('email', { length: 254 }).notNull().default(''),
+  notes: text('notes').notNull().default(''),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+  updatedAt: tstz('updated_at').notNull().defaultNow(),
+});
+
+export type PersonProfileRow = typeof personProfile.$inferSelect;
+
 export type SecretsProjectRow = typeof secretsProject.$inferSelect;
 export type SecretsItemRow = typeof secretsItem.$inferSelect;
 export type SecretsTokenRow = typeof secretsToken.$inferSelect;

@@ -9,10 +9,11 @@ import { ThemeToggle } from './theme-toggle';
 
 const NAV = [
   { href: '/', label: 'Панель' },
+  { href: '/profile', label: 'Мои данные' },
+  { href: '/documents', label: 'Документы' },
   { href: '/credits', label: 'Кредиты' },
   { href: '/payments', label: 'Платежи' },
   { href: '/banks', label: 'Банки' },
-  { href: '/documents', label: 'Документы' },
   { href: '/reminders', label: 'Напоминания' },
   { href: '/secrets', label: 'Секреты' },
   { href: '/settings', label: 'Настройки' },
