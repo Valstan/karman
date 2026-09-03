@@ -5,7 +5,6 @@ import {
   secretTokenCreateSchema,
   secretCardCreateSchema,
   secretCardFieldUpsertSchema,
-  secretGrantApiCreateSchema,
   secretGrantApiRevokeSchema,
 } from './secret';
 
@@ -141,31 +140,6 @@ describe('многострочные значения (SSH-ключи, PEM) — 
     const r = secretItemUpsertSchema.safeParse({ projectId: 1, key: 'SSH_KEY__big__PC79', value: big });
     expect(r.success).toBe(true);
     if (r.success) expect(r.data.value).toBe(big);
-  });
-});
-
-describe('secretGrantApiCreateSchema — grant по токену комнаты (D-061)', () => {
-  it('минимальное тело: key + target_slug + note', () => {
-    const r = secretGrantApiCreateSchema.safeParse({ key: 'VK_TOKEN', target_slug: 'dkmalmyzh', note: 'D-061' });
-    expect(r.success).toBe(true);
-    if (r.success) expect(r.data.alias).toBeUndefined();
-  });
-
-  it('основание обязательно — пустой note → ошибка', () => {
-    expect(secretGrantApiCreateSchema.safeParse({ key: 'K', target_slug: 'x', note: '' }).success).toBe(false);
-    expect(secretGrantApiCreateSchema.safeParse({ key: 'K', target_slug: 'x', note: '   ' }).success).toBe(false);
-    expect(secretGrantApiCreateSchema.safeParse({ key: 'K', target_slug: 'x' }).success).toBe(false);
-  });
-
-  it('слаг получателя — только латиница/цифры/дефис', () => {
-    expect(secretGrantApiCreateSchema.safeParse({ key: 'K', target_slug: 'Bad Slug', note: 'n' }).success).toBe(false);
-  });
-
-  it('пустой alias → undefined (имя источника), непустой — как есть', () => {
-    const a = secretGrantApiCreateSchema.safeParse({ key: 'K', target_slug: 'x', alias: '', note: 'n' });
-    expect(a.success && a.data.alias).toBeUndefined();
-    const b = secretGrantApiCreateSchema.safeParse({ key: 'K', target_slug: 'x', alias: 'OTHER', note: 'n' });
-    expect(b.success && b.data.alias).toBe('OTHER');
   });
 });
 

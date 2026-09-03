@@ -35,7 +35,6 @@ import type {
   SecretCardUpdateInput,
   SecretCardFieldUpsertInput,
   SecretGrantCreateInput,
-  SecretGrantApiCreateInput,
 } from '@/lib/validation/secret';
 
 export type SecretProjectListItem = {
@@ -842,51 +841,25 @@ async function resolveGrantRoom(rawToken: string, ip: string | null): Promise<Gr
   return { token: tok, room, actor: actorRoom(room.slug), presented };
 }
 
-export type GrantByTokenResult =
-  | { ok: true; id: number; sourceSlug: string; targetSlug: string; aliasKey: string }
-  | GrantApiError;
-
-/**
- * Комната-источник выдаёт СВОЙ ключ другой комнате без сессии владельца-человека.
- * Область — только секреты комнаты токена: получатель этим путём выдать себе ничего
- * не может. «Основание» обязательно (валидация) и уходит в аудит обеих комнат.
- */
-export async function createGrantByToken(
-  rawToken: string,
-  ip: string | null,
-  input: SecretGrantApiCreateInput,
-): Promise<GrantByTokenResult> {
-  const r = await resolveGrantRoom(rawToken, ip);
-  if ('ok' in r) return r;
-
-  const [target] = await db
-    .select({ id: secretsProject.id, slug: secretsProject.slug })
-    .from(secretsProject)
-    .where(eq(secretsProject.slug, input.target_slug))
-    .limit(1);
-  if (!target) {
-    await logAudit(r.room.id, r.token.id, 'grant_denied', `комната «${input.target_slug}» не найдена`, ip, r.actor);
-    return { ok: false, status: 404, error: `Комната «${input.target_slug}» не найдена` };
-  }
-  if (target.id === r.room.id) {
-    return { ok: false, status: 409, error: 'Комната-источник и комната-получатель совпадают' };
-  }
-
-  const aliasKey = input.alias ?? input.key;
-  const created = await insertGrant({
-    source: r.room,
-    target,
-    sourceKey: input.key,
-    aliasKey,
-    basis: `${input.note} (${r.presented})`,
-    actor: r.actor,
-    ip,
-  });
-  if (!created.ok) return { ok: false, status: 409, error: created.error };
-
-  await db.update(secretsToken).set({ lastUsedAt: isoNow() }).where(eq(secretsToken.id, r.token.id));
-  return { ok: true, id: created.id, sourceSlug: r.room.slug, targetSlug: target.slug, aliasKey };
-}
+// СОЗДАНИЯ выдачи по токену здесь нет намеренно, и это не забывчивость.
+//
+// Выдача пишет имя ключа в ЧУЖОЕ пространство имён: значение приезжает
+// получателю в общий ответ `pullByToken` под именем, которое выбрал выдающий.
+// Собственный ключ получателя выигрывает, но НОВОЕ имя подмешивается молча, а
+// клиентский рецепт учит раскладывать полученное в переменные окружения CI.
+// Токен одной комнаты означал бы подстановку произвольной переменной в чужую
+// сборку — операция, вырезанная адверсариальной проверкой ADR-0012
+// («Границы v1» в `docs/passport-server.md`): цель выбирает вызывающий,
+// согласия цели не требуется.
+//
+// Ошибка в рассуждении, из-за которой путь однажды открыли: «это та же граница,
+// что у `POST /api/secrets`». Не та же. Запись в свою комнату остаётся в своей
+// комнате; выдача пересекает границу доверия между комнатами, и её цену платит
+// не тот, кто её совершает.
+//
+// Возврат — только ДВУСТОРОННИМ: источник предлагает, получатель принимает своим
+// токеном. Обе стороны машины, владелец не нужен (D-061 выполняется), но
+// согласие цели появляется.
 
 /** Отзыв выдачи тем же токеном комнаты-источника. Чужую выдачу не видно (404). */
 export async function revokeGrantByToken(
