@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { memberIsActive, memberState } from './state';
+import { canRejoinBySelf, memberIsActive, memberState } from './state';
 
 const T = '2026-09-04T00:00:00Z';
-const NONE = { consentedAt: null, declinedAt: null, leftAt: null };
+const NONE = { consentedAt: null, declinedAt: null, leftAt: null, removedAt: null };
 
 /**
  * От этой функции зависит, увидит ли один человек паспортные данные другого,
@@ -23,27 +23,49 @@ describe('memberState', () => {
   });
 
   it('ВЫШЕДШИЙ не считается участником, хотя согласие в истории осталось', () => {
-    // Главный случай: выход не стирает consented_at. Проверь согласие первым —
-    // и человек, вышедший из круга, навсегда останется «участвует», то есть
-    // его данные будут видны после того, как он их закрыл.
-    expect(memberState({ consentedAt: T, declinedAt: null, leftAt: T })).toBe('left');
-    expect(memberIsActive({ consentedAt: T, declinedAt: null, leftAt: T })).toBe(false);
+    // Выход не стирает consented_at. Проверь согласие первым — и человек,
+    // вышедший из круга, навсегда останется «участвует», то есть его данные
+    // будут видны после того, как он их закрыл.
+    expect(memberState({ ...NONE, consentedAt: T, leftAt: T })).toBe('left');
+    expect(memberIsActive({ ...NONE, consentedAt: T, leftAt: T })).toBe(false);
+  });
+
+  it('ИСКЛЮЧЁННЫЙ важнее всех прочих меток', () => {
+    // Главный случай (утечка, найденная 2026-09-04): пока исключение писалось
+    // той же меткой, что и выход, интерфейс предлагал исключённому кнопку
+    // «Вернуться», и она работала.
+    expect(memberState({ consentedAt: T, declinedAt: T, leftAt: T, removedAt: T })).toBe('removed');
+    expect(memberState({ ...NONE, consentedAt: T, removedAt: T })).toBe('removed');
+    expect(memberIsActive({ ...NONE, consentedAt: T, removedAt: T })).toBe(false);
   });
 
   it('передумавший после отказа считается участником', () => {
     // Отказ остаётся в истории, но согласие свежее — иначе вернуться в круг
     // было бы невозможно, не заводя вторую строку участия.
-    expect(memberState({ consentedAt: T, declinedAt: T, leftAt: null })).toBe('consented');
-    expect(memberIsActive({ consentedAt: T, declinedAt: T, leftAt: null })).toBe(true);
-  });
-
-  it('вышедший после отказа и согласия всё равно вышедший', () => {
-    expect(memberState({ consentedAt: T, declinedAt: T, leftAt: T })).toBe('left');
+    expect(memberState({ ...NONE, consentedAt: T, declinedAt: T })).toBe('consented');
+    expect(memberIsActive({ ...NONE, consentedAt: T, declinedAt: T })).toBe(true);
   });
 
   it('активен ТОЛЬКО согласившийся', () => {
     expect(memberIsActive(NONE)).toBe(false);
     expect(memberIsActive({ ...NONE, declinedAt: T })).toBe(false);
     expect(memberIsActive({ ...NONE, consentedAt: T })).toBe(true);
+  });
+});
+
+describe('canRejoinBySelf', () => {
+  it('приглашённый, отказавшийся и ушедший сам — могут войти сами', () => {
+    expect(canRejoinBySelf(NONE)).toBe(true);
+    expect(canRejoinBySelf({ ...NONE, declinedAt: T })).toBe(true);
+    expect(canRejoinBySelf({ ...NONE, consentedAt: T, leftAt: T })).toBe(true);
+  });
+
+  it('ИСКЛЮЧЁННЫЙ сам вернуться не может — только по новому приглашению', () => {
+    expect(canRejoinBySelf({ ...NONE, removedAt: T })).toBe(false);
+    expect(canRejoinBySelf({ consentedAt: T, declinedAt: T, leftAt: T, removedAt: T })).toBe(false);
+  });
+
+  it('действующий участник «возвращаться» не может — он уже внутри', () => {
+    expect(canRejoinBySelf({ ...NONE, consentedAt: T })).toBe(false);
   });
 });
