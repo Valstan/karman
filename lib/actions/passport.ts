@@ -24,13 +24,19 @@ export async function createIdentityAction(values: unknown): Promise<ActionResul
   return { ok: true, data: { id: result.id } };
 }
 
-/** Отзыв личности каскадом: строка реестра и её живые сессии гаснут вместе. */
-export async function revokeIdentityAction(id: number): Promise<ActionResult> {
+/**
+ * Отзыв личности каскадом: строка реестра и её живые сессии гаснут вместе.
+ *
+ * Число погашенных сессий возвращается наружу, а не только в аудит: владелец
+ * жмёт «отозвать» именно затем, чтобы чужой CI перестал ходить в комнату, и
+ * «отозвано, погашено 2 сессии» отвечает на этот вопрос, а «готово» — нет.
+ */
+export async function revokeIdentityAction(id: number): Promise<ActionResult<{ killed: number }>> {
   const guard = await requireSecretsAccess();
   if (guard.user === null) return { ok: false, error: guard.error };
   const user = guard.user;
   const result = await revokeIdentity(user, id);
   if (!result.ok) return { ok: false, error: result.error };
   revalidateAll();
-  return { ok: true };
+  return { ok: true, data: { killed: result.killed } };
 }

@@ -38,6 +38,25 @@ const optionalNote = z
   .optional()
   .transform((v) => (v ? v : undefined));
 
+/**
+ * Флаг из формы. НЕ `z.coerce.boolean()`: под ним обычный `Boolean(v)`, а он
+ * непустую строку считает истиной — `'false'` и `'0'` дают `true`.
+ *
+ * Здесь это не теория: единственный флаг наших форм — `canWrite`, то есть право
+ * писать в комнату с чужими секретами. Пока поле рисуется галочкой, RHF отдаёт
+ * настоящий boolean и всё сходится; но выбор «нельзя», приехавший строкой из
+ * `<select>` или из ручного запроса, молча превратился бы в «можно». Право
+ * доступа не должно зависеть от того, чем нарисовано поле.
+ */
+const formBoolean = z
+  .union([z.boolean(), z.string()])
+  // `.optional()` обязателен: union, включающий `undefined`, не делает КЛЮЧ
+  // необязательным — Zod продолжает требовать его наличия в объекте.
+  .optional()
+  .transform((v) =>
+    typeof v === 'string' ? ['true', 'on', '1', 'yes'].includes(v.trim().toLowerCase()) : Boolean(v),
+  );
+
 export const secretItemUpsertSchema = z.object({
   projectId: z.coerce.number().int().positive(),
   key: secretKeyName,
@@ -48,7 +67,7 @@ export const secretTokenCreateSchema = z.object({
   projectId: z.coerce.number().int().positive(),
   name: z.string().trim().min(1, 'Введите название токена').max(200),
   // read-write токен (проект сможет писать секреты). По умолчанию read-only.
-  canWrite: z.coerce.boolean().optional().default(false),
+  canWrite: formBoolean,
 });
 
 // --- Карточки секретов (vault Ф1) -------------------------------------------
@@ -129,13 +148,13 @@ export const secretProvisionSchema = z.object({
 export const secretBootstrapCreateSchema = z.object({
   projectId: z.coerce.number().int().positive(),
   ttlMinutes: z.coerce.number().optional().default(30),
-  canWrite: z.coerce.boolean().optional().default(false),
+  canWrite: formBoolean,
   note: optionalNote,
 });
 
 /**
  * Заведение личности в реестре паспорта (веха 2 ADR-0012). Формы GUI приходят
- * строками, поэтому числа приводятся `coerce`, а флаг — `coerce.boolean`.
+ * строками, поэтому числа приводятся `coerce`, а флаг — через `formBoolean`.
  *
  * `identityValue` — значение claim'а из `identity_claim` издателя; у GitHub это
  * `repository_id`, то есть цифры. Регэксп нарочно шире цифр: другой издатель
@@ -156,7 +175,7 @@ export const passportIdentityCreateSchema = z.object({
     .min(1, 'Укажите метку (например, Valstan/MyRepo)')
     .max(200),
   projectId: z.coerce.number().int().positive({ message: 'Выберите комнату' }),
-  canWrite: z.coerce.boolean().optional().default(false),
+  canWrite: formBoolean,
   note: optionalNote,
 });
 

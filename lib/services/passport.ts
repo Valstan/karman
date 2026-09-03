@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, count, desc, eq, gt, inArray, isNull, lt } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { decodeJwt } from 'jose';
 import { db } from '@/lib/db/client';
 import {
@@ -13,7 +13,9 @@ import {
 import { getJwks } from '@/lib/passport/jwks';
 import { verifyAssertion } from '@/lib/passport/verify';
 import { actorOwner, actorPassport } from '@/lib/secrets/actor';
+import { isUniqueViolation } from '@/lib/db/pg-error';
 import { ownership, type SessionUser } from '@/lib/auth/rbac';
+import type { PassportIdentityCreateInput } from '@/lib/validation/secret';
 import { rateLimit } from '@/lib/secrets/rate-limit';
 import { generateToken, hashToken, looksLikeToken } from '@/lib/secrets/token';
 
@@ -354,14 +356,21 @@ export type PassportIdentityRow = {
   revokedAt: string | null;
   /** Сколько сессий этой личности живы прямо сейчас (не отозваны и не истекли). */
   liveSessions: number;
+  /**
+   * Когда личность в последний раз открывала сессию. `null` — ни разу.
+   *
+   * Это единственный признак опечатки в идентификаторе, доступный владельцу
+   * комнаты: отказ «личность вне реестра» пишется строкой с `project_id = NULL`,
+   * а её в комнате не видно. Личность, которая неделю числится заведённой и ни
+   * разу не входила, — почти всегда неверный номер репозитория.
+   */
+  lastSessionAt: string | null;
 };
 
 export type PassportIssuerOption = {
   id: number;
   issuer: string;
-  audience: string;
   identityClaim: string;
-  subjectPattern: string;
 };
 
 /**
@@ -392,62 +401,86 @@ export async function listIdentities(user: SessionUser): Promise<PassportIdentit
     .orderBy(desc(passportIdentity.id));
   if (rows.length === 0) return [];
 
-  // Живые сессии считаем одним запросом на всех, а не построчно: реестр сейчас
+  // Сессии считаем одним запросом на всех, а не построчно: реестр сейчас
   // маленький, но N+1 здесь вырос бы вместе с ним молча.
-  const live = await db
-    .select({ identityId: secretsToken.identityId, n: count() })
-    .from(secretsToken)
-    .where(
-      and(
-        inArray(
-          secretsToken.identityId,
-          rows.map((r) => r.id),
-        ),
-        isNull(secretsToken.revokedAt),
-        gt(secretsToken.expiresAt, isoNow()),
+  const ids = rows.map((r) => r.id);
+  const now = isoNow();
+  const stats = await db
+    .select({
+      identityId: secretsToken.identityId,
+      live: count(
+        // Живая = не отозвана И не истекла. Бессрочная (`expires_at IS NULL`)
+        // считается живой: ровно так её читает `resolveApiToken`, а разойтись
+        // с ним значило бы показывать владельцу не то, что решает доступ.
+        // Паспортная сессия срок получает всегда, но предикат обязан описывать
+        // правило, а не сегодняшнее везение.
+        sql`case when ${secretsToken.revokedAt} is null
+                  and (${secretsToken.expiresAt} is null or ${secretsToken.expiresAt} > ${now})
+             then 1 end`,
       ),
-    )
+      lastSessionAt: sql<string | null>`max(${secretsToken.createdAt})`,
+    })
+    .from(secretsToken)
+    .where(inArray(secretsToken.identityId, ids))
     .groupBy(secretsToken.identityId);
-  const liveByIdentity = new Map(live.map((l) => [l.identityId, Number(l.n)]));
+  const byIdentity = new Map(stats.map((s) => [s.identityId, s]));
 
-  return rows.map((r) => ({ ...r, liveSessions: liveByIdentity.get(r.id) ?? 0 }));
+  return rows.map((r) => {
+    const s = byIdentity.get(r.id);
+    return {
+      ...r,
+      liveSessions: Number(s?.live ?? 0),
+      lastSessionAt: s?.lastSessionAt ?? null,
+    };
+  });
 }
 
-/** Доверенные издатели для формы. Выключенный не предлагается: он всё равно не пустит. */
+/**
+ * Доверенные издатели для формы. Выключенный не предлагается: он всё равно не пустит.
+ *
+ * Отдаются только те поля, которые нужны форме. `audience` и `subject_pattern` —
+ * настройки акцептора, и уезжать в браузер им незачем: пропсы клиентского
+ * компонента сериализуются в payload страницы независимо от того, отрисованы
+ * они или нет.
+ */
 export async function listIssuers(): Promise<PassportIssuerOption[]> {
   return db
     .select({
       id: passportIssuer.id,
       issuer: passportIssuer.issuer,
-      audience: passportIssuer.audience,
       identityClaim: passportIssuer.identityClaim,
-      subjectPattern: passportIssuer.subjectPattern,
     })
     .from(passportIssuer)
     .where(eq(passportIssuer.enabled, true))
     .orderBy(passportIssuer.id);
 }
 
-export type IdentityCreateInput = {
-  issuerId: number;
-  identityValue: string;
-  label: string;
-  projectId: number;
-  canWrite: boolean;
-  note?: string | null;
-};
-
 export type IdentityMutationResult = { ok: true; id: number } | { ok: false; error: string };
 
 /**
- * Заводит личность. Комната обязана существовать и принадлежать пользователю:
- * автозаведение комнаты и автовывод slug'а из имени репозитория запрещены
- * (ADR-0012 §5 — вывод не инъективен, а в vault уже заводились мусорные комнаты).
+ * Заводит личность.
+ *
+ * **Заведение — только владелец vault (superuser), и это не перестраховка.**
+ * Пространство `(issuer_id, identity_value)` ГЛОБАЛЬНО: уникальный индекс не
+ * знает про пользователя. Комнату при этом заводит любой вошедший, а вошедшим
+ * становится любой, кто успешно прошёл вход через ЕСА (`resolveOidcLogin`
+ * заводит активного пользователя без аллоулиста). Без этого гейта посторонний
+ * зарегистрировал бы `repository_id` ЧУЖОГО репозитория на свою комнату — и
+ * увёл бы туда чужой CI. До вехи 2 реестр был «только руками владельца»;
+ * интерфейс не должен молча превращать это в самообслуживание.
+ *
+ * Комната обязана существовать и принадлежать пользователю: автозаведение
+ * комнаты и автовывод slug'а из имени репозитория запрещены (ADR-0012 §5 —
+ * вывод не инъективен, а в vault уже заводились мусорные комнаты).
  */
 export async function createIdentity(
   user: SessionUser,
-  input: IdentityCreateInput,
+  input: PassportIdentityCreateInput,
 ): Promise<IdentityMutationResult> {
+  if (!user.isSuperuser) {
+    return { ok: false, error: 'Заводить личности может только владелец vault' };
+  }
+
   const [project] = await db
     .select({ id: secretsProject.id, slug: secretsProject.slug })
     .from(secretsProject)
@@ -465,10 +498,15 @@ export async function createIdentity(
   // Уникальный индекс частичный — (issuer_id, identity_value) WHERE revoked_at IS NULL.
   // Отозванная личность НЕ мешает завести её заново, и это штатный путь смены
   // прав: `can_write` у выданной сессии поменять нельзя, только перевыпустить.
-  // Проверяем заранее, чтобы вместо ошибки БД показать причину.
+  // Предпроверка нужна ради внятного текста; корректность даёт индекс (ниже).
   const [dup] = await db
-    .select({ id: passportIdentity.id, label: passportIdentity.label })
+    .select({
+      id: passportIdentity.id,
+      label: passportIdentity.label,
+      ownerId: secretsProject.userId,
+    })
     .from(passportIdentity)
+    .innerJoin(secretsProject, eq(secretsProject.id, passportIdentity.projectId))
     .where(
       and(
         eq(passportIdentity.issuerId, input.issuerId),
@@ -478,29 +516,46 @@ export async function createIdentity(
     )
     .limit(1);
   if (dup) {
+    // Запрос дубля идёт БЕЗ фильтра владения — иначе он не увидел бы занятую
+    // строку и INSERT всё равно упал бы индексом. Но метку чужой личности в
+    // текст не подставляем: форма превратилась бы в перебор чужого реестра.
+    const mine = user.isSuperuser || dup.ownerId === user.id;
     return {
       ok: false,
-      error: `Идентификатор ${input.identityValue} уже заведён — «${dup.label}». Чтобы сменить комнату или права, отзовите личность и заведите заново.`,
+      error: mine
+        ? `Идентификатор ${input.identityValue} уже заведён — «${dup.label}». Чтобы сменить комнату или права, отзовите личность и заведите заново.`
+        : `Идентификатор ${input.identityValue} уже заведён в этом vault.`,
     };
   }
 
-  const [created] = await db
-    .insert(passportIdentity)
-    .values({
-      issuerId: input.issuerId,
-      identityValue: input.identityValue,
-      label: input.label,
-      projectId: project.id,
-      canWrite: input.canWrite,
-      note: input.note ?? null,
-    })
-    .returning({ id: passportIdentity.id });
-  const id = created!.id;
+  let id: number;
+  try {
+    const [created] = await db
+      .insert(passportIdentity)
+      .values({
+        issuerId: input.issuerId,
+        identityValue: input.identityValue,
+        label: input.label,
+        projectId: project.id,
+        canWrite: input.canWrite,
+        note: input.note ?? null,
+      })
+      .returning({ id: passportIdentity.id });
+    id = created!.id;
+  } catch (e) {
+    // Гонка: между предпроверкой и вставкой успел встрять параллельный запрос.
+    // `onConflictDoNothing` здесь неприменим — индекс частичный, на такой target
+    // Postgres отвечает 42P10.
+    if (isUniqueViolation(e)) {
+      return { ok: false, error: `Идентификатор ${input.identityValue} уже заведён в этом vault.` };
+    }
+    throw e;
+  }
 
   await logAudit(
     project.id,
     null,
-    'identity_added',
+    'identity_created',
     `личность ${input.label} (${input.identityValue}) → комната «${project.slug}», ${input.canWrite ? 'запись разрешена' : 'только чтение'}`,
     null,
     actorOwner(user.id),
@@ -521,7 +576,7 @@ export async function createIdentity(
 export async function revokeIdentity(
   user: SessionUser,
   identityId: number,
-): Promise<IdentityMutationResult> {
+): Promise<({ ok: true; id: number; killed: number } | { ok: false; error: string })> {
   const [row] = await db
     .select({
       id: passportIdentity.id,
@@ -552,9 +607,9 @@ export async function revokeIdentity(
     row.projectId,
     null,
     'identity_revoked',
-    `личность ${row.label} отозвана; погашено живых сессий: ${killed}`,
+    `личность ${row.label} отозвана; погашено сессий: ${killed}`,
     null,
     actorOwner(user.id),
   );
-  return { ok: true, id: row.id };
+  return { ok: true, id: row.id, killed };
 }

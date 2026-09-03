@@ -38,7 +38,12 @@ export default async function PassportIdentitiesPage() {
         </p>
       </div>
 
-      <PassportIdentitiesPanel identities={identities} issuers={issuers} rooms={rooms} />
+      <PassportIdentitiesPanel
+        identities={identities}
+        issuers={issuers}
+        rooms={rooms}
+        canManage={user.isSuperuser}
+      />
     </div>
   );
 }

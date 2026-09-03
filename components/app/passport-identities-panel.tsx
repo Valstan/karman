@@ -208,10 +208,17 @@ export function PassportIdentitiesPanel({
   identities,
   issuers,
   rooms,
+  canManage,
 }: {
   identities: PassportIdentityRow[];
   issuers: PassportIssuerOption[];
   rooms: IdentityRoomOption[];
+  /**
+   * Владелец vault. Право проверяется на сервере (`createIdentity`); здесь оно
+   * только для того, чтобы не рисовать кнопку, которая всегда отвечает отказом.
+   * «Не нарисовали кнопку» правом не является.
+   */
+  canManage: boolean;
 }) {
   const router = useRouter();
 
@@ -221,7 +228,12 @@ export function PassportIdentitiesPanel({
       toast.error(result.error);
       return;
     }
-    toast.success('Личность отозвана, её живые сессии погашены');
+    const killed = result.data?.killed ?? 0;
+    toast.success(
+      killed > 0
+        ? `Личность отозвана, погашено сессий: ${killed}`
+        : 'Личность отозвана; живых сессий у неё не было',
+    );
     router.refresh();
   }
 
@@ -231,7 +243,7 @@ export function PassportIdentitiesPanel({
         <h2 className="flex items-center gap-2 text-lg font-semibold">
           <KeyRound className="h-5 w-5" /> Машинные личности
         </h2>
-        <AddIdentityDialog issuers={issuers} rooms={rooms} />
+        {canManage && <AddIdentityDialog issuers={issuers} rooms={rooms} />}
       </div>
 
       <p className="text-sm text-muted-foreground">
@@ -240,7 +252,15 @@ export function PassportIdentitiesPanel({
         без строки любое, даже валидное, удостоверение получает отказ.
       </p>
 
-      {issuers.length === 0 && (
+      {!canManage && (
+        <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
+          Заводить личности может только владелец vault: номер репозитория уникален на весь
+          vault, и регистрация чужого номера увела бы чужой CI в свою комнату. Отзыв личностей
+          своих комнат доступен вам и здесь.
+        </div>
+      )}
+
+      {canManage && issuers.length === 0 && (
         <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm">
           <b>Нет доверенных издателей удостоверений.</b> Пока их нет, заводить личность не на что:
           строка реестра ссылается на издателя.
@@ -256,6 +276,7 @@ export function PassportIdentitiesPanel({
               <TableHead>Комната</TableHead>
               <TableHead>Права</TableHead>
               <TableHead>Живых сессий</TableHead>
+              <TableHead>Последний вход</TableHead>
               <TableHead>Заведена</TableHead>
               <TableHead>Статус</TableHead>
               <TableHead className="text-right">Действия</TableHead>
@@ -264,7 +285,7 @@ export function PassportIdentitiesPanel({
           <TableBody>
             {identities.length === 0 && (
               <TableRow>
-                <TableCell colSpan={8} className="h-20 text-center text-muted-foreground">
+                <TableCell colSpan={9} className="h-20 text-center text-muted-foreground">
                   Личностей пока нет — ни один чужой CI войти не может.
                 </TableCell>
               </TableRow>
@@ -283,6 +304,18 @@ export function PassportIdentitiesPanel({
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
                   {i.revokedAt ? '—' : i.liveSessions}
+                </TableCell>
+                <TableCell className="text-sm text-muted-foreground">
+                  {i.lastSessionAt ? (
+                    formatDateTime(i.lastSessionAt)
+                  ) : (
+                    // Личность заведена, но ни разу не входила — чаще всего это
+                    // опечатка в идентификаторе: отказ уходит строкой без комнаты,
+                    // и в аудите самой комнаты его не видно.
+                    <Badge variant="outline" title="Проверьте идентификатор: отказ входа в комнате не виден">
+                      Ни разу не входила
+                    </Badge>
+                  )}
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
                   {formatDateTime(i.createdAt)}

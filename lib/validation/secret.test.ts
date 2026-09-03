@@ -6,6 +6,7 @@ import {
   secretCardCreateSchema,
   secretCardFieldUpsertSchema,
   secretGrantApiRevokeSchema,
+  secretBootstrapCreateSchema,
   passportIdentityCreateSchema,
 } from './secret';
 
@@ -46,6 +47,46 @@ describe('secretTokenCreateSchema — canWrite', () => {
     const r = secretTokenCreateSchema.safeParse({ projectId: 1, name: 'trener', canWrite: true });
     expect(r.success && r.data.canWrite).toBe(true);
   });
+});
+
+// canWrite решает, сможет ли предъявитель ПИСАТЬ в комнату с чужими секретами.
+// Под `z.coerce.boolean()` лежит `Boolean(v)`, а он считает истиной любую
+// непустую строку: выбор «нельзя», приехавший строкой 'false' или '0', молча
+// стал бы «можно». Пока поле рисуется галочкой, беды нет — но право доступа не
+// должно зависеть от того, чем нарисовано поле.
+describe('флаг canWrite: строковое «нет» остаётся «нет»', () => {
+  const cases: Array<[unknown, boolean]> = [
+    [true, true],
+    [false, false],
+    ['true', true],
+    ['on', true],
+    ['1', true],
+    ['yes', true],
+    ['false', false],
+    ['0', false],
+    ['no', false],
+    ['', false],
+    [undefined, false],
+  ];
+
+  for (const [input, expected] of cases) {
+    it(`${JSON.stringify(input)} → ${expected}`, () => {
+      const t = secretTokenCreateSchema.safeParse({ projectId: 1, name: 'ci', canWrite: input });
+      expect(t.success && t.data.canWrite).toBe(expected);
+
+      const i = passportIdentityCreateSchema.safeParse({
+        issuerId: '1',
+        identityValue: '123',
+        label: 'Valstan/X',
+        projectId: '1',
+        canWrite: input,
+      });
+      expect(i.success && i.data.canWrite).toBe(expected);
+
+      const b = secretBootstrapCreateSchema.safeParse({ projectId: 1, canWrite: input });
+      expect(b.success && b.data.canWrite).toBe(expected);
+    });
+  }
 });
 
 describe('secretCardCreateSchema', () => {
