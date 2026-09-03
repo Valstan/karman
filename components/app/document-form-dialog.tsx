@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -22,18 +23,25 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { createDocumentAction, updateDocumentAction } from '@/lib/actions/documents';
-import type { DocumentListItem, DocumentCategoryOption } from '@/lib/services/documents';
+import {
+  createDocumentAction,
+  saveDocumentFieldsAction,
+  updateDocumentAction,
+} from '@/lib/actions/documents';
+import { DOCUMENT_TEMPLATES, templateById } from '@/lib/documents/templates';
+import type { DocumentCategoryOption } from '@/lib/services/documents';
 
-const FILE_ACCEPT = '.jpg,.jpeg,.png,.webp,.pdf';
-
-const FILE_SLOTS = [
-  { slot: 'front', label: 'Лицевая сторона' },
-  { slot: 'back', label: 'Оборотная сторона' },
-  { slot: 'additional', label: 'Доп. файл' },
-] as const;
-
-type FileSlot = (typeof FILE_SLOTS)[number]['slot'];
+/**
+ * Ядро документа: название, категория, тип, номер, даты, кем выдан. Всё
+ * остальное — произвольные поля и файлы — живёт на экране самого документа
+ * (`/documents/[id]`): их там может быть по два десятка, и в диалог они не
+ * помещаются ни физически, ни по смыслу.
+ *
+ * При СОЗДАНИИ здесь же выбирается шаблон: он не ограничивает документ, а лишь
+ * заранее раскладывает пустые поля с названиями («Серия», «Код подразделения»),
+ * чтобы человек не вспоминал, что вообще спрашивают по паспорту. После создания
+ * шаблон нигде не хранится — поля обычные, их можно удалить и переименовать.
+ */
 
 type FormValues = {
   title: string;
@@ -44,9 +52,25 @@ type FormValues = {
   issuingAuthority: string;
   isActive: boolean;
   categoryId: string;
+  templateId: string;
 };
 
-function defaults(doc?: DocumentListItem): FormValues {
+export type DocumentCoreValues = {
+  id: number;
+  title: string;
+  documentType: string;
+  documentNumber: string;
+  issueDate: string | null;
+  expiryDate: string | null;
+  // null допускается, хотя колонка NOT NULL: список документов объявляет это
+  // поле как `string | null`, и сузить тип здесь означало бы приведение в месте
+  // вызова — то есть ложь о данных ради удобства формы.
+  issuingAuthority: string | null;
+  isActive: boolean;
+  categoryId: number;
+};
+
+function defaults(doc?: DocumentCoreValues): FormValues {
   return {
     title: doc?.title ?? '',
     documentType: doc?.documentType ?? '',
@@ -56,53 +80,24 @@ function defaults(doc?: DocumentListItem): FormValues {
     issuingAuthority: doc?.issuingAuthority ?? '',
     isActive: doc?.isActive ?? true,
     categoryId: doc ? String(doc.categoryId) : '',
+    templateId: 'custom',
   };
-}
-
-function hasExistingFile(doc: DocumentListItem | undefined, slot: FileSlot): boolean {
-  if (!doc) return false;
-  if (slot === 'front') return doc.hasFront;
-  if (slot === 'back') return doc.hasBack;
-  return doc.hasAdditional;
-}
-
-async function uploadFile(docId: number, slot: FileSlot, file: File): Promise<string | null> {
-  const fd = new FormData();
-  fd.append('file', file);
-  const res = await fetch(`/api/documents/${docId}/file/${slot}`, { method: 'POST', body: fd });
-  if (res.ok) return null;
-  const body = await res.json().catch(() => null);
-  return body?.message ?? 'Не удалось загрузить файл';
-}
-
-async function removeFile(docId: number, slot: FileSlot): Promise<string | null> {
-  const res = await fetch(`/api/documents/${docId}/file/${slot}`, { method: 'DELETE' });
-  if (res.ok) return null;
-  const body = await res.json().catch(() => null);
-  return body?.message ?? 'Не удалось удалить файл';
 }
 
 export function DocumentFormDialog({
   trigger,
   categories,
   document,
+  onSaved,
 }: {
   trigger: ReactNode;
   categories: DocumentCategoryOption[];
-  document?: DocumentListItem;
+  document?: DocumentCoreValues;
+  /** Куда идти после создания; по умолчанию — на экран нового документа. */
+  onSaved?: (id: number) => void;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
-  const [files, setFiles] = useState<Record<FileSlot, File | null>>({
-    front: null,
-    back: null,
-    additional: null,
-  });
-  const [removed, setRemoved] = useState<Record<FileSlot, boolean>>({
-    front: false,
-    back: false,
-    additional: false,
-  });
   const isEdit = Boolean(document);
 
   const {
@@ -110,64 +105,63 @@ export function DocumentFormDialog({
     handleSubmit,
     control,
     reset,
+    setValue,
     formState: { isSubmitting },
   } = useForm<FormValues>({ defaultValues: defaults(document) });
-
-  function resetFileState() {
-    setFiles({ front: null, back: null, additional: null });
-    setRemoved({ front: false, back: false, additional: false });
-  }
-
-  async function syncFiles(docId: number): Promise<string[]> {
-    const errors: string[] = [];
-    for (const { slot } of FILE_SLOTS) {
-      const file = files[slot];
-      if (file) {
-        const err = await uploadFile(docId, slot, file);
-        if (err) errors.push(err);
-      } else if (removed[slot] && hasExistingFile(document, slot)) {
-        const err = await removeFile(docId, slot);
-        if (err) errors.push(err);
-      }
-    }
-    return errors;
-  }
 
   async function onSubmit(values: FormValues) {
     if (!values.categoryId) {
       toast.error('Выберите категорию');
       return;
     }
+    const payload = {
+      title: values.title,
+      documentType: values.documentType,
+      documentNumber: values.documentNumber,
+      issueDate: values.issueDate === '' ? null : values.issueDate,
+      expiryDate: values.expiryDate === '' ? null : values.expiryDate,
+      issuingAuthority: values.issuingAuthority,
+      isActive: values.isActive,
+      categoryId: Number(values.categoryId),
+    };
 
-    let docId = document?.id;
-    if (isEdit) {
-      const result = await updateDocumentAction({ id: document!.id, ...values });
+    if (isEdit && document) {
+      const result = await updateDocumentAction({ id: document.id, ...payload });
       if (!result.ok) {
         toast.error(result.error);
         return;
       }
-    } else {
-      const result = await createDocumentAction(values);
-      if (!result.ok) {
-        toast.error(result.error);
-        return;
-      }
-      docId = result.data?.id;
+      toast.success('Документ сохранён');
+      setOpen(false);
+      router.refresh();
+      return;
     }
 
-    if (docId) {
-      const fileErrors = await syncFiles(docId);
-      if (fileErrors.length > 0) {
-        toast.error(fileErrors[0]);
-        setOpen(false);
-        router.refresh();
-        return;
-      }
+    const result = await createDocumentAction(payload);
+    if (!result.ok) {
+      toast.error(result.error);
+      return;
+    }
+    const id = result.data!.id;
+
+    // Поля шаблона раскладываются ПОСЛЕ создания, отдельным действием: документ
+    // уже существует, и провал этого шага не должен отменять его создание —
+    // поля человек допишет руками, а потерянный документ пришлось бы заводить
+    // заново вместе со всеми файлами.
+    const template = templateById(values.templateId);
+    if (template && template.fields.length > 0) {
+      const fieldsResult = await saveDocumentFieldsAction({
+        id,
+        fields: template.fields.map((name) => ({ name, value: '' })),
+      });
+      if (!fieldsResult.ok) toast.error(`Документ создан, но поля шаблона не легли: ${fieldsResult.error}`);
     }
 
-    toast.success(isEdit ? 'Документ обновлён' : 'Документ добавлен');
+    toast.success('Документ создан');
     setOpen(false);
-    router.refresh();
+    reset(defaults());
+    if (onSaved) onSaved(id);
+    else router.push(`/documents/${id}`);
   }
 
   return (
@@ -175,19 +169,61 @@ export function DocumentFormDialog({
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
-        if (next) {
-          reset(defaults(document));
-          resetFileState();
-        }
+        if (next) reset(defaults(document));
       }}
     >
       <DialogTrigger asChild>{trigger}</DialogTrigger>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{isEdit ? 'Редактировать документ' : 'Новый документ'}</DialogTitle>
+          {!isEdit && (
+            <DialogDescription>
+              Файлы и остальные реквизиты добавите на экране документа сразу после создания.
+            </DialogDescription>
+          )}
         </DialogHeader>
 
         <form onSubmit={handleSubmit(onSubmit)} className="grid gap-4">
+          {!isEdit && (
+            <div className="grid gap-2">
+              <Label>Вид документа</Label>
+              <Controller
+                control={control}
+                name="templateId"
+                render={({ field }) => (
+                  <Select
+                    value={field.value}
+                    onValueChange={(next) => {
+                      field.onChange(next);
+                      // Тип и название подставляются из шаблона, но только если
+                      // человек ещё ничего не вписал: перезаписывать введённое
+                      // выбором из списка — худший вид «помощи».
+                      const template = templateById(next);
+                      if (template && template.documentType !== '') {
+                        setValue('documentType', template.documentType);
+                        setValue('title', template.label, { shouldDirty: true });
+                      }
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Выберите вид" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {DOCUMENT_TEMPLATES.map((template) => (
+                        <SelectItem key={template.id} value={template.id}>
+                          {template.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+              <p className="text-xs text-muted-foreground">
+                Шаблон только разложит пустые поля с названиями. Их можно удалить, переименовать
+                и дописать свои.
+              </p>
+            </div>
+          )}
           <div className="grid gap-2">
             <Label htmlFor="title">Название</Label>
             <Input id="title" required {...register('title')} />
@@ -238,62 +274,11 @@ export function DocumentFormDialog({
             <Input id="issuingAuthority" {...register('issuingAuthority')} />
           </div>
           <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" className="size-4" {...register('isActive')} />
-            Действующий
+            <input type="checkbox" className="size-4" {...register('isActive')} /> Действующий
           </label>
-
-          <div className="grid gap-3 rounded-md border p-3">
-            <span className="text-sm font-medium">Сканы (JPG, PNG, WEBP, PDF · до 10 МБ)</span>
-            {FILE_SLOTS.map(({ slot, label }) => {
-              const existing = hasExistingFile(document, slot) && !removed[slot];
-              const selected = files[slot];
-              return (
-                <div key={slot} className="grid gap-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <Label htmlFor={`file-${slot}`} className="text-sm">
-                      {label}
-                    </Label>
-                    {existing && !selected && (
-                      <div className="flex items-center gap-2 text-xs">
-                        <a
-                          href={`/api/documents/${document!.id}/file/${slot}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-primary underline"
-                        >
-                          Открыть
-                        </a>
-                        <button
-                          type="button"
-                          className="text-destructive underline"
-                          onClick={() => setRemoved((r) => ({ ...r, [slot]: true }))}
-                        >
-                          Удалить
-                        </button>
-                      </div>
-                    )}
-                    {existing && removed[slot] && (
-                      <span className="text-xs text-muted-foreground">будет удалён</span>
-                    )}
-                  </div>
-                  <Input
-                    id={`file-${slot}`}
-                    type="file"
-                    accept={FILE_ACCEPT}
-                    onChange={(e) => {
-                      const file = e.target.files?.[0] ?? null;
-                      setFiles((f) => ({ ...f, [slot]: file }));
-                      if (file) setRemoved((r) => ({ ...r, [slot]: false }));
-                    }}
-                  />
-                </div>
-              );
-            })}
-          </div>
-
           <DialogFooter>
             <Button type="submit" disabled={isSubmitting}>
-              {isSubmitting ? 'Сохранение…' : isEdit ? 'Сохранить' : 'Добавить'}
+              {isSubmitting ? 'Сохранение…' : isEdit ? 'Сохранить' : 'Создать'}
             </Button>
           </DialogFooter>
         </form>

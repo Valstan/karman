@@ -38,4 +38,7 @@ export const profileUpsertSchema = z.object({
   notes: shortText(4000),
 });
 
-export type ProfileUpsertInput = z.infer<typeof profileUpsertSchema>;
+// Типа-алиаса `ProfileUpsertInput` здесь нет намеренно: форма значений живёт в
+// `lib/profile/fields.ts` (`ProfileValues`), и второй синоним того же типа —
+// это тот самый born-unused, который проект уже трижды вычищал. Алиас заводится
+// по факту импорта, а не «для симметрии».

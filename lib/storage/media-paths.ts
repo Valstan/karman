@@ -1,30 +1,20 @@
 import path from 'node:path';
 
 /**
- * Чистые помощники для путей/типов сканов документов — без файловой системы и
+ * Чистые помощники для путей/типов файлов документов — без файловой системы и
  * без `server-only`, поэтому модуль тестируется юнит-тестами и переиспользуется
  * сервером (`media.ts`).
  *
- * В БД (varchar(100)) хранится ОТНОСИТЕЛЬНЫЙ путь вида
- * `documents/<userId>/<docId>/<slot>-<token>.<ext>`.
+ * В БД (`document_file.path`, varchar(255)) хранится ОТНОСИТЕЛЬНЫЙ путь вида
+ * `documents/<userId>/<docId>/<token>.<ext>`. До 2026-09-04 в имени был ещё и
+ * слот (`front-…`), но слотов больше нет: файлов на документе много.
  */
-
-export const DOCUMENT_FILE_SLOTS = ['front', 'back', 'additional'] as const;
-export type DocumentFileSlot = (typeof DOCUMENT_FILE_SLOTS)[number];
-
-/** Колонка БД для каждого слота. */
-export const SLOT_TO_COLUMN: Record<DocumentFileSlot, 'frontImage' | 'backImage' | 'additionalFiles'> = {
-  front: 'frontImage',
-  back: 'backImage',
-  additional: 'additionalFiles',
-};
-
-export function isDocumentFileSlot(value: string): value is DocumentFileSlot {
-  return (DOCUMENT_FILE_SLOTS as readonly string[]).includes(value);
-}
 
 /** Максимальный размер файла (10 МБ). */
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
+
+/** Сколько файлов разрешено на один документ. */
+export const MAX_FILES_PER_DOCUMENT = 20;
 
 const MIME_TO_EXT: Record<string, string> = {
   'image/jpeg': 'jpg',
@@ -33,7 +23,7 @@ const MIME_TO_EXT: Record<string, string> = {
   'application/pdf': 'pdf',
 };
 
-export type FileValidationError = 'type' | 'size' | 'empty';
+export type FileValidationError = 'type' | 'size' | 'empty' | 'too_many';
 
 /** Расширение по mime или null, если тип не разрешён. */
 export function extForMime(mime: string): string | null {
@@ -60,17 +50,48 @@ export function absolutePathFor(relPath: string): string {
 }
 
 /**
- * Относительный путь для нового файла. token — случайный, чтобы старая ссылка
- * становилась невалидной после замены и не было коллизий.
+ * Относительный путь для нового файла. Имя — только случайный token: слот из
+ * имени исчез вместе со слотами. Случайность нужна не для красоты, а чтобы два
+ * файла с одинаковым исходным именем, загруженные подряд, не совпали, и чтобы
+ * ссылка на удалённый файл не попадала во вновь загруженный.
  */
-export function buildRelPath(
-  userId: number,
-  docId: number,
-  slot: DocumentFileSlot,
-  ext: string,
-  token: string,
+export function buildRelPath(userId: number, docId: number, ext: string, token: string): string {
+  return path.posix.join('documents', String(userId), String(docId), `${token}.${ext}`);
+}
+
+/**
+ * Чистит имя файла: убирает разделители пути и символы, запрещённые в именах
+ * файлов, схлопывает многоточия и снимает ведущие точки. Имя приходит от
+ * человека и попадает в имя записи ZIP-архива, где `../` уводит распаковку за
+ * пределы каталога (zip-slip), а ведущая точка прячет файл.
+ *
+ * Пробелы и дефисы НЕ трогаются: «паспорт разворот 2.jpg» обязан остаться
+ * читаемым — ради того имя и хранится отдельно от пути на диске.
+ */
+export function sanitizeFileName(value: string): string {
+  const withoutSeparators = value.replace(/[/\\]/g, '');
+  const withoutIllegal = withoutSeparators.replace(/[:*?"<>|]/g, '');
+  return withoutIllegal
+    .replace(/\.{2,}/g, '.')
+    .replace(/^\.+/, '')
+    .trim();
+}
+
+/**
+ * Имя файла для выгрузки: то, под которым файл принесли, а если оно потеряно
+ * или непригодно — осмысленная замена из названия документа и номера страницы.
+ */
+export function safeDownloadName(
+  originalName: string,
+  fallbackBase: string,
+  index: number,
+  relPath: string,
 ): string {
-  return path.posix.join('documents', String(userId), String(docId), `${slot}-${token}.${ext}`);
+  const ext = path.extname(relPath).slice(1).toLowerCase() || 'bin';
+  const cleaned = sanitizeFileName(originalName);
+  if (cleaned !== '' && cleaned.length <= 120) return cleaned;
+  const base = sanitizeFileName(fallbackBase) || 'документ';
+  return `${base}-${index + 1}.${ext}`;
 }
 
 /** true, если файл — растровое изображение (можно показать миниатюрой). PDF → false. */

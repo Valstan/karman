@@ -7,10 +7,11 @@ import { csvResponse } from '../csv-response';
 
 export const runtime = 'nodejs';
 
-function scansSummary(d: { hasFront: boolean; hasBack: boolean; hasAdditional: boolean }): string {
-  return [d.hasFront && 'лицевая', d.hasBack && 'оборот', d.hasAdditional && 'доп.']
-    .filter(Boolean)
-    .join(', ');
+// Файлов на документе стало произвольное число (раньше было три именованных
+// слота, и колонка перечисляла их словами). В CSV уезжает количество: имена
+// файлов сюда не помещаются, а «есть/нет» теряет то, ради чего меняли модель.
+function filesSummary(d: { fileCount: number }): string {
+  return d.fileCount === 0 ? '' : String(d.fileCount);
 }
 
 export async function GET() {
@@ -27,7 +28,7 @@ export async function GET() {
     'Действует до',
     'Кем выдан',
     'Активен',
-    'Сканы',
+    'Файлов',
   ];
   const rows = documents.map((d) => [
     d.title,
@@ -38,7 +39,7 @@ export async function GET() {
     csvDate(d.expiryDate),
     d.issuingAuthority ?? '',
     d.isActive ? 'да' : 'нет',
-    scansSummary(d),
+    filesSummary(d),
   ]);
 
   return csvResponse(`documents-${todayStr()}.csv`, buildCsv(headers, rows));

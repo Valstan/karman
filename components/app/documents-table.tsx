@@ -1,8 +1,9 @@
 'use client';
 
 import { Fragment, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Pencil, Trash2, Paperclip, Search, FileText, type LucideIcon } from 'lucide-react';
+import { Pencil, Trash2, Search, FileText } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -34,45 +35,45 @@ import type { DocumentListItem, DocumentCategoryOption } from '@/lib/services/do
 type StatusFilter = 'all' | 'active' | 'inactive';
 
 /**
- * Скан слота: миниатюра для растровых изображений, иконка-фоллбэк для PDF.
- * Клик открывает полный файл в новой вкладке через авторизованный API-роут.
+ * Обложка документа в списке: миниатюра первого файла-картинки, иконка — если
+ * картинок нет, но файлы есть. Рядом счётчик, потому что файлов теперь может
+ * быть двадцать, и одна миниатюра о них не говорит.
+ *
+ * Ведёт на экран документа, а не на сам файл: там весь список файлов и поля.
  */
-function ScanThumb({
+function DocumentThumb({
   docId,
-  slot,
-  isImage,
+  previewFileId,
+  fileCount,
   title,
-  FallbackIcon,
 }: {
   docId: number;
-  slot: 'front' | 'back' | 'additional';
-  isImage: boolean;
+  previewFileId: number | null;
+  fileCount: number;
   title: string;
-  FallbackIcon: LucideIcon;
 }) {
-  const href = `/api/documents/${docId}/file/${slot}`;
+  if (fileCount === 0) return <span className="text-muted-foreground">—</span>;
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      title={title}
-      className="text-muted-foreground hover:text-foreground"
+    <Link
+      href={`/documents/${docId}`}
+      title={`Файлов: ${fileCount}`}
+      className="flex items-center gap-2 text-muted-foreground hover:text-foreground"
     >
-      {isImage ? (
-        // Приватный файл за авторизованным API-роутом — оптимизатор next/image его
-        // не достанет (нет сессии), поэтому обычный <img>.
+      {previewFileId !== null ? (
+        // Приватный файл за авторизованным API-роутом — оптимизатор next/image
+        // его не достанет (нет сессии), поэтому обычный <img>.
         // eslint-disable-next-line @next/next/no-img-element
         <img
-          src={href}
+          src={`/api/documents/${docId}/files/${previewFileId}`}
           alt={title}
           loading="lazy"
           className="h-10 w-10 rounded border object-cover"
         />
       ) : (
-        <FallbackIcon className="h-4 w-4" />
+        <FileText className="h-4 w-4" />
       )}
-    </a>
+      <span className="text-xs">{fileCount}</span>
+    </Link>
   );
 }
 
@@ -235,38 +236,12 @@ export function DocumentsTable({
                   </div>
                 </TableCell>
                 <TableCell>
-                  <div className="flex items-center gap-2">
-                    {doc.hasFront && (
-                      <ScanThumb
-                        docId={doc.id}
-                        slot="front"
-                        isImage={doc.frontIsImage}
-                        title="Лицевая сторона"
-                        FallbackIcon={FileText}
-                      />
-                    )}
-                    {doc.hasBack && (
-                      <ScanThumb
-                        docId={doc.id}
-                        slot="back"
-                        isImage={doc.backIsImage}
-                        title="Оборотная сторона"
-                        FallbackIcon={FileText}
-                      />
-                    )}
-                    {doc.hasAdditional && (
-                      <ScanThumb
-                        docId={doc.id}
-                        slot="additional"
-                        isImage={doc.additionalIsImage}
-                        title="Доп. файл"
-                        FallbackIcon={Paperclip}
-                      />
-                    )}
-                    {!doc.hasFront && !doc.hasBack && !doc.hasAdditional && (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </div>
+                  <DocumentThumb
+                    docId={doc.id}
+                    previewFileId={doc.previewFileId}
+                    fileCount={doc.fileCount}
+                    title={doc.title}
+                  />
                 </TableCell>
                 <TableCell>
                   <Badge variant={doc.isActive ? 'default' : 'secondary'}>
