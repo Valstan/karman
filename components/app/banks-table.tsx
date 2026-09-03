@@ -21,7 +21,21 @@ import { rankMatches } from '@/lib/search/tiered-search';
 import { HighlightedText } from './highlighted-text';
 import type { BankListItem } from '@/lib/services/banks';
 
-export function BanksTable({ banks }: { banks: BankListItem[] }) {
+/**
+ * Справочник банков общий на всех: добавлять записи может каждый (чтобы подтянуть
+ * к себе банк, где брал кредит), а править и удалять — только владелец. Поэтому
+ * кнопки строки скрыты у остальных: действие, которое всё равно вернёт отказ,
+ * показывать нельзя — человек нажмёт и решит, что сломалось.
+ *
+ * Колонка «Кредитов» показывает СВОИ кредиты в этом банке, не общие.
+ */
+export function BanksTable({
+  banks,
+  canManage,
+}: {
+  banks: BankListItem[];
+  canManage: boolean;
+}) {
   const router = useRouter();
   const [query, setQuery] = useState('');
 
@@ -120,28 +134,34 @@ export function BanksTable({ banks }: { banks: BankListItem[] }) {
                   <TableCell className="text-right">{bank.creditsCount}</TableCell>
                   <TableCell>
                     <div className="flex items-center justify-end gap-1">
-                      <BankFormDialog
-                        bank={bank}
-                        trigger={
-                          <Button size="icon" variant="ghost" title="Редактировать">
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                        }
-                      />
-                      <ConfirmDialog
-                        title="Удалить банк?"
-                        description={
-                          bank.creditsCount > 0
-                            ? 'К банку привязаны кредиты — удаление будет отклонено.'
-                            : 'Действие необратимо.'
-                        }
-                        onConfirm={() => remove(bank.id)}
-                        trigger={
-                          <Button size="icon" variant="ghost" title="Удалить">
-                            <Trash2 className="h-4 w-4 text-destructive" />
-                          </Button>
-                        }
-                      />
+                      {canManage ? (
+                        <>
+                          <BankFormDialog
+                            bank={bank}
+                            trigger={
+                              <Button size="icon" variant="ghost" title="Редактировать">
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                            }
+                          />
+                          <ConfirmDialog
+                            title="Удалить банк?"
+                            description={
+                              bank.creditsCount > 0
+                                ? 'К банку привязаны кредиты — удаление будет отклонено.'
+                                : 'Запись общего справочника. Действие необратимо.'
+                            }
+                            onConfirm={() => remove(bank.id)}
+                            trigger={
+                              <Button size="icon" variant="ghost" title="Удалить">
+                                <Trash2 className="h-4 w-4 text-destructive" />
+                              </Button>
+                            }
+                          />
+                        </>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">общий справочник</span>
+                      )}
                     </div>
                   </TableCell>
                 </TableRow>

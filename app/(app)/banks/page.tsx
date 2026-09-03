@@ -12,7 +12,13 @@ export default async function BanksPage() {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Банки</h1>
+        <div>
+          <h1 className="text-2xl font-semibold">Банки</h1>
+          <p className="text-sm text-muted-foreground">
+            Общий справочник: добавить банк может каждый, чтобы привязать к нему свой кредит.
+            В колонке «Кредитов» — только ваши.
+          </p>
+        </div>
         <BankFormDialog
           trigger={
             <Button>
@@ -21,7 +27,7 @@ export default async function BanksPage() {
           }
         />
       </div>
-      <BanksTable banks={banks} />
+      <BanksTable banks={banks} canManage={user.isSuperuser} />
     </div>
   );
 }
