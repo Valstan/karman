@@ -59,17 +59,32 @@ wd() { curl -fsS --netrc-file "$NETRC" "$@"; }
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 NAME="karman-vault-${STAMP}"
 
-# --- 1. Дамп vault-таблиц (ТОЛЬКО секреты/2FA/аудит, не вся БД) --------------
-# Явный список таблиц — чтобы бэкап был предсказуем и не тащил кредиты/документы.
+# --- 1. Дамп невосстановимых таблиц (не вся БД) ------------------------------
+# Явный список — чтобы бэкап был предсказуем и не тащил кредиты (их восстановит
+# сам владелец из выписок банка).
 echo "backup_vault: pg_dump vault-таблиц…"
 # Список догоняет схему в том же PR, что и миграция (требование ADR-0012 §5):
 # карта личностей и grant'ы — состояние, восстановимое после отката БД только
 # руками. secrets_grant отставал от миграции 0006 и добавлен здесь же.
+#
+# 2026-09-04: добавлены персональные данные и документы. До этого дня скрипт
+# сознательно НЕ брал документы — и это было верно ровно пока их было ноль
+# строк. С приходом карточек родни (СНИЛС, ИНН, паспорт) сложилось худшее из
+# сочетаний: media.tar.gz увозил СКАНЫ, а строки, которые говорят, чей это скан
+# и что в документе написано, не увозил никто. Восстановление дало бы папку
+# безымянных картинок.
+#
+# Кредитов здесь по-прежнему нет намеренно: их восстановит банк, а паспорт —
+# никто.
 pg_dump "$DATABASE_URL" --no-owner --no-privileges \
   -t secrets_project -t secrets_item -t secrets_token -t secrets_audit \
   -t secrets_card -t secrets_card_field -t secrets_grant -t secrets_bootstrap \
   -t passport_issuer -t passport_identity -t passport_assertion \
-  -t auth_totp -t auth_recovery_code -t auth_audit \
+  -t auth_totp -t auth_recovery_code -t auth_audit -t auth_oidc_identity \
+  -t person_profile \
+  -t documents_documentcategory -t documents_document \
+  -t document_field -t document_file \
+  -t circle -t circle_member \
   > "$WORK/vault.sql"
 
 # --- 2. media/ (сканы документов) ------------------------------------------
@@ -95,7 +110,8 @@ fi
 cat > "$WORK/MANIFEST.txt" <<EOF
 KARMAN vault backup
 created_utc: ${STAMP}
-includes: vault.sql (secrets_*/passport_*/auth_totp/auth_recovery_code/auth_audit), media.tar.gz
+includes: vault.sql (secrets_*/passport_*/auth_oidc_identity/auth_totp/auth_recovery_code/auth_audit/person_profile/documents_*/document_field/document_file/circle*), media.tar.gz
+excludes: credits_* (кредиты и платежи — восстановимы из выписок банка)
 excludes: SECRETS_MASTER_KEY (корень доверия — хранится у владельца отдельно, pool #008)
 excludes: passport_jwks_cache (кеш чужих публичных ключей — восстанавливается фетчем)
 media_root: ${MEDIA_ROOT}
