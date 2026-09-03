@@ -17,7 +17,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { formatDate } from '@/lib/format';
+import { formatDateTime } from '@/lib/format';
 
 export default async function SecretProjectPage({
   params,
@@ -83,7 +83,7 @@ export default async function SecretProjectPage({
               )}
               {detail.audit.map((a, i) => (
                 <TableRow key={i}>
-                  <TableCell className="text-sm text-muted-foreground">{formatDate(a.at)}</TableCell>
+                  <TableCell className="text-sm text-muted-foreground">{formatDateTime(a.at)}</TableCell>
                   {/* Строки до миграции 0007 актора не несут — «—» здесь значит
                       «неизвестно», а не «никто» (ADR-0012 §6). */}
                   <TableCell className="font-mono text-sm">{a.actor ?? '—'}</TableCell>

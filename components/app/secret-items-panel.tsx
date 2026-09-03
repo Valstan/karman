@@ -27,7 +27,7 @@ import {
 } from '@/components/ui/table';
 import { ConfirmDialog } from './confirm-dialog';
 import { upsertItemAction, deleteItemAction, revealItemAction } from '@/lib/actions/secrets';
-import { formatDate } from '@/lib/format';
+import { formatDateTime } from '@/lib/format';
 import type { SecretItemMeta } from '@/lib/services/secrets';
 
 function SecretItemDialog({
@@ -230,7 +230,7 @@ export function SecretItemsPanel({
                     <span className="text-muted-foreground">••••••••</span>
                   )}
                 </TableCell>
-                <TableCell className="text-sm text-muted-foreground">{formatDate(it.updatedAt)}</TableCell>
+                <TableCell className="text-sm text-muted-foreground">{formatDateTime(it.updatedAt)}</TableCell>
                 <TableCell>
                   <div className="flex items-center justify-end gap-1">
                     <Button

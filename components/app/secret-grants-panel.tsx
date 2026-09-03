@@ -34,7 +34,7 @@ import {
 } from '@/components/ui/table';
 import { ConfirmDialog } from './confirm-dialog';
 import { createGrantAction, revokeGrantAction } from '@/lib/actions/secrets';
-import { formatDate } from '@/lib/format';
+import { formatDateTime } from '@/lib/format';
 import type { SecretGrants, SecretItemMeta } from '@/lib/services/secrets';
 
 export type GrantRoomOption = { id: number; name: string; slug: string };
@@ -250,7 +250,7 @@ export function SecretGrantsPanel({
                 </TableCell>
                 <TableCell className="text-sm">{g.targetSlug}</TableCell>
                 <TableCell className="text-sm text-muted-foreground">{g.note ?? '—'}</TableCell>
-                <TableCell className="text-sm text-muted-foreground">{formatDate(g.createdAt)}</TableCell>
+                <TableCell className="text-sm text-muted-foreground">{formatDateTime(g.createdAt)}</TableCell>
                 <TableCell>
                   {g.revokedAt ? (
                     <Badge variant="secondary">Отозван</Badge>
@@ -297,7 +297,7 @@ export function SecretGrantsPanel({
                 </TableCell>
                 <TableCell className="text-sm">{g.sourceSlug}</TableCell>
                 <TableCell className="text-sm text-muted-foreground">{g.note ?? '—'}</TableCell>
-                <TableCell className="text-sm text-muted-foreground">{formatDate(g.createdAt)}</TableCell>
+                <TableCell className="text-sm text-muted-foreground">{formatDateTime(g.createdAt)}</TableCell>
                 <TableCell>
                   {g.revokedAt ? (
                     <Badge variant="secondary">Отозван</Badge>

@@ -16,7 +16,7 @@ import {
 import { SecretProjectDialog } from './secret-project-dialog';
 import { ConfirmDialog } from './confirm-dialog';
 import { deleteProjectAction } from '@/lib/actions/secrets';
-import { formatDate } from '@/lib/format';
+import { formatDateTime } from '@/lib/format';
 import type { SecretProjectListItem } from '@/lib/services/secrets';
 
 export function SecretProjectsList({ projects }: { projects: SecretProjectListItem[] }) {
@@ -64,7 +64,7 @@ export function SecretProjectsList({ projects }: { projects: SecretProjectListIt
               <TableCell className="font-mono text-sm text-muted-foreground">{p.slug}</TableCell>
               <TableCell className="text-right">{p.itemCount}</TableCell>
               <TableCell className="text-right">{p.tokenCount}</TableCell>
-              <TableCell>{formatDate(p.createdAt)}</TableCell>
+              <TableCell>{formatDateTime(p.createdAt)}</TableCell>
               <TableCell>
                 <div className="flex items-center justify-end gap-1">
                   <SecretProjectDialog

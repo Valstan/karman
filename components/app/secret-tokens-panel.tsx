@@ -27,7 +27,7 @@ import {
 } from '@/components/ui/table';
 import { ConfirmDialog } from './confirm-dialog';
 import { createTokenAction, revokeTokenAction } from '@/lib/actions/secrets';
-import { formatDate } from '@/lib/format';
+import { formatDateTime } from '@/lib/format';
 import type { SecretTokenMeta } from '@/lib/services/secrets';
 
 function CreateTokenDialog({ projectId }: { projectId: number }) {
@@ -177,7 +177,7 @@ export function SecretTokensPanel({
                   </Badge>
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
-                  {t.lastUsedAt ? formatDate(t.lastUsedAt) : '—'}
+                  {t.lastUsedAt ? formatDateTime(t.lastUsedAt) : '—'}
                 </TableCell>
                 <TableCell>
                   {t.revokedAt ? (
