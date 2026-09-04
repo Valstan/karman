@@ -507,6 +507,10 @@ export const secretsGrant = pgTable('secrets_grant', {
   // Кто инициатор выдачи (владелец от себя / по мандату brain) — уходит в аудит обеих сторон.
   note: text('note'),
   createdAt: tstz('created_at').notNull().defaultNow(),
+  // Согласие получателя (миграция 0014, двусторонний grant): NULL — предложение
+  // источника, в выдачу не входит и имя у получателя не занимает. Владелец из
+  // GUI принимает сразу; машинный путь — accept токеном получателя.
+  acceptedAt: tstz('accepted_at'),
   revokedAt: tstz('revoked_at'),
 });
 

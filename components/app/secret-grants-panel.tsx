@@ -254,6 +254,10 @@ export function SecretGrantsPanel({
                 <TableCell>
                   {g.revokedAt ? (
                     <Badge variant="secondary">Отозван</Badge>
+                  ) : g.state === 'pending' ? (
+                    <Badge variant="outline" title="Предложено токеном этой комнаты; получатель ещё не принял своим токеном">
+                      Ждёт принятия
+                    </Badge>
                   ) : g.sourceExists ? (
                     <Badge variant="default">Действует</Badge>
                   ) : (
@@ -301,6 +305,10 @@ export function SecretGrantsPanel({
                 <TableCell>
                   {g.revokedAt ? (
                     <Badge variant="secondary">Отозван</Badge>
+                  ) : g.state === 'pending' ? (
+                    <Badge variant="outline" title="Предложение источника; в выдачу войдёт после принятия токеном этой комнаты">
+                      Предложено
+                    </Badge>
                   ) : g.shadowed ? (
                     <Badge variant="secondary" title="У комнаты есть собственный ключ с этим именем — он выигрывает">
                       Заслонён своим
