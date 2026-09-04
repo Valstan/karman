@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, count, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, count, desc, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { db } from '@/lib/db/client';
 import {
@@ -24,6 +24,8 @@ import {
 import { generateToken, hashToken, looksLikeToken } from '@/lib/secrets/token';
 import { ACTOR_SYSTEM, actorOwner, actorPassport, actorRoom, actorToken } from '@/lib/secrets/actor';
 import { resolveGrants, type GrantAlias } from '@/lib/secrets/grant';
+import { grantState, type GrantState } from '@/lib/secrets/grant-state';
+import { isUniqueViolation } from '@/lib/db/pg-error';
 import { parseCsv } from '@/lib/csv-parse';
 import { mapCsvToCards } from '@/lib/secrets/csv-import';
 import type {
@@ -35,6 +37,7 @@ import type {
   SecretCardUpdateInput,
   SecretCardFieldUpsertInput,
   SecretGrantCreateInput,
+  SecretGrantProposeInput,
 } from '@/lib/validation/secret';
 
 export type SecretProjectListItem = {
@@ -539,7 +542,10 @@ export type SecretGrantIssued = {
   /** Есть ли в комнате-источнике ключ с таким именем (grant можно выдать заранее). */
   sourceExists: boolean;
   createdAt: string;
+  /** Согласие получателя. null — предложение, значения не даёт (двусторонний grant). */
+  acceptedAt: string | null;
   revokedAt: string | null;
+  state: GrantState;
 };
 export type SecretGrantReceived = {
   id: number;
@@ -551,7 +557,9 @@ export type SecretGrantReceived = {
   /** Заслонён ли grant собственным ключом комнаты (свой всегда выигрывает). */
   shadowed: boolean;
   createdAt: string;
+  acceptedAt: string | null;
   revokedAt: string | null;
+  state: GrantState;
 };
 export type SecretGrants = { issued: SecretGrantIssued[]; received: SecretGrantReceived[] };
 
@@ -568,6 +576,7 @@ async function issuedGrantsOf(projectId: number): Promise<SecretGrantIssued[]> {
       note: secretsGrant.note,
       sourceItemId: secretsItem.id,
       createdAt: secretsGrant.createdAt,
+      acceptedAt: secretsGrant.acceptedAt,
       revokedAt: secretsGrant.revokedAt,
     })
     .from(secretsGrant)
@@ -578,17 +587,21 @@ async function issuedGrantsOf(projectId: number): Promise<SecretGrantIssued[]> {
     )
     .where(eq(secretsGrant.sourceProjectId, projectId))
     .orderBy(desc(secretsGrant.id));
-  return rows.map(({ sourceItemId, ...r }) => ({ ...r, sourceExists: sourceItemId !== null }));
+  return rows.map(({ sourceItemId, ...r }) => ({
+    ...r,
+    sourceExists: sourceItemId !== null,
+    state: grantState(r),
+  }));
 }
 
-/** Выдачи комнаты: кому она дала доступ и что получает сама. null — нет доступа. */
-export async function listGrants(user: SessionUser, projectId: number): Promise<SecretGrants | null> {
-  if ((await ownedProjectId(user, projectId)) === null) return null;
-
-  const issued = await issuedGrantsOf(projectId);
-
+/**
+ * Что комната получает от других (общее для GUI владельца и API по токену).
+ * Предложения (`pending`) сюда входят — получатель обязан их видеть, чтобы
+ * принять или отказать; в `GET /api/secrets` они при этом не попадают.
+ */
+async function receivedGrantsOf(projectId: number): Promise<SecretGrantReceived[]> {
   const sourceProject = alias(secretsProject, 'source_project');
-  const receivedRows = await db
+  const rows = await db
     .select({
       id: secretsGrant.id,
       aliasKey: secretsGrant.aliasKey,
@@ -597,6 +610,7 @@ export async function listGrants(user: SessionUser, projectId: number): Promise<
       sourceKey: secretsGrant.sourceKey,
       note: secretsGrant.note,
       createdAt: secretsGrant.createdAt,
+      acceptedAt: secretsGrant.acceptedAt,
       revokedAt: secretsGrant.revokedAt,
     })
     .from(secretsGrant)
@@ -610,11 +624,13 @@ export async function listGrants(user: SessionUser, projectId: number): Promise<
       await db.select({ key: secretsItem.key }).from(secretsItem).where(eq(secretsItem.projectId, projectId))
     ).map((r) => r.key),
   );
+  return rows.map((r) => ({ ...r, shadowed: ownKeys.has(r.aliasKey), state: grantState(r) }));
+}
 
-  return {
-    issued,
-    received: receivedRows.map((r) => ({ ...r, shadowed: ownKeys.has(r.aliasKey) })),
-  };
+/** Выдачи комнаты: кому она дала доступ и что получает сама. null — нет доступа. */
+export async function listGrants(user: SessionUser, projectId: number): Promise<SecretGrants | null> {
+  if ((await ownedProjectId(user, projectId)) === null) return null;
+  return { issued: await issuedGrantsOf(projectId), received: await receivedGrantsOf(projectId) };
 }
 
 export type GrantCreateResult = { ok: true; id: number } | { ok: false; error: string };
@@ -643,6 +659,7 @@ export async function createGrant(
     .limit(1);
   if (!target) return { ok: false, error: 'Комната-получатель не найдена' };
 
+  // Владелец — полномочие над обеими комнатами: его выдача принята сразу.
   return insertGrant({
     source,
     target,
@@ -651,6 +668,7 @@ export async function createGrant(
     basis: input.note ?? null,
     actor: actorOwner(user.id),
     ip: null,
+    accepted: true,
   });
 }
 
@@ -664,11 +682,14 @@ type GrantInsert = {
   basis: string | null;
   actor: string;
   ip: string | null;
+  /** true — выдача действует сразу (владелец); false — предложение, ждёт accept получателя. */
+  accepted: boolean;
 };
 
 /**
- * Ядро выдачи — общее для GUI владельца и машинного пути по токену комнаты-источника
- * (D-061). Полномочие проверено вызывающим: сюда приходит уже разрешённая пара комнат.
+ * Ядро выдачи — общее для GUI владельца (принята сразу) и машинного предложения
+ * токеном комнаты-источника (ждёт согласия получателя, D-061). Полномочие
+ * проверено вызывающим: сюда приходит уже разрешённая пара комнат.
  * Значение НЕ копируется и не расшифровывается: получатель читает исходную запись
  * своим токеном под именем aliasKey. Обе стороны получают строку аудита.
  */
@@ -677,18 +698,13 @@ async function insertGrant(g: GrantInsert): Promise<GrantCreateResult> {
 
   // Собственный ключ получателя всегда выигрывает — не даём завести заведомо
   // мёртвую выдачу (иначе «выдал, а значение не приходит» без объяснения).
-  const [ownItem] = await db
-    .select({ id: secretsItem.id })
-    .from(secretsItem)
-    .where(and(eq(secretsItem.projectId, target.id), eq(secretsItem.key, aliasKey)))
-    .limit(1);
-  if (ownItem) {
-    return {
-      ok: false,
-      error: `У комнаты «${target.slug}» есть собственный ключ ${aliasKey} — он выигрывает у выданного доступа. Выберите другое имя или удалите свой ключ.`,
-    };
-  }
+  // Для предложения проверка повторяется в момент принятия: между ними получатель
+  // мог завести свой ключ.
+  const ownKey = await ownKeyBlocksAlias(target, aliasKey);
+  if (ownKey) return ownKey;
 
+  // Имя у получателя занимает только принятая действующая выдача (индекс 0014).
+  // Предложение имя не резервирует, поэтому дубль здесь ищем среди принятых.
   const [dup] = await db
     .select({ id: secretsGrant.id })
     .from(secretsGrant)
@@ -697,6 +713,7 @@ async function insertGrant(g: GrantInsert): Promise<GrantCreateResult> {
         eq(secretsGrant.targetProjectId, target.id),
         eq(secretsGrant.aliasKey, aliasKey),
         isNull(secretsGrant.revokedAt),
+        isNotNull(secretsGrant.acceptedAt),
       ),
     )
     .limit(1);
@@ -704,36 +721,80 @@ async function insertGrant(g: GrantInsert): Promise<GrantCreateResult> {
     return { ok: false, error: `Комнате «${target.slug}» уже выдан доступ под именем ${aliasKey}` };
   }
 
-  const [created] = await db
-    .insert(secretsGrant)
-    .values({
-      sourceProjectId: source.id,
-      sourceKey,
-      targetProjectId: target.id,
-      aliasKey,
-      note: g.basis,
-    })
-    .returning({ id: secretsGrant.id });
-  const id = created!.id;
+  let id: number;
+  try {
+    const [created] = await db
+      .insert(secretsGrant)
+      .values({
+        sourceProjectId: source.id,
+        sourceKey,
+        targetProjectId: target.id,
+        aliasKey,
+        note: g.basis,
+        acceptedAt: g.accepted ? isoNow() : null,
+      })
+      .returning({ id: secretsGrant.id });
+    id = created!.id;
+  } catch (e) {
+    // Гонка двух принятых выдач на одно имя — индекс частичный, onConflict
+    // неприменим (42P10), ловим нарушение уникальности.
+    if (isUniqueViolation(e)) {
+      return { ok: false, error: `Комнате «${target.slug}» уже выдан доступ под именем ${aliasKey}` };
+    }
+    throw e;
+  }
 
   const basis = g.basis ? `; основание: ${g.basis}` : '';
-  await logAudit(
-    source.id,
-    null,
-    'grant_out',
-    `выдан доступ к ${sourceKey} → комната «${target.slug}» как ${aliasKey}${basis}`,
-    g.ip,
-    g.actor,
-  );
-  await logAudit(
-    target.id,
-    null,
-    'grant_in',
-    `получен доступ к ${aliasKey} ← комната «${source.slug}» (ключ ${sourceKey})${basis}`,
-    g.ip,
-    g.actor,
-  );
+  if (g.accepted) {
+    await logAudit(
+      source.id,
+      null,
+      'grant_out',
+      `выдан доступ к ${sourceKey} → комната «${target.slug}» как ${aliasKey}${basis}`,
+      g.ip,
+      g.actor,
+    );
+    await logAudit(
+      target.id,
+      null,
+      'grant_in',
+      `получен доступ к ${aliasKey} ← комната «${source.slug}» (ключ ${sourceKey})${basis}`,
+      g.ip,
+      g.actor,
+    );
+  } else {
+    await logAudit(
+      source.id,
+      null,
+      'grant_proposed',
+      `предложен доступ к ${sourceKey} → комната «${target.slug}» как ${aliasKey}, ждёт принятия${basis}`,
+      g.ip,
+      g.actor,
+    );
+    await logAudit(
+      target.id,
+      null,
+      'grant_proposed',
+      `комната «${source.slug}» предлагает доступ к ${aliasKey} (ключ ${sourceKey}), ждёт принятия${basis}`,
+      g.ip,
+      g.actor,
+    );
+  }
   return { ok: true, id };
+}
+
+/** Свой ключ получателя с этим именем — выдача была бы мёртвой; текст ошибки общий. */
+async function ownKeyBlocksAlias(target: GrantParty, aliasKey: string): Promise<GrantCreateResult | null> {
+  const [ownItem] = await db
+    .select({ id: secretsItem.id })
+    .from(secretsItem)
+    .where(and(eq(secretsItem.projectId, target.id), eq(secretsItem.key, aliasKey)))
+    .limit(1);
+  if (!ownItem) return null;
+  return {
+    ok: false,
+    error: `У комнаты «${target.slug}» есть собственный ключ ${aliasKey} — он выигрывает у выданного доступа. Выберите другое имя или удалите свой ключ.`,
+  };
 }
 
 type GrantRow = {
@@ -742,6 +803,7 @@ type GrantRow = {
   sourceKey: string;
   targetProjectId: number;
   aliasKey: string;
+  acceptedAt: string | null;
   revokedAt: string | null;
 };
 
@@ -753,6 +815,7 @@ async function grantRow(grantId: number): Promise<GrantRow | null> {
       sourceKey: secretsGrant.sourceKey,
       targetProjectId: secretsGrant.targetProjectId,
       aliasKey: secretsGrant.aliasKey,
+      acceptedAt: secretsGrant.acceptedAt,
       revokedAt: secretsGrant.revokedAt,
     })
     .from(secretsGrant)
@@ -761,7 +824,11 @@ async function grantRow(grantId: number): Promise<GrantRow | null> {
   return row ?? null;
 }
 
-/** Ядро отзыва: гасит выдачу и пишет аудит обеим комнатам. Полномочие проверено вызывающим. */
+/**
+ * Ядро отзыва: гасит выдачу и пишет аудит обеим комнатам. Полномочие проверено
+ * вызывающим. Отзыв предложения — тоже отзыв (со стороны получателя это отказ):
+ * в аудите видно, что гасили именно предложение.
+ */
 async function revokeGrantRow(row: GrantRow, actor: string, ip: string | null): Promise<void> {
   const [source] = await db
     .select({ slug: secretsProject.slug })
@@ -774,12 +841,13 @@ async function revokeGrantRow(row: GrantRow, actor: string, ip: string | null): 
     .where(eq(secretsProject.id, row.targetProjectId))
     .limit(1);
 
+  const what = row.acceptedAt ? 'отозван доступ' : 'отозвано предложение доступа';
   await db.update(secretsGrant).set({ revokedAt: isoNow() }).where(eq(secretsGrant.id, row.id));
   await logAudit(
     row.sourceProjectId,
     null,
     'grant_revoked',
-    `отозван доступ к ${row.sourceKey} у комнаты «${target?.slug ?? row.targetProjectId}»`,
+    `${what} к ${row.sourceKey} у комнаты «${target?.slug ?? row.targetProjectId}»`,
     ip,
     actor,
   );
@@ -787,7 +855,7 @@ async function revokeGrantRow(row: GrantRow, actor: string, ip: string | null): 
     row.targetProjectId,
     null,
     'grant_revoked',
-    `отозван доступ к ${row.aliasKey} (комната «${source?.slug ?? row.sourceProjectId}»)`,
+    `${what} к ${row.aliasKey} (комната «${source?.slug ?? row.sourceProjectId}»)`,
     ip,
     actor,
   );
@@ -841,27 +909,130 @@ async function resolveGrantRoom(rawToken: string, ip: string | null): Promise<Gr
   return { token: tok, room, actor: actorRoom(room.slug), presented };
 }
 
-// СОЗДАНИЯ выдачи по токену здесь нет намеренно, и это не забывчивость.
+// Машинная выдача — ДВУСТОРОННЯЯ, и это граница, а не форма (D-061, «Границы v1»
+// в `docs/passport-server.md`). Одностороннюю выдачу токеном источника открыли
+// и закрыли 2026-09-03: она писала ИМЯ ключа в чужое пространство имён, значение
+// приезжало получателю в общий `pullByToken`, а клиентский рецепт раскладывает
+// полученное в переменные окружения CI — токен одной комнаты подставлял
+// произвольную переменную в чужую сборку. Ошибка довода «та же граница, что у
+// `POST /api/secrets`»: запись в свою комнату остаётся в своей, выдача
+// пересекает границу доверия, и цену платит не тот, кто её совершает.
 //
-// Выдача пишет имя ключа в ЧУЖОЕ пространство имён: значение приезжает
-// получателю в общий ответ `pullByToken` под именем, которое выбрал выдающий.
-// Собственный ключ получателя выигрывает, но НОВОЕ имя подмешивается молча, а
-// клиентский рецепт учит раскладывать полученное в переменные окружения CI.
-// Токен одной комнаты означал бы подстановку произвольной переменной в чужую
-// сборку — операция, вырезанная адверсариальной проверкой ADR-0012
-// («Границы v1» в `docs/passport-server.md`): цель выбирает вызывающий,
-// согласия цели не требуется.
-//
-// Ошибка в рассуждении, из-за которой путь однажды открыли: «это та же граница,
-// что у `POST /api/secrets`». Не та же. Запись в свою комнату остаётся в своей
-// комнате; выдача пересекает границу доверия между комнатами, и её цену платит
-// не тот, кто её совершает.
-//
-// Возврат — только ДВУСТОРОННИМ: источник предлагает, получатель принимает своим
-// токеном. Обе стороны машины, владелец не нужен (D-061 выполняется), но
-// согласие цели появляется.
+// Поэтому: источник ПРЕДЛАГАЕТ (строка с accepted_at = NULL — в выдачу не
+// входит, имя не занимает), получатель ПРИНИМАЕТ своим пишущим токеном — принять
+// чужое имя в своё окружение есть операция класса записи. Обе стороны машины,
+// владелец не нужен, согласие цели есть.
 
-/** Отзыв выдачи тем же токеном комнаты-источника. Чужую выдачу не видно (404). */
+async function touchToken(tokenId: number): Promise<void> {
+  await db.update(secretsToken).set({ lastUsedAt: isoNow() }).where(eq(secretsToken.id, tokenId));
+}
+
+/** Предложение выдачи токеном комнаты-источника: строка `pending`, аудит обеим сторонам. */
+export async function proposeGrantByToken(
+  rawToken: string,
+  ip: string | null,
+  input: SecretGrantProposeInput,
+): Promise<{ ok: true; id: number } | GrantApiError> {
+  const r = await resolveGrantRoom(rawToken, ip);
+  if ('ok' in r) return r;
+
+  const [target] = await db
+    .select({ id: secretsProject.id, slug: secretsProject.slug })
+    .from(secretsProject)
+    .where(eq(secretsProject.slug, input.target_slug))
+    .limit(1);
+  if (!target) return { ok: false, status: 404, error: 'Комната-получатель не найдена' };
+  if (target.id === r.room.id) {
+    return { ok: false, status: 409, error: 'Комната-источник и комната-получатель совпадают' };
+  }
+
+  const created = await insertGrant({
+    source: r.room,
+    target,
+    sourceKey: input.key,
+    aliasKey: input.alias ?? input.key,
+    basis: input.note,
+    actor: r.actor,
+    ip,
+    accepted: false,
+  });
+  await touchToken(r.token.id);
+  if (!created.ok) return { ok: false, status: 409, error: created.error };
+  return { ok: true, id: created.id };
+}
+
+/**
+ * Принятие предложения токеном комнаты-ПОЛУЧАТЕЛЯ (пишущим). Гейт «ещё не
+ * принято и не отозвано» стоит в WHERE самого UPDATE: между чтением и записью
+ * источник успевает отозвать предложение. Чужое предложение не видно (404).
+ */
+export async function acceptGrantByToken(
+  rawToken: string,
+  ip: string | null,
+  grantId: number,
+): Promise<{ ok: true; id: number } | GrantApiError> {
+  const r = await resolveGrantRoom(rawToken, ip);
+  if ('ok' in r) return r;
+
+  const row = await grantRow(grantId);
+  if (!row || row.targetProjectId !== r.room.id) {
+    return { ok: false, status: 404, error: 'Предложение не найдено' };
+  }
+  if (row.revokedAt) return { ok: false, status: 409, error: 'Предложение отозвано' };
+  if (row.acceptedAt) return { ok: false, status: 409, error: 'Выдача уже принята' };
+
+  // Свой ключ получателя мог появиться после предложения — он выигрывает, и
+  // принятая выдача была бы мёртвой. Отказываем внятно, строку не трогаем.
+  const ownKey = await ownKeyBlocksAlias(r.room, row.aliasKey);
+  if (ownKey && !ownKey.ok) return { ok: false, status: 409, error: ownKey.error };
+
+  let accepted = false;
+  try {
+    const updated = await db
+      .update(secretsGrant)
+      .set({ acceptedAt: isoNow() })
+      .where(and(eq(secretsGrant.id, row.id), isNull(secretsGrant.acceptedAt), isNull(secretsGrant.revokedAt)))
+      .returning({ id: secretsGrant.id });
+    accepted = updated.length === 1;
+  } catch (e) {
+    // Имя уже занято другой принятой выдачей (частичный индекс 0014).
+    if (isUniqueViolation(e)) {
+      return { ok: false, status: 409, error: `Комнате уже выдан доступ под именем ${row.aliasKey}` };
+    }
+    throw e;
+  }
+  if (!accepted) return { ok: false, status: 409, error: 'Предложение уже отозвано или принято' };
+
+  const [source] = await db
+    .select({ slug: secretsProject.slug })
+    .from(secretsProject)
+    .where(eq(secretsProject.id, row.sourceProjectId))
+    .limit(1);
+  const sourceSlug = source?.slug ?? String(row.sourceProjectId);
+  await logAudit(
+    row.targetProjectId,
+    null,
+    'grant_in',
+    `принят доступ к ${row.aliasKey} ← комната «${sourceSlug}» (ключ ${row.sourceKey}); предъявлен ${r.presented}`,
+    ip,
+    r.actor,
+  );
+  await logAudit(
+    row.sourceProjectId,
+    null,
+    'grant_out',
+    `комната «${r.room.slug}» приняла доступ к ${row.sourceKey} как ${row.aliasKey}`,
+    ip,
+    r.actor,
+  );
+  await touchToken(r.token.id);
+  return { ok: true, id: row.id };
+}
+
+/**
+ * Отзыв выдачи токеном ЛЮБОЙ из сторон: источник забирает свой ключ, получатель
+ * отказывается от чужого имени в своём окружении. Чужую выдачу не видно (404).
+ */
 export async function revokeGrantByToken(
   rawToken: string,
   ip: string | null,
@@ -871,24 +1042,35 @@ export async function revokeGrantByToken(
   if ('ok' in r) return r;
 
   const row = await grantRow(grantId);
-  if (!row || row.sourceProjectId !== r.room.id) {
+  if (!row || (row.sourceProjectId !== r.room.id && row.targetProjectId !== r.room.id)) {
     return { ok: false, status: 404, error: 'Выдача не найдена' };
   }
   if (row.revokedAt) return { ok: false, status: 409, error: 'Выдача уже отозвана' };
 
   await revokeGrantRow(row, r.actor, ip);
-  await db.update(secretsToken).set({ lastUsedAt: isoNow() }).where(eq(secretsToken.id, r.token.id));
+  await touchToken(r.token.id);
   return { ok: true, id: row.id };
 }
 
-/** Что комната выдала — для поиска id перед отзывом и самопроверки после выдачи. */
+/**
+ * Выдачи комнаты с обеих сторон: что она выдала/предложила и что ей выдали/
+ * предложили. `pendingOnly` — только входящие предложения: этим запросом CI
+ * получателя узнаёт, что ему предложили, и принимает по своему allowlist имён.
+ */
 export async function listGrantsByToken(
   rawToken: string,
   ip: string | null,
-): Promise<{ ok: true; slug: string; issued: SecretGrantIssued[] } | GrantApiError> {
+  pendingOnly = false,
+): Promise<
+  { ok: true; slug: string; issued: SecretGrantIssued[]; received: SecretGrantReceived[] } | GrantApiError
+> {
   const r = await resolveGrantRoom(rawToken, ip);
   if ('ok' in r) return r;
-  return { ok: true, slug: r.room.slug, issued: await issuedGrantsOf(r.room.id) };
+  const received = await receivedGrantsOf(r.room.id);
+  if (pendingOnly) {
+    return { ok: true, slug: r.room.slug, issued: [], received: received.filter((g) => g.state === 'pending') };
+  }
+  return { ok: true, slug: r.room.slug, issued: await issuedGrantsOf(r.room.id), received };
 }
 
 /**
@@ -921,7 +1103,11 @@ async function logGrantReads(
   }
 }
 
-/** Действующие выдачи, по которым комната-получатель читает чужие ключи. */
+/**
+ * Действующие выдачи, по которым комната-получатель читает чужие ключи.
+ * Предложения (`accepted_at IS NULL`) сюда НЕ входят — в этом и состоит
+ * согласие получателя: до accept чужое имя в его окружении не появляется.
+ */
 async function activeGrantsFor(targetProjectId: number): Promise<GrantAlias[]> {
   return db
     .select({
@@ -931,7 +1117,13 @@ async function activeGrantsFor(targetProjectId: number): Promise<GrantAlias[]> {
       aliasKey: secretsGrant.aliasKey,
     })
     .from(secretsGrant)
-    .where(and(eq(secretsGrant.targetProjectId, targetProjectId), isNull(secretsGrant.revokedAt)));
+    .where(
+      and(
+        eq(secretsGrant.targetProjectId, targetProjectId),
+        isNull(secretsGrant.revokedAt),
+        isNotNull(secretsGrant.acceptedAt),
+      ),
+    );
 }
 
 // --- Self-serve provisioning (API, без сессии) -------------------------------

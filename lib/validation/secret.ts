@@ -121,12 +121,21 @@ export const secretGrantCreateSchema = z
     path: ['targetProjectId'],
   });
 
-// Схемы тела POST /api/secrets/grants здесь нет: создание выдачи по токену
-// закрыто (причина — в `app/api/secrets/grants/route.ts` и в сервисе). Когда
-// машинный путь вернётся двусторонним, форма будет другой — «предложить» и
-// «принять» это два тела, а не одно, — поэтому старую схему не храним.
+/**
+ * Тело POST /api/secrets/grants — ПРЕДЛОЖЕНИЕ выдачи токеном комнаты-источника
+ * (двусторонний grant, мандат brain 2026-09-03). Имена полей — из мандата, в
+ * snake_case, как остальной машинный контракт (`target_slug`). `note` обязателен:
+ * основание уходит в аудит обеих комнат, безосновательное предложение получателю
+ * нечем оценить. Принятие — отдельный запрос без тела (`…/grants/<id>/accept`).
+ */
+export const secretGrantProposeSchema = z.object({
+  key: secretKeyName,
+  target_slug: secretProjectCreateSchema.shape.slug,
+  alias: secretKeyName.optional().or(z.literal('').transform(() => undefined)),
+  note: z.string().trim().min(1, 'Укажите основание выдачи (note)').max(500),
+});
 
-/** Тело DELETE /api/secrets/grants — отзыв выдачи тем же токеном комнаты-источника. */
+/** Тело DELETE /api/secrets/grants — отзыв выдачи токеном любой из сторон. */
 export const secretGrantApiRevokeSchema = z.object({
   id: z.coerce.number().int().positive(),
 });
@@ -199,5 +208,6 @@ export type SecretCardCreateInput = z.infer<typeof secretCardCreateSchema>;
 export type SecretCardUpdateInput = z.infer<typeof secretCardUpdateSchema>;
 export type SecretCardFieldUpsertInput = z.infer<typeof secretCardFieldUpsertSchema>;
 export type SecretGrantCreateInput = z.infer<typeof secretGrantCreateSchema>;
+export type SecretGrantProposeInput = z.infer<typeof secretGrantProposeSchema>;
 export type PassportIdentityCreateInput = z.infer<typeof passportIdentityCreateSchema>;
 export type SecretBootstrapCreateInput = z.infer<typeof secretBootstrapCreateSchema>;
