@@ -1,5 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { buildAuthorizeUrl, codeChallenge, esaConfig, newAuthRequest } from './oidc-pkce';
+import {
+  buildAuthorizeUrl,
+  codeChallenge,
+  esaConfig,
+  mergeUserinfo,
+  newAuthRequest,
+  pickUserinfoEndpoint,
+  userinfoNeeded,
+} from './oidc-pkce';
+import type { OidcClaims } from './oidc-pkce';
 import { esaRedirectUri } from './oidc-redirect';
 
 /**
@@ -97,6 +106,7 @@ describe('buildAuthorizeUrl', () => {
     authorizationEndpoint: 'https://esa.example/oidc/authorize',
     tokenEndpoint: 'https://esa.example/oidc/token',
     jwksUri: 'https://esa.example/.well-known/jwks.json',
+    userinfoEndpoint: 'https://esa.example/oidc/userinfo',
   };
   const cfg = { issuer: 'https://esa.example', clientId: 'karman', clientSecret: 's3cret' };
 
@@ -129,5 +139,95 @@ describe('buildAuthorizeUrl', () => {
     // Провайдер сверяет со списком точным сравнением: любая нормализация здесь
     // означает отказ «invalid redirect_uri» без внятного объяснения.
     expect(url.searchParams.get('redirect_uri')).toBe(redirect);
+  });
+});
+
+/**
+ * userinfo. Сам сетевой вызов живёт в `oidc.ts` (там `server-only`, в vitest он
+ * бросает при импорте), поэтому все решения вынесены сюда чистыми функциями —
+ * иначе они остались бы без гейта вовсе.
+ */
+describe('pickUserinfoEndpoint', () => {
+  const issuer = 'https://esa.example';
+
+  it('берёт адрес того же хоста по https', () => {
+    expect(pickUserinfoEndpoint({ userinfo_endpoint: 'https://esa.example/oidc/userinfo' }, issuer))
+      .toBe('https://esa.example/oidc/userinfo');
+  });
+
+  it('нет поля — null, а не отказ входа', () => {
+    // Провайдер без userinfo обязан пускать по-прежнему.
+    expect(pickUserinfoEndpoint({}, issuer)).toBeNull();
+  });
+
+  it('чужой хост отвергается', () => {
+    // Туда уехал бы живой access_token — то есть доступ к профилю достался бы
+    // тому, кого мы не спрашивали.
+    expect(pickUserinfoEndpoint({ userinfo_endpoint: 'https://evil.example/userinfo' }, issuer))
+      .toBeNull();
+  });
+
+  it('http отвергается даже на своём хосте', () => {
+    expect(pickUserinfoEndpoint({ userinfo_endpoint: 'http://esa.example/oidc/userinfo' }, issuer))
+      .toBeNull();
+  });
+});
+
+describe('userinfoNeeded', () => {
+  const full: OidcClaims = { subject: 's', email: 'a@b.c', emailVerified: true, name: 'Имя' };
+
+  it('id_token дал всё — в сеть не идём', () => {
+    expect(userinfoNeeded(full)).toBe(false);
+  });
+
+  it('почты нет — идём', () => {
+    expect(userinfoNeeded({ ...full, email: null })).toBe(true);
+  });
+
+  it('почта есть, но не подтверждена — идём: привязка стоит на подтверждении', () => {
+    expect(userinfoNeeded({ ...full, emailVerified: false })).toBe(true);
+  });
+});
+
+describe('mergeUserinfo', () => {
+  const base: OidcClaims = { subject: 'sub-1', email: null, emailVerified: false, name: null };
+
+  it('заполняет пустую почту и подтверждение', () => {
+    const r = mergeUserinfo(base, { sub: 'sub-1', email: 'v@valstan.ru', email_verified: true });
+    expect(r.outcome).toBe('ok_filled');
+    expect(r.claims.email).toBe('v@valstan.ru');
+    expect(r.claims.emailVerified).toBe(true);
+  });
+
+  it('чужой sub отбрасывает ответ ЦЕЛИКОМ', () => {
+    // OIDC Core 5.3.2. Иначе чужой профиль привязал бы чужую почту к входу.
+    const r = mergeUserinfo(base, { sub: 'sub-2', email: 'evil@example.com', email_verified: true });
+    expect(r.outcome).toBe('sub_mismatch');
+    expect(r.claims.email).toBeNull();
+  });
+
+  it('не переопределяет то, что пришло подписанным в id_token', () => {
+    const signed: OidcClaims = { ...base, email: 'real@valstan.ru', emailVerified: true };
+    const r = mergeUserinfo(signed, { sub: 'sub-1', email: 'other@example.com', email_verified: true });
+    // Ответ userinfo не подписан — разреши он подмену, это была бы подмена личности.
+    expect(r.claims.email).toBe('real@valstan.ru');
+  });
+
+  it('email_verified строкой "true" не считается подтверждением', () => {
+    const r = mergeUserinfo(base, { sub: 'sub-1', email: 'v@valstan.ru', email_verified: 'true' });
+    expect(r.claims.emailVerified).toBe(false);
+  });
+
+  it('почта без @ и слишком длинная не берутся', () => {
+    expect(mergeUserinfo(base, { sub: 'sub-1', email: 'нетсобаки' }).claims.email).toBeNull();
+    const long = 'a'.repeat(250) + '@b.cc';
+    // Колонка auth_oidc_identity.email — varchar(254): иначе INSERT упал бы уже
+    // ПОСЛЕ успешной проверки подписи.
+    expect(mergeUserinfo(base, { sub: 'sub-1', email: long }).claims.email).toBeNull();
+  });
+
+  it('ответ без новых полей помечается отдельно', () => {
+    const r = mergeUserinfo({ ...base, email: 'a@b.c', emailVerified: true, name: 'Имя' }, { sub: 'sub-1' });
+    expect(r.outcome).toBe('ok_nothing_new');
   });
 });

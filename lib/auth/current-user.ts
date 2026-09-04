@@ -1,6 +1,6 @@
 import 'server-only';
 import { cache } from 'react';
-import { redirect } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
 import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { authUser } from '@/lib/db/schema';
@@ -57,12 +57,31 @@ export async function requireUser(): Promise<SessionUser> {
 }
 
 /**
- * Гейт раздела /secrets (vault Ф2): если у пользователя включён 2FA, сессия
- * обязана пройти второй фактор (claim mfa в JWT). Старые сессии, выданные до
- * включения 2FA, отправляются на повторный вход.
+ * Гейт раздела /secrets (vault Ф2).
+ *
+ * Два условия, и порядок между ними важен.
+ *
+ * 1. **Только суперпользователь** (решение владельца 2026-09-04). В комнатах
+ *    лежат ключи ЧУЖИХ проектов экосистемы, а не личные данные вошедшего:
+ *    доступ сюда — administrative action, как заведение учёток, а не чтение
+ *    своего. Прежний гейт требовал лишь входа, и любой пользователь (на проде
+ *    это `Chaka`, id 29) открывал раздел и заводил собственный vault внутри
+ *    хранилища экосистемы.
+ * 2. Если у пользователя включён 2FA, сессия обязана пройти второй фактор
+ *    (claim `mfa` в JWT); старые сессии до включения 2FA идут на повторный вход.
+ *
+ * Проверка прав стоит ПЕРВОЙ намеренно: `totpEnabled` — запрос в БД, и делать
+ * его для того, кого всё равно не пустим, незачем. Сильнее того, у обычного
+ * пользователя 2FA обычно выключен, поэтому вторая проверка для него
+ * вырождалась в «просто вошёл» — гейт выглядел строгим, не будучи им.
+ *
+ * Отказ — `notFound()`, а не `redirect('/login')`: вошедшему предлагать
+ * повторный вход бессмысленно (войдёт тем же и упрётся снова), а 404 вдобавок
+ * не подтверждает, что раздел вообще существует.
  */
 export async function requireSecretsUser(): Promise<SessionUser> {
   const user = await requireUser();
+  if (!user.isSuperuser) notFound();
   if (await totpEnabled(user.id)) {
     const payload = await readSessionPayload();
     if (!payload?.mfa) redirect('/login');

@@ -12,14 +12,25 @@ export async function currentUserOrNull(): Promise<SessionUser | null> {
 }
 
 /**
- * Гейт секретов для server actions (vault Ф2): при включённом 2FA мутации/reveal
- * секретов доступны только сессии, прошедшей второй фактор (mfa в JWT).
+ * Гейт секретов для server actions (vault Ф2).
+ *
+ * Это ВТОРОЙ вход в раздел, независимый от `requireSecretsUser` в
+ * `lib/auth/current-user.ts`: server action вызывается POST'ом по собственному
+ * идентификатору из любого браузера с валидной cookie — гейт страницы его не
+ * прикрывает. Поэтому проверка прав обязана стоять здесь тоже, иначе закрытие
+ * раздела было бы косметическим: страница не открывается, а `revealItemAction`
+ * по-прежнему отдаёт расшифрованный секрет.
+ *
+ * Условия те же и в том же порядке, что на страницах (там же и обоснование):
+ * сначала суперпользователь (решение владельца 2026-09-04), затем второй фактор
+ * при включённом 2FA.
  */
 export async function requireSecretsAccess(): Promise<
   { user: SessionUser; error: null } | { user: null; error: string }
 > {
   const user = await getCurrentUser();
   if (!user) return { user: null, error: 'Требуется авторизация' };
+  if (!user.isSuperuser) return { user: null, error: 'Недостаточно прав' };
   if (await totpEnabled(user.id)) {
     const payload = await readSessionPayload();
     if (!payload?.mfa) {
