@@ -42,7 +42,7 @@ describe('PROFILE_FIELDS', () => {
   });
 
   it('отдаёт подпись по ключу и не падает на неизвестном', () => {
-    expect(profileFieldLabel('snils')).toBe('СНИЛС');
+    expect(profileFieldLabel('birthPlace')).toBe('Место рождения');
     expect(profileFieldLabel('нет-такого')).toBe('нет-такого');
   });
 });

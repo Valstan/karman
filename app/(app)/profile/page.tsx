@@ -1,21 +1,11 @@
-import { requireUser } from '@/lib/auth/current-user';
-import { getOwnProfile } from '@/lib/services/profile';
-import { ProfileForm } from '@/components/app/profile-form';
+import { redirect } from 'next/navigation';
 
-export default async function ProfilePage() {
-  const user = await requireUser();
-  const profile = await getOwnProfile(user);
-
-  return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Мои данные</h1>
-        <p className="text-sm text-muted-foreground">
-          То, что постоянно спрашивают: реквизиты, прописка, работа. Видите их только вы —
-          пока сами не откроете их родне в Круге.
-        </p>
-      </div>
-      <ProfileForm profile={profile} />
-    </div>
-  );
+/**
+ * «Мои данные» влились в «Документы» (решение владельца 2026-09-04): ФИО и
+ * рождение — карточка «Кто я» наверху раздела, реквизиты — документами.
+ * Адрес оставлен редиректом: закладки и старые ссылки из писем живут дольше
+ * навигации.
+ */
+export default function ProfilePage() {
+  redirect('/documents');
 }

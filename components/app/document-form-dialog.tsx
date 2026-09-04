@@ -1,8 +1,9 @@
 'use client';
 
 import { useState, type ReactNode } from 'react';
-import { useForm, Controller } from 'react-hook-form';
+import { useForm, useFieldArray, useWatch, Controller } from 'react-hook-form';
 import { useRouter } from 'next/navigation';
+import { Plus, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   Dialog,
@@ -32,16 +33,18 @@ import { DOCUMENT_TEMPLATES, templateById } from '@/lib/documents/templates';
 import type { DocumentCategoryOption } from '@/lib/services/documents';
 
 /**
- * Ядро документа: название, категория, тип, номер, даты, кем выдан. Всё
- * остальное — произвольные поля и файлы — живёт на экране самого документа
- * (`/documents/[id]`): их там может быть по два десятка, и в диалог они не
- * помещаются ни физически, ни по смыслу.
+ * Форма документа. При СОЗДАНИИ человек выбирает вид («Паспорт РФ», «СНИЛС»,
+ * «Телефоны и почта»…), и форма тут же раскладывает поля этого вида — с
+ * возможностью вписать значения сразу, удалить лишнее и добавить своё поле
+ * с названием. Так документ заводится за один заход, а не «создать, потом
+ * открыть, потом заполнить». Шаблон после создания нигде не хранится: поля —
+ * обычные строки, их можно переименовать на экране документа.
  *
- * При СОЗДАНИИ здесь же выбирается шаблон: он не ограничивает документ, а лишь
- * заранее раскладывает пустые поля с названиями («Серия», «Код подразделения»),
- * чтобы человек не вспоминал, что вообще спрашивают по паспорту. После создания
- * шаблон нигде не хранится — поля обычные, их можно удалить и переименовать.
+ * При РЕДАКТИРОВАНИИ здесь только ядро (название, категория, номер, даты, кем
+ * выдан): поля правятся на экране документа, где их может быть два десятка.
  */
+
+type FieldRow = { name: string; value: string };
 
 type FormValues = {
   title: string;
@@ -53,6 +56,7 @@ type FormValues = {
   isActive: boolean;
   categoryId: string;
   templateId: string;
+  fields: FieldRow[];
 };
 
 export type DocumentCoreValues = {
@@ -80,8 +84,17 @@ function defaults(doc?: DocumentCoreValues): FormValues {
     issuingAuthority: doc?.issuingAuthority ?? '',
     isActive: doc?.isActive ?? true,
     categoryId: doc ? String(doc.categoryId) : '',
-    templateId: 'custom',
+    templateId: '',
+    fields: [],
   };
+}
+
+/** Категория по имени из шаблона; нет такой — «Прочее»; нет и её — первая. */
+function categoryFor(name: string, categories: DocumentCategoryOption[]): string {
+  const exact = categories.find((c) => c.name === name);
+  const other = categories.find((c) => c.name === 'Прочее');
+  const pick = exact ?? other ?? categories[0];
+  return pick ? String(pick.id) : '';
 }
 
 export function DocumentFormDialog({
@@ -108,6 +121,12 @@ export function DocumentFormDialog({
     setValue,
     formState: { isSubmitting },
   } = useForm<FormValues>({ defaultValues: defaults(document) });
+  const { fields, append, remove, replace } = useFieldArray({ control, name: 'fields' });
+
+  // useWatch, а не watch(): watch() React Compiler не умеет мемоизировать.
+  const templateId = useWatch({ control, name: 'templateId' });
+  const template = templateById(templateId);
+  const coreless = template?.coreless === true;
 
   async function onSubmit(values: FormValues) {
     if (!values.categoryId) {
@@ -144,17 +163,15 @@ export function DocumentFormDialog({
     }
     const id = result.data!.id;
 
-    // Поля шаблона раскладываются ПОСЛЕ создания, отдельным действием: документ
-    // уже существует, и провал этого шага не должен отменять его создание —
-    // поля человек допишет руками, а потерянный документ пришлось бы заводить
-    // заново вместе со всеми файлами.
-    const template = templateById(values.templateId);
-    if (template && template.fields.length > 0) {
-      const fieldsResult = await saveDocumentFieldsAction({
-        id,
-        fields: template.fields.map((name) => ({ name, value: '' })),
-      });
-      if (!fieldsResult.ok) toast.error(`Документ создан, но поля шаблона не легли: ${fieldsResult.error}`);
+    // Поля ложатся ПОСЛЕ создания, отдельным действием: документ уже
+    // существует, и провал этого шага не должен отменять его создание — поля
+    // человек допишет руками, а потерянный документ пришлось бы заводить заново.
+    // Строки с пустым названием сервер выбрасывает; пустые значения остаются —
+    // это «ещё не вписал», и в распечатку они всё равно не попадают.
+    const rows = values.fields.filter((f) => f.name.trim() !== '');
+    if (rows.length > 0) {
+      const fieldsResult = await saveDocumentFieldsAction({ id, fields: rows });
+      if (!fieldsResult.ok) toast.error(`Документ создан, но поля не легли: ${fieldsResult.error}`);
     }
 
     toast.success('Документ создан');
@@ -173,12 +190,12 @@ export function DocumentFormDialog({
       }}
     >
       <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{isEdit ? 'Редактировать документ' : 'Новый документ'}</DialogTitle>
           {!isEdit && (
             <DialogDescription>
-              Файлы и остальные реквизиты добавите на экране документа сразу после создания.
+              Выберите вид — поля разложатся сами. Файлы (сканы) добавите на экране документа.
             </DialogDescription>
           )}
         </DialogHeader>
@@ -195,84 +212,135 @@ export function DocumentFormDialog({
                     value={field.value}
                     onValueChange={(next) => {
                       field.onChange(next);
-                      // Тип и название подставляются из шаблона, но только если
-                      // человек ещё ничего не вписал: перезаписывать введённое
-                      // выбором из списка — худший вид «помощи».
-                      const template = templateById(next);
-                      if (template && template.documentType !== '') {
-                        setValue('documentType', template.documentType);
-                        setValue('title', template.label, { shouldDirty: true });
-                      }
+                      const t = templateById(next);
+                      if (!t) return;
+                      // Вид подставляет название, тип, категорию и раскладывает
+                      // поля. Значения уже вписанных полей при смене вида
+                      // теряются — поэтому смена вида и стоит первой в форме.
+                      setValue('documentType', t.documentType);
+                      setValue('title', t.documentType === '' ? '' : t.label, { shouldDirty: true });
+                      setValue('categoryId', categoryFor(t.category, categories));
+                      replace(t.fields.map((name) => ({ name, value: '' })));
                     }}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Выберите вид" />
                     </SelectTrigger>
                     <SelectContent>
-                      {DOCUMENT_TEMPLATES.map((template) => (
-                        <SelectItem key={template.id} value={template.id}>
-                          {template.label}
+                      {DOCUMENT_TEMPLATES.map((t) => (
+                        <SelectItem key={t.id} value={t.id}>
+                          {t.label}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 )}
               />
-              <p className="text-xs text-muted-foreground">
-                Шаблон только разложит пустые поля с названиями. Их можно удалить, переименовать
-                и дописать свои.
-              </p>
             </div>
           )}
           <div className="grid gap-2">
             <Label htmlFor="title">Название</Label>
-            <Input id="title" required {...register('title')} />
+            <Input id="title" required placeholder="Паспорт РФ, СНИЛС, Диплом…" {...register('title')} />
           </div>
-          <div className="grid gap-2">
-            <Label>Категория</Label>
-            <Controller
-              control={control}
-              name="categoryId"
-              render={({ field }) => (
-                <Select value={field.value} onValueChange={field.onChange}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Выберите категорию" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {categories.map((category) => (
-                      <SelectItem key={category.id} value={String(category.id)}>
-                        {category.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="grid gap-2">
+              <Label>Категория</Label>
+              <Controller
+                control={control}
+                name="categoryId"
+                render={({ field }) => (
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Выберите" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {categories.map((category) => (
+                        <SelectItem key={category.id} value={String(category.id)}>
+                          {category.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="documentType">Тип (коротко)</Label>
+              <Input id="documentType" placeholder="Паспорт, СНИЛС…" maxLength={20} {...register('documentType')} />
+            </div>
+          </div>
+
+          {!coreless && (
+            <>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="documentNumber">Номер</Label>
+                  <Input id="documentNumber" {...register('documentNumber')} />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="issuingAuthority">Кем выдан</Label>
+                  <Input id="issuingAuthority" {...register('issuingAuthority')} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="issueDate">Дата выдачи</Label>
+                  <Input id="issueDate" type="date" {...register('issueDate')} />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="expiryDate">Действует до</Label>
+                  <Input id="expiryDate" type="date" {...register('expiryDate')} />
+                </div>
+              </div>
+            </>
+          )}
+
+          {!isEdit && (
+            <div className="grid gap-2">
+              <div className="flex items-center justify-between">
+                <Label>Поля документа</Label>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => append({ name: '', value: '' })}
+                >
+                  <Plus className="mr-1 h-4 w-4" /> Своё поле
+                </Button>
+              </div>
+              {fields.length === 0 && (
+                <p className="text-xs text-muted-foreground">
+                  Выберите вид документа или добавьте своё поле — название и значение.
+                </p>
               )}
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor="documentType">Тип</Label>
-              <Input id="documentType" placeholder="Паспорт, СНИЛС…" {...register('documentType')} />
+              {fields.map((row, index) => (
+                <div key={row.id} className="flex items-center gap-2">
+                  <Input
+                    placeholder="Название"
+                    aria-label={`Название поля ${index + 1}`}
+                    className="w-2/5"
+                    {...register(`fields.${index}.name`)}
+                  />
+                  <Input
+                    placeholder="Значение"
+                    aria-label={`Значение поля ${index + 1}`}
+                    className="flex-1"
+                    {...register(`fields.${index}.value`)}
+                  />
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    title="Убрать поле"
+                    onClick={() => remove(index)}
+                  >
+                    <Trash2 className="h-4 w-4 text-destructive" />
+                  </Button>
+                </div>
+              ))}
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="documentNumber">Номер</Label>
-              <Input id="documentNumber" {...register('documentNumber')} />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor="issueDate">Дата выдачи</Label>
-              <Input id="issueDate" type="date" {...register('issueDate')} />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="expiryDate">Действует до</Label>
-              <Input id="expiryDate" type="date" {...register('expiryDate')} />
-            </div>
-          </div>
-          <div className="grid gap-2">
-            <Label htmlFor="issuingAuthority">Кем выдан</Label>
-            <Input id="issuingAuthority" {...register('issuingAuthority')} />
-          </div>
+          )}
+
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" className="size-4" {...register('isActive')} /> Действующий
           </label>

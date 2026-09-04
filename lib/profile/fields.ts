@@ -1,6 +1,6 @@
 /**
  * Единый список полей карточки человека — ОДИН источник правды для трёх мест:
- * формы «Мои данные», экрана круга и выгрузки галочками.
+ * формы «Кто я» в разделе «Документы», экрана круга и выгрузки галочками.
  *
  * Иначе список неизбежно разъедется: добавленное в форму поле не появится в
  * выгрузке, и человек, поставив галочку «всё», получит не всё. Здесь же живёт
@@ -9,6 +9,11 @@
  * Ключи совпадают с именами колонок в drizzle-схеме (`personProfile`): выгрузка
  * читает значения по ключу, и расхождение имён превратилось бы в пустую строку
  * без ошибки.
+ *
+ * С 2026-09-04 карточка — только то, что НЕ документ: ФИО, рождение, заметки.
+ * СНИЛС, ИНН, адреса, работа и контакты стали документами (миграция 0015) —
+ * раздел «Мои данные» держал их рядом с ФИО, а раздел «Документы» предлагал
+ * шаблоны с теми же реквизитами, и одно и то же жило в двух местах.
  */
 
 export type ProfileFieldKind = 'text' | 'date' | 'multiline';
@@ -20,7 +25,7 @@ export type ProfileField = {
   /** Подсказка под полем формы; пусто — подсказка не нужна. */
   hint?: string;
   /** Группа в форме — только для вёрстки, на выгрузку не влияет. */
-  group: 'Имя' | 'Рождение' | 'Документы' | 'Адреса' | 'Работа' | 'Связь' | 'Прочее';
+  group: 'Имя' | 'Рождение' | 'Прочее';
 };
 
 export type ProfileFieldKey =
@@ -29,14 +34,6 @@ export type ProfileFieldKey =
   | 'middleName'
   | 'birthDate'
   | 'birthPlace'
-  | 'snils'
-  | 'inn'
-  | 'registrationAddress'
-  | 'actualAddress'
-  | 'employer'
-  | 'jobTitle'
-  | 'phone'
-  | 'email'
   | 'notes';
 
 export const PROFILE_FIELDS: readonly ProfileField[] = [
@@ -46,26 +43,12 @@ export const PROFILE_FIELDS: readonly ProfileField[] = [
   { key: 'birthDate', label: 'Дата рождения', kind: 'date', group: 'Рождение' },
   { key: 'birthPlace', label: 'Место рождения', kind: 'text', group: 'Рождение' },
   {
-    key: 'snils',
-    label: 'СНИЛС',
-    kind: 'text',
-    hint: 'Как в документе, например 123-456-789 00',
-    group: 'Документы',
-  },
-  { key: 'inn', label: 'ИНН', kind: 'text', group: 'Документы' },
-  {
-    key: 'registrationAddress',
-    label: 'Прописка',
+    key: 'notes',
+    label: 'Заметки',
     kind: 'multiline',
-    hint: 'Адрес регистрации по паспорту',
-    group: 'Адреса',
+    hint: 'Реквизиты — СНИЛС, адреса, телефоны — заводятся документами ниже, а не здесь.',
+    group: 'Прочее',
   },
-  { key: 'actualAddress', label: 'Фактический адрес', kind: 'multiline', group: 'Адреса' },
-  { key: 'employer', label: 'Место работы', kind: 'text', group: 'Работа' },
-  { key: 'jobTitle', label: 'Должность', kind: 'text', group: 'Работа' },
-  { key: 'phone', label: 'Телефон', kind: 'text', group: 'Связь' },
-  { key: 'email', label: 'Почта', kind: 'text', group: 'Связь' },
-  { key: 'notes', label: 'Заметки', kind: 'multiline', group: 'Прочее' },
 ] as const;
 
 export const PROFILE_FIELD_KEYS: readonly ProfileFieldKey[] = PROFILE_FIELDS.map((f) => f.key);

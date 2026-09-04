@@ -1,20 +1,14 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Download, FileText, Printer, Share2 } from 'lucide-react';
-import { toast } from 'sonner';
+import { FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { PROFILE_FIELDS, type ProfileFieldKey } from '@/lib/profile/fields';
-import { sanitizeFileName, uniqueFileName } from '@/lib/files/name';
-import {
-  composeExport,
-  exportFileName,
-  renderText,
-  type ExportDocument,
-  type ExportPerson,
-} from '@/lib/export/compose';
+import { sanitizeFileName } from '@/lib/files/name';
+import { composeExport, renderText, type ExportDocument, type ExportPerson } from '@/lib/export/compose';
+import { ExportActions } from './export-actions';
 
 /**
  * Выгрузка данных круга: галочки «какие поля × какие люди», плюс отдельные
@@ -24,10 +18,8 @@ import {
  * компонентом (и пришли ровно те, что человеку открыты по согласию), поэтому
  * отдельный API-роут выгрузки был бы вторым местом, где решается вопрос
  * «что кому показывать», — а именно такие вторые места и расходятся с первым.
- * Файлы для архива браузер забирает по одному через авторизованный роут.
+ * Форматы и кнопки — общие с разделом «Документы» (`ExportActions`).
  */
-
-const TODAY_FALLBACK = 'export';
 
 type Props = {
   people: ExportPerson[];
@@ -48,25 +40,11 @@ function useToggleSet<T>(initial: T[]) {
   return { items, toggle, setAll };
 }
 
-function downloadBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  // Освобождаем URL не сразу: Safari успевает не начать скачивание, если
-  // отозвать объект в том же тике.
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
 export function CircleExportPanel({ people, documents, today }: Props) {
   const persons = useToggleSet<number>(people.map((p) => p.userId));
   const fields = useToggleSet<ProfileFieldKey>(PROFILE_FIELDS.map((f) => f.key));
   const docs = useToggleSet<number>([]);
   const [withFiles, setWithFiles] = useState(false);
-  const [busy, setBusy] = useState(false);
 
   const selection = useMemo(
     () => ({
@@ -97,167 +75,14 @@ export function CircleExportPanel({ people, documents, today }: Props) {
             // из названия документа — его человек вводит свободно, и без
             // чистки «Паспорт ../..» стал бы путём внутри архива.
             name: file.originalName || sanitizeFileName(`${doc.title}-${index + 1}`) || 'файл',
-            docTitle: doc.title,
           })),
         ),
     [documents, docs.items, persons.items],
   );
 
-  function guard(): boolean {
-    if (isEmpty) {
-      toast.error('Ничего не выбрано — отметьте людей и поля');
-      return false;
-    }
-    return true;
-  }
-
-  function downloadText() {
-    if (!guard()) return;
-    // BOM — чтобы Блокнот на Windows не показал кириллицу кракозябрами.
-    const blob = new Blob([`﻿${text}`], { type: 'text/plain;charset=utf-8' });
-    downloadBlob(blob, exportFileName('txt', today || TODAY_FALLBACK));
-  }
-
-  async function downloadWord() {
-    if (!guard()) return;
-    setBusy(true);
-    try {
-      // Библиотека грузится по требованию: она весит заметно, а Word нужен
-      // далеко не в каждый заход на экран.
-      const { Document, Packer, Paragraph, HeadingLevel, TextRun } = await import('docx');
-      const children = blocks.flatMap((person) => {
-        const parts = [
-          new Paragraph({ text: person.name, heading: HeadingLevel.HEADING_1 }),
-          ...person.lines.map(
-            (line) =>
-              new Paragraph({
-                children: [
-                  new TextRun({ text: `${line.label}: `, bold: true }),
-                  new TextRun(line.value),
-                ],
-              }),
-          ),
-        ];
-        for (const doc of person.documents) {
-          parts.push(new Paragraph({ text: doc.title, heading: HeadingLevel.HEADING_2 }));
-          for (const line of doc.lines) {
-            parts.push(
-              new Paragraph({
-                children: [
-                  new TextRun({ text: `${line.label}: `, bold: true }),
-                  new TextRun(line.value),
-                ],
-              }),
-            );
-          }
-          if (withFiles && doc.fileNames.length > 0) {
-            parts.push(new Paragraph({ text: `Файлы: ${doc.fileNames.join(', ')}` }));
-          }
-        }
-        return parts;
-      });
-
-      const document = new Document({ sections: [{ children }] });
-      const blob = await Packer.toBlob(document);
-      downloadBlob(blob, exportFileName('docx', today || TODAY_FALLBACK));
-    } catch {
-      toast.error('Не удалось собрать документ Word');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function downloadZip() {
-    if (!guard()) return;
-    setBusy(true);
-    try {
-      const JSZip = (await import('jszip')).default;
-      const zip = new JSZip();
-      zip.file(exportFileName('txt', today || TODAY_FALLBACK), `﻿${text}`);
-
-      let failed = 0;
-      // Галочка «Вместе с файлами» распространяется и на архив. До правки
-      // 04.09 downloadZip брал selectedFiles напрямую, и сканы уезжали даже
-      // при снятой галочке — то есть человек отдавал наружу больше, чем
-      // показывали предпросмотр и счётчик, по которым он и решал.
-      const wanted = withFiles ? selectedFiles : [];
-
-      // Имена в архиве разводятся: JSZip кладёт записи в объект по имени и при
-      // совпадении молча перезаписывает — два паспорта, снятые на один телефон
-      // и потому названные одинаково, дали бы в архиве один файл.
-      const usedNames = new Set<string>();
-
-      // Файлы качаются по одному через авторизованный роут: сервер архив не
-      // собирает и не держит его в памяти.
-      for (const file of wanted) {
-        const res = await fetch(`/api/circle/files/${file.id}`);
-        if (!res.ok) {
-          failed += 1;
-          continue;
-        }
-        zip.file(`Файлы/${uniqueFileName(file.name, usedNames)}`, await res.blob());
-      }
-
-      const blob = await zip.generateAsync({ type: 'blob' });
-      downloadBlob(blob, exportFileName('zip', today || TODAY_FALLBACK));
-      // Молчаливо неполный архив — худший исход: человек уносит его как копию
-      // документов и узнает о пропаже, когда она понадобится.
-      if (failed > 0) toast.error(`Не удалось добавить файлов: ${failed}`);
-    } catch {
-      toast.error('Не удалось собрать архив');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function share() {
-    if (!guard()) return;
-    if (typeof navigator === 'undefined' || !navigator.share) {
-      await navigator.clipboard.writeText(text);
-      toast.success('Скопировано — вставьте в мессенджер');
-      return;
-    }
-    setBusy(true);
-    try {
-      // Картинки прикладываются, только если браузер это умеет И они выбраны.
-      // Проверка canShare обязательна: Android отдаёт navigator.share, но
-      // делиться файлами умеет не везде, и без проверки вызов падает.
-      const images = withFiles ? selectedFiles.filter((f) => f.isImage).slice(0, 10) : [];
-      let files: File[] = [];
-      // Умеет ли браузер делиться файлами, выясняем ДО загрузки — пустышкой
-      // того же типа. Иначе на платформе без поддержки файлов мы качаем
-      // мегабайты сканов, чтобы затем их выбросить, и вдобавок тратим на это
-      // пользовательский жест, с которым navigator.share ещё связан.
-      const canShareFiles =
-        images.length > 0 &&
-        navigator.canShare?.({
-          files: [new File([new Uint8Array()], 'probe.jpg', { type: 'image/jpeg' })],
-        }) === true;
-      if (canShareFiles) {
-        const fetched = await Promise.all(
-          images.map(async (image) => {
-            const res = await fetch(`/api/circle/files/${image.id}`);
-            if (!res.ok) return null;
-            const blob = await res.blob();
-            return new File([blob], image.name, { type: blob.type });
-          }),
-        );
-        files = fetched.filter((f): f is File => f !== null);
-      }
-
-      if (files.length > 0 && navigator.canShare?.({ files })) {
-        await navigator.share({ text, files });
-      } else {
-        await navigator.share({ text });
-      }
-    } catch (e) {
-      // Отмена — это не ошибка: человек открыл меню и передумал.
-      if (e instanceof Error && e.name === 'AbortError') return;
-      toast.error('Не удалось поделиться');
-    } finally {
-      setBusy(false);
-    }
-  }
+  // Галочка «Вместе с файлами» — ЕДИНСТВЕННОЕ место, где решается, уедут ли
+  // сканы; она распространяется на архив, «Поделиться» и имена в тексте.
+  const files = withFiles ? selectedFiles : [];
 
   return (
     <div className="flex flex-col gap-6">
@@ -303,7 +128,7 @@ export function CircleExportPanel({ people, documents, today }: Props) {
           <CardHeader>
             <div className="flex items-start justify-between gap-2">
               <div>
-                <CardTitle className="text-base">Какие поля</CardTitle>
+                <CardTitle className="text-base">Какие поля карточки</CardTitle>
                 <CardDescription>
                   Выбрано: {fields.items.size} из {PROFILE_FIELDS.length}
                 </CardDescription>
@@ -345,8 +170,9 @@ export function CircleExportPanel({ people, documents, today }: Props) {
             <div>
               <CardTitle className="text-base">Документы</CardTitle>
               <CardDescription>
-                По умолчанию не выгружаются — отметьте нужные. Документы людей, снятых
-                галочкой выше, в выгрузку не попадут.
+                Здесь свои документы и те, что родня открыла кругу. По умолчанию не
+                выгружаются — отметьте нужные. Документы людей, снятых галочкой выше, в
+                выгрузку не попадут.
               </CardDescription>
             </div>
             <label className="flex items-center gap-2 text-sm">
@@ -394,32 +220,18 @@ export function CircleExportPanel({ people, documents, today }: Props) {
             {isEmpty
               ? 'Пока ничего не выбрано.'
               : `Готово к выгрузке: ${blocks.length} чел.` +
-                (withFiles && selectedFiles.length > 0 ? `, файлов ${selectedFiles.length}` : '')}
+                (files.length > 0 ? `, файлов ${files.length}` : '')}
           </CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-wrap gap-2">
-          <Button type="button" variant="outline" disabled={busy} onClick={downloadText}>
-            <Download className="mr-1 h-4 w-4" /> Текстом (.txt)
-          </Button>
-          <Button type="button" variant="outline" disabled={busy} onClick={downloadWord}>
-            <Download className="mr-1 h-4 w-4" /> Word (.docx)
-          </Button>
-          <Button type="button" variant="outline" disabled={busy} onClick={downloadZip}>
-            <Download className="mr-1 h-4 w-4" /> Архив (.zip)
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={busy}
-            onClick={() => {
-              if (guard()) window.print();
-            }}
-          >
-            <Printer className="mr-1 h-4 w-4" /> Печать
-          </Button>
-          <Button type="button" disabled={busy} onClick={share}>
-            <Share2 className="mr-1 h-4 w-4" /> Поделиться
-          </Button>
+        <CardContent>
+          <ExportActions
+            blocks={blocks}
+            text={text}
+            files={files}
+            fileUrl={(id) => `/api/circle/files/${id}`}
+            today={today}
+            subject="Данные круга"
+          />
         </CardContent>
       </Card>
 

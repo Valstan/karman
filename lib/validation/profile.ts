@@ -25,16 +25,7 @@ export const profileUpsertSchema = z.object({
   middleName: shortText(150),
   birthDate: optionalDate,
   birthPlace: shortText(2000),
-  // СНИЛС и ИНН — строки документа, а не числа: пробелы и дефисы значимы,
-  // и приводить их к «только цифры» значило бы терять форму записи.
-  snils: shortText(20),
-  inn: shortText(20),
-  registrationAddress: shortText(2000),
-  actualAddress: shortText(2000),
-  employer: shortText(2000),
-  jobTitle: shortText(2000),
-  phone: shortText(30),
-  email: shortText(254),
+  // СНИЛС, ИНН, адреса, работа и контакты с 0015 — документы, не карточка.
   notes: shortText(4000),
 });
 

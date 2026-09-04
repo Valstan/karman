@@ -34,14 +34,6 @@ export async function getOwnProfile(user: SessionUser): Promise<ProfileValues> {
     // не умеет null и на нём становится неуправляемым.
     birthDate: row.birthDate ?? '',
     birthPlace: row.birthPlace,
-    snils: row.snils,
-    inn: row.inn,
-    registrationAddress: row.registrationAddress,
-    actualAddress: row.actualAddress,
-    employer: row.employer,
-    jobTitle: row.jobTitle,
-    phone: row.phone,
-    email: row.email,
     notes: row.notes,
   };
 }

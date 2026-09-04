@@ -11,14 +11,14 @@ const ulyana: ExportPerson = {
     lastName: 'Совиных',
     firstName: 'Ульяна',
     birthDate: '1990-05-17',
-    snils: '123-456-789 00',
+    birthPlace: 'Малмыж',
   },
 };
 
 const danil: ExportPerson = {
   userId: 3,
   name: 'Совиных Данил',
-  profile: { ...emptyProfile(), lastName: 'Совиных', firstName: 'Данил', inn: '770101' },
+  profile: { ...emptyProfile(), lastName: 'Совиных', firstName: 'Данил', notes: 'ИНН 770101' },
 };
 
 const passport: ExportDocument = {
@@ -58,27 +58,27 @@ describe('composeExport', () => {
     expect(blocks[0]!.lines).toEqual([{ label: 'Дата рождения', value: '17.05.1990' }]);
   });
 
-  it('выбрасывает поля с пустым значением, а не печатает «СНИЛС: »', () => {
+  it('выбрасывает поля с пустым значением, а не печатает «Место рождения: »', () => {
     const blocks = composeExport(ALL_PEOPLE, ALL_DOCS, {
       personIds: [3],
-      fieldKeys: ['snils', 'inn'],
+      fieldKeys: ['birthPlace', 'notes'],
       documentIds: [],
     });
-    // У Данила СНИЛС не заполнен — строки быть не должно.
-    expect(blocks[0]!.lines).toEqual([{ label: 'ИНН', value: '770101' }]);
+    // У Данила место рождения не заполнено — строки быть не должно.
+    expect(blocks[0]!.lines).toEqual([{ label: 'Заметки', value: 'ИНН 770101' }]);
   });
 
   it('держит порядок полей как в списке, а не как в выборе галочек', () => {
     const blocks = composeExport(ALL_PEOPLE, ALL_DOCS, {
       personIds: [2],
       // Порядок в выборе намеренно обратный привычному.
-      fieldKeys: ['snils', 'birthDate', 'lastName'],
+      fieldKeys: ['birthPlace', 'birthDate', 'lastName'],
       documentIds: [],
     });
     expect(blocks[0]!.lines.map((l) => l.label)).toEqual([
       'Фамилия',
       'Дата рождения',
-      'СНИЛС',
+      'Место рождения',
     ]);
   });
 
@@ -117,7 +117,7 @@ describe('composeExport', () => {
     // Выбран Данил, но единственное выбранное поле у него пустое.
     const blocks = composeExport(ALL_PEOPLE, ALL_DOCS, {
       personIds: [3],
-      fieldKeys: ['snils'],
+      fieldKeys: ['birthPlace'],
       documentIds: [],
     });
     expect(blocks).toEqual([]);
