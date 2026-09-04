@@ -158,6 +158,10 @@ export const documentsDocument = pgTable('documents_document', {
   backImage: varchar('back_image', { length: 100 }),
   additionalFiles: varchar('additional_files', { length: 100 }),
   isActive: boolean('is_active').notNull().default(true),
+  // Открыт кругу явной галочкой «В круг» (миграция 0015). NULL — виден только
+  // владельцу: согласие в круге даётся на человека, а что из документов
+  // показывать — решение по каждому документу отдельно.
+  circleSharedAt: timestamp('circle_shared_at', { withTimezone: true, mode: 'string' }),
   userId: integer('user_id')
     .notNull()
     .references(() => authUser.id),
@@ -606,6 +610,9 @@ export const personProfile = pgTable('person_profile', {
   middleName: varchar('middle_name', { length: 150 }).notNull().default(''),
   birthDate: date('birth_date', { mode: 'string' }),
   birthPlace: text('birth_place').notNull().default(''),
+  // РУДИМЕНТ с миграции 0015: восемь колонок ниже (СНИЛС, ИНН, адреса, работа,
+  // контакты) перенесены в документы. Код их не читает и не пишет; `drop
+  // column` на живой схеме необратим, поэтому остаются.
   snils: varchar('snils', { length: 20 }).notNull().default(''),
   inn: varchar('inn', { length: 20 }).notNull().default(''),
   registrationAddress: text('registration_address').notNull().default(''),

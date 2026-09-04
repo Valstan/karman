@@ -30,6 +30,8 @@ export type DocumentListItem = {
   isActive: boolean;
   categoryId: number;
   categoryName: string | null;
+  /** Открыт кругу галочкой «В круг»; null — виден только мне. */
+  circleSharedAt: string | null;
   /** Сколько файлов прикреплено (0 — ни одного). */
   fileCount: number;
   /**
@@ -67,6 +69,7 @@ export type DocumentDetail = {
   issuingAuthority: string;
   isActive: boolean;
   categoryId: number;
+  circleSharedAt: string | null;
   fields: DocumentFieldItem[];
   files: DocumentFileItem[];
 };
@@ -96,6 +99,7 @@ export async function listDocuments(user: SessionUser): Promise<DocumentListItem
       isActive: documentsDocument.isActive,
       categoryId: documentsDocument.categoryId,
       categoryName: documentsDocumentcategory.name,
+      circleSharedAt: documentsDocument.circleSharedAt,
     })
     .from(documentsDocument)
     .leftJoin(
@@ -182,6 +186,7 @@ export async function getDocumentDetail(
     issuingAuthority: row.issuingAuthority,
     isActive: row.isActive,
     categoryId: row.categoryId,
+    circleSharedAt: row.circleSharedAt,
     fields,
     files: files.map((f) => ({
       id: f.id,
@@ -360,4 +365,97 @@ export async function deleteDocument(user: SessionUser, id: number): Promise<boo
   // Сносим каталог со сканами документа (best-effort, не блокирует ответ).
   await deleteDocumentDir(deleted.userId, deleted.id);
   return true;
+}
+
+/**
+ * Открыть кругу или забрать из круга — СВОИ документы, списком. Возвращает,
+ * сколько строк реально поменяно: чужие id молча выпадают из WHERE, а не
+ * дают ошибку — иначе ответ сообщал бы, что документ с таким id существует.
+ */
+export async function setCircleShared(
+  user: SessionUser,
+  ids: number[],
+  shared: boolean,
+): Promise<number> {
+  if (ids.length === 0) return 0;
+  const rows = await db
+    .update(documentsDocument)
+    .set({ circleSharedAt: shared ? sql`NOW()` : null, updatedAt: sql`NOW()` })
+    .where(and(inArray(documentsDocument.id, ids), ownership(user, documentsDocument.userId)))
+    .returning({ id: documentsDocument.id });
+  return rows.length;
+}
+
+/** Документ в форме выгрузки — та же, что у документов круга (`composeExport`). */
+export type OwnExportDocument = {
+  id: number;
+  ownerUserId: number;
+  title: string;
+  documentType: string;
+  documentNumber: string;
+  issueDate: string | null;
+  expiryDate: string | null;
+  issuingAuthority: string;
+  fields: { name: string; value: string }[];
+  files: { id: number; originalName: string; isImage: boolean }[];
+};
+
+/**
+ * Свои документы целиком — с полями и файлами — для «поделиться» прямо из
+ * раздела «Документы». Отдельно от списка: списку поля не нужны, а выгрузке
+ * нужны все, и тащить их в каждую отрисовку таблицы незачем.
+ */
+export async function listOwnExportDocuments(user: SessionUser): Promise<OwnExportDocument[]> {
+  const docs = await db
+    .select({
+      id: documentsDocument.id,
+      ownerUserId: documentsDocument.userId,
+      title: documentsDocument.title,
+      documentType: documentsDocument.documentType,
+      documentNumber: documentsDocument.documentNumber,
+      issueDate: documentsDocument.issueDate,
+      expiryDate: documentsDocument.expiryDate,
+      issuingAuthority: documentsDocument.issuingAuthority,
+    })
+    .from(documentsDocument)
+    .where(ownership(user, documentsDocument.userId))
+    .orderBy(desc(documentsDocument.id));
+  if (docs.length === 0) return [];
+  const docIds = docs.map((d) => d.id);
+
+  const [fields, files] = await Promise.all([
+    db
+      .select({ documentId: documentField.documentId, name: documentField.name, value: documentField.value })
+      .from(documentField)
+      .where(inArray(documentField.documentId, docIds))
+      .orderBy(asc(documentField.position), asc(documentField.id)),
+    db
+      .select({
+        documentId: documentFile.documentId,
+        id: documentFile.id,
+        originalName: documentFile.originalName,
+        path: documentFile.path,
+      })
+      .from(documentFile)
+      .where(inArray(documentFile.documentId, docIds))
+      .orderBy(asc(documentFile.position), asc(documentFile.id)),
+  ]);
+
+  const fieldsByDoc = new Map<number, { name: string; value: string }[]>();
+  for (const f of fields) {
+    const list = fieldsByDoc.get(f.documentId) ?? [];
+    list.push({ name: f.name, value: f.value });
+    fieldsByDoc.set(f.documentId, list);
+  }
+  const filesByDoc = new Map<number, { id: number; originalName: string; isImage: boolean }[]>();
+  for (const f of files) {
+    const list = filesByDoc.get(f.documentId) ?? [];
+    list.push({ id: f.id, originalName: f.originalName, isImage: isImagePath(f.path) });
+    filesByDoc.set(f.documentId, list);
+  }
+  return docs.map((d) => ({
+    ...d,
+    fields: fieldsByDoc.get(d.id) ?? [],
+    files: filesByDoc.get(d.id) ?? [],
+  }));
 }

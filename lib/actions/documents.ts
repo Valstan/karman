@@ -10,6 +10,7 @@ import {
   updateDocument,
   deleteDocument,
   replaceDocumentFields,
+  setCircleShared,
 } from '@/lib/services/documents';
 import { currentUserOrNull, revalidateAll, type ActionResult } from './_internal';
 
@@ -62,6 +63,22 @@ export async function updateDocumentAction(values: unknown): Promise<ActionResul
   if (!updated) return { ok: false, error: 'Документ не найден' };
   revalidateAll();
   return { ok: true };
+}
+
+/**
+ * Открыть кругу / забрать из круга — списком id (галочки в разделе «Документы»).
+ * Владение проверяет сервис: чужие id просто не считаются.
+ */
+export async function setCircleSharedAction(
+  ids: number[],
+  shared: boolean,
+): Promise<ActionResult<{ count: number }>> {
+  const user = await currentUserOrNull();
+  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  const clean = ids.filter((id) => Number.isInteger(id) && id > 0).slice(0, 500);
+  const count = await setCircleShared(user, clean, shared);
+  revalidateAll();
+  return { ok: true, data: { count } };
 }
 
 export async function deleteDocumentAction(id: number): Promise<ActionResult> {

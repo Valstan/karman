@@ -3,10 +3,18 @@
 import { Fragment, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Pencil, Trash2, Search, FileText } from 'lucide-react';
+import { Pencil, Trash2, Search, FileText, Share2, Users, UserX } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import {
   Select,
@@ -24,22 +32,21 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { DocumentFormDialog } from './document-form-dialog';
+import { DocumentSharePanel } from './document-share-panel';
 import { ConfirmDialog } from './confirm-dialog';
-import { deleteDocumentAction } from '@/lib/actions/documents';
+import { deleteDocumentAction, setCircleSharedAction } from '@/lib/actions/documents';
 import { documentExpiryBadge } from '@/lib/constants';
 import { formatDate } from '@/lib/format';
 import { rankMatches } from '@/lib/search/tiered-search';
 import { HighlightedText } from './highlighted-text';
+import type { ExportDocument, ExportPerson } from '@/lib/export/compose';
 import type { DocumentListItem, DocumentCategoryOption } from '@/lib/services/documents';
 
 type StatusFilter = 'all' | 'active' | 'inactive';
 
 /**
  * Обложка документа в списке: миниатюра первого файла-картинки, иконка — если
- * картинок нет, но файлы есть. Рядом счётчик, потому что файлов теперь может
- * быть двадцать, и одна миниатюра о них не говорит.
- *
- * Ведёт на экран документа, а не на сам файл: там весь список файлов и поля.
+ * картинок нет, но файлы есть. Ведёт на экран документа.
  */
 function DocumentThumb({
   docId,
@@ -77,17 +84,55 @@ function DocumentThumb({
   );
 }
 
+/** «Поделиться» одним документом — диалог с теми же кнопками, что у выборки. */
+export function DocumentShareDialog({
+  me,
+  document,
+  today,
+  trigger,
+}: {
+  me: ExportPerson;
+  document: ExportDocument;
+  today: string;
+  trigger: React.ReactNode;
+}) {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Поделиться: {document.title}</DialogTitle>
+        </DialogHeader>
+        <DocumentSharePanel me={me} documents={[document]} today={today} compact />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * Список документов с галочками. Галочки — единственный «выбор»: и «поделиться»,
+ * и «в круг» работают с отмеченными. Каждая строка при этом умеет поделиться
+ * собой и без галочек — кнопкой в строке.
+ */
 export function DocumentsTable({
   documents,
   categories,
+  exportDocuments,
+  me,
+  today,
 }: {
   documents: DocumentListItem[];
   categories: DocumentCategoryOption[];
+  exportDocuments: ExportDocument[];
+  me: ExportPerson;
+  today: string;
 }) {
   const router = useRouter();
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<StatusFilter>('all');
   const [categoryId, setCategoryId] = useState<string>('all');
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [busy, setBusy] = useState(false);
 
   // Многоуровневый поиск (#035): substring → subsequence → fuzzy, RU↔EN, подсветка.
   const { matches, layoutConverted } = useMemo(() => {
@@ -107,9 +152,27 @@ export function DocumentsTable({
   }, [documents, query, status, categoryId]);
 
   const firstFuzzyIndex = matches.findIndex((m) => m.isFuzzy);
-
   const rangesFor = (matchIndex: number, field: number) =>
     matches[matchIndex]?.highlights.find((h) => h.field === field)?.ranges;
+
+  const exportById = useMemo(() => new Map(exportDocuments.map((d) => [d.id, d])), [exportDocuments]);
+  const selectedExport = useMemo(
+    () => documents.filter((d) => selected.has(d.id)).map((d) => exportById.get(d.id)).filter(
+      (d): d is ExportDocument => d !== undefined,
+    ),
+    [documents, selected, exportById],
+  );
+
+  function toggle(id: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  const visibleIds = matches.map((m) => m.item.id);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
 
   async function remove(id: number) {
     const result = await deleteDocumentAction(id);
@@ -118,7 +181,35 @@ export function DocumentsTable({
       return;
     }
     toast.success('Документ удалён');
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
     router.refresh();
+  }
+
+  async function shareToCircle(shared: boolean) {
+    if (selected.size === 0) {
+      toast.error('Отметьте документы галочками');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await setCircleSharedAction([...selected], shared);
+      if (!result.ok) {
+        toast.error(result.error);
+        return;
+      }
+      toast.success(
+        shared
+          ? `Открыто кругу: ${result.data?.count ?? 0}`
+          : `Забрано из круга: ${result.data?.count ?? 0}`,
+      );
+      router.refresh();
+    } finally {
+      setBusy(false);
+    }
   }
 
   const isFiltered = query.trim() !== '' || status !== 'all' || categoryId !== 'all';
@@ -170,9 +261,19 @@ export function DocumentsTable({
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-8">
+                <input
+                  type="checkbox"
+                  className="size-4"
+                  aria-label="Выбрать все показанные"
+                  checked={allVisibleSelected}
+                  onChange={() =>
+                    setSelected(allVisibleSelected ? new Set() : new Set(visibleIds))
+                  }
+                />
+              </TableHead>
               <TableHead>Название</TableHead>
               <TableHead>Категория</TableHead>
-              <TableHead>Тип</TableHead>
               <TableHead>Номер</TableHead>
               <TableHead>Выдан</TableHead>
               <TableHead>Действует до</TableHead>
@@ -185,98 +286,165 @@ export function DocumentsTable({
             {matches.length === 0 && (
               <TableRow>
                 <TableCell colSpan={9} className="h-24 text-center text-muted-foreground">
-                  {isFiltered ? 'Ничего не найдено.' : 'Документов пока нет.'}
+                  {isFiltered ? 'Ничего не найдено.' : 'Документов пока нет — нажмите «Новый документ».'}
                 </TableCell>
               </TableRow>
             )}
-            {matches.map(({ item: doc, isFuzzy }, index) => (
-              <Fragment key={doc.id}>
-                {isFuzzy && index === firstFuzzyIndex && (
-                  <TableRow className="hover:bg-transparent">
-                    <TableCell colSpan={9} className="py-1.5 text-xs text-muted-foreground">
-                      Похожие (неточное совпадение):
+            {matches.map(({ item: doc, isFuzzy }, index) => {
+              const exportDoc = exportById.get(doc.id);
+              return (
+                <Fragment key={doc.id}>
+                  {isFuzzy && index === firstFuzzyIndex && (
+                    <TableRow className="hover:bg-transparent">
+                      <TableCell colSpan={9} className="py-1.5 text-xs text-muted-foreground">
+                        Похожие (неточное совпадение):
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  <TableRow data-state={selected.has(doc.id) ? 'selected' : undefined}>
+                    <TableCell>
+                      <input
+                        type="checkbox"
+                        className="size-4"
+                        aria-label={`Выбрать ${doc.title}`}
+                        checked={selected.has(doc.id)}
+                        onChange={() => toggle(doc.id)}
+                      />
+                    </TableCell>
+                    <TableCell className="font-medium">
+                      <Link href={`/documents/${doc.id}`} className="hover:underline">
+                        <HighlightedText text={doc.title} ranges={rangesFor(index, 0)} />
+                      </Link>
+                      {doc.documentType && doc.documentType !== doc.title && (
+                        <span className="ml-2 text-xs text-muted-foreground">
+                          <HighlightedText text={doc.documentType} ranges={rangesFor(index, 2)} />
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {doc.categoryName ? (
+                        <HighlightedText text={doc.categoryName} ranges={rangesFor(index, 1)} />
+                      ) : (
+                        '—'
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {doc.documentNumber ? (
+                        <HighlightedText text={doc.documentNumber} ranges={rangesFor(index, 3)} />
+                      ) : (
+                        '—'
+                      )}
+                    </TableCell>
+                    <TableCell>{formatDate(doc.issueDate)}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <span>{formatDate(doc.expiryDate)}</span>
+                        {(() => {
+                          const badge = documentExpiryBadge(doc.expiryDate);
+                          return badge ? <Badge variant={badge.variant}>{badge.label}</Badge> : null;
+                        })()}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <DocumentThumb
+                        docId={doc.id}
+                        previewFileId={doc.previewFileId}
+                        fileCount={doc.fileCount}
+                        title={doc.title}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap items-center gap-1">
+                        <Badge variant={doc.isActive ? 'default' : 'secondary'}>
+                          {doc.isActive ? 'Действует' : 'Недействителен'}
+                        </Badge>
+                        {doc.circleSharedAt && (
+                          <Badge variant="outline" title="Виден участникам круга">
+                            <Users className="mr-1 h-3 w-3" /> В круге
+                          </Badge>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center justify-end gap-1">
+                        {exportDoc && (
+                          <DocumentShareDialog
+                            me={me}
+                            document={exportDoc}
+                            today={today}
+                            trigger={
+                              <Button size="icon" variant="ghost" title="Поделиться">
+                                <Share2 className="h-4 w-4" />
+                              </Button>
+                            }
+                          />
+                        )}
+                        <DocumentFormDialog
+                          document={doc}
+                          categories={categories}
+                          trigger={
+                            <Button size="icon" variant="ghost" title="Редактировать">
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                          }
+                        />
+                        <ConfirmDialog
+                          title="Удалить документ?"
+                          description="Действие необратимо: поля и файлы удалятся вместе с документом."
+                          onConfirm={() => remove(doc.id)}
+                          trigger={
+                            <Button size="icon" variant="ghost" title="Удалить">
+                              <Trash2 className="h-4 w-4 text-destructive" />
+                            </Button>
+                          }
+                        />
+                      </div>
                     </TableCell>
                   </TableRow>
-                )}
-              <TableRow>
-                <TableCell className="font-medium">
-                  <HighlightedText text={doc.title} ranges={rangesFor(index, 0)} />
-                </TableCell>
-                <TableCell>
-                  {doc.categoryName ? (
-                    <HighlightedText text={doc.categoryName} ranges={rangesFor(index, 1)} />
-                  ) : (
-                    '—'
-                  )}
-                </TableCell>
-                <TableCell>
-                  {doc.documentType ? (
-                    <HighlightedText text={doc.documentType} ranges={rangesFor(index, 2)} />
-                  ) : (
-                    '—'
-                  )}
-                </TableCell>
-                <TableCell>
-                  {doc.documentNumber ? (
-                    <HighlightedText text={doc.documentNumber} ranges={rangesFor(index, 3)} />
-                  ) : (
-                    '—'
-                  )}
-                </TableCell>
-                <TableCell>{formatDate(doc.issueDate)}</TableCell>
-                <TableCell>
-                  <div className="flex items-center gap-2">
-                    <span>{formatDate(doc.expiryDate)}</span>
-                    {(() => {
-                      const badge = documentExpiryBadge(doc.expiryDate);
-                      return badge ? (
-                        <Badge variant={badge.variant}>{badge.label}</Badge>
-                      ) : null;
-                    })()}
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <DocumentThumb
-                    docId={doc.id}
-                    previewFileId={doc.previewFileId}
-                    fileCount={doc.fileCount}
-                    title={doc.title}
-                  />
-                </TableCell>
-                <TableCell>
-                  <Badge variant={doc.isActive ? 'default' : 'secondary'}>
-                    {doc.isActive ? 'Действует' : 'Недействителен'}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <div className="flex items-center justify-end gap-1">
-                    <DocumentFormDialog
-                      document={doc}
-                      categories={categories}
-                      trigger={
-                        <Button size="icon" variant="ghost" title="Редактировать">
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-                      }
-                    />
-                    <ConfirmDialog
-                      title="Удалить документ?"
-                      description="Действие необратимо."
-                      onConfirm={() => remove(doc.id)}
-                      trigger={
-                        <Button size="icon" variant="ghost" title="Удалить">
-                          <Trash2 className="h-4 w-4 text-destructive" />
-                        </Button>
-                      }
-                    />
-                  </div>
-                </TableCell>
-              </TableRow>
-              </Fragment>
-            ))}
+                </Fragment>
+              );
+            })}
           </TableBody>
         </Table>
       </div>
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <CardTitle className="text-base">Выбранные документы</CardTitle>
+              <CardDescription>
+                {selected.size === 0
+                  ? 'Отметьте галочками — и здесь появятся кнопки: в круг, почтой, файлом, в мессенджер.'
+                  : `Отмечено: ${selected.size}`}
+              </CardDescription>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={busy || selected.size === 0}
+                onClick={() => shareToCircle(true)}
+              >
+                <Users className="mr-1 h-4 w-4" /> В круг
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={busy || selected.size === 0}
+                onClick={() => shareToCircle(false)}
+              >
+                <UserX className="mr-1 h-4 w-4" /> Убрать из круга
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        {selected.size > 0 && (
+          <CardContent>
+            <DocumentSharePanel me={me} documents={selectedExport} today={today} />
+          </CardContent>
+        )}
+      </Card>
     </div>
   );
 }

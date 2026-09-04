@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   authUser,
@@ -78,12 +78,12 @@ export async function circleFilePath(
   user: SessionUser,
   fileId: number,
 ): Promise<{ path: string; originalName: string } | null> {
-  const ids = [user.id, ...(await visiblePeopleIds(user))];
+  const otherIds = await visiblePeopleIds(user);
   const [row] = await db
     .select({ path: documentFile.path, originalName: documentFile.originalName })
     .from(documentFile)
     .innerJoin(documentsDocument, eq(documentsDocument.id, documentFile.documentId))
-    .where(and(eq(documentFile.id, fileId), inArray(documentsDocument.userId, ids)))
+    .where(and(eq(documentFile.id, fileId), documentVisibleTo(user, otherIds)))
     .limit(1);
   return row ?? null;
 }
@@ -136,16 +136,22 @@ function profileFromRow(row: typeof personProfile.$inferSelect): ProfileValues {
     middleName: row.middleName,
     birthDate: row.birthDate ?? '',
     birthPlace: row.birthPlace,
-    snils: row.snils,
-    inn: row.inn,
-    registrationAddress: row.registrationAddress,
-    actualAddress: row.actualAddress,
-    employer: row.employer,
-    jobTitle: row.jobTitle,
-    phone: row.phone,
-    email: row.email,
     notes: row.notes,
   };
+}
+
+/**
+ * Что из документов человека мне видно: свои — все, чужие — только открытые
+ * кругу явной галочкой (`circle_shared_at`, миграция 0015). Согласие в круге
+ * даётся на человека, а что из документов показывать — решение по каждому.
+ */
+function documentVisibleTo(user: SessionUser, otherIds: number[]) {
+  const mine = eq(documentsDocument.userId, user.id);
+  if (otherIds.length === 0) return mine;
+  return or(
+    mine,
+    and(inArray(documentsDocument.userId, otherIds), isNotNull(documentsDocument.circleSharedAt)),
+  );
 }
 
 export type CircleDocument = {
@@ -157,6 +163,8 @@ export type CircleDocument = {
   issueDate: string | null;
   expiryDate: string | null;
   issuingAuthority: string;
+  /** Открыт кругу; у чужих здесь всегда дата — иначе их бы тут не было. */
+  circleSharedAt: string | null;
   fields: { name: string; value: string }[];
   files: { id: number; originalName: string; isImage: boolean }[];
 };
@@ -167,7 +175,7 @@ export type CircleDocument = {
  * означал бы, что вызывающий сам решает, чьи документы показать.
  */
 export async function listVisibleDocuments(user: SessionUser): Promise<CircleDocument[]> {
-  const ids = [user.id, ...(await visiblePeopleIds(user))];
+  const otherIds = await visiblePeopleIds(user);
 
   const docs = await db
     .select({
@@ -179,9 +187,10 @@ export async function listVisibleDocuments(user: SessionUser): Promise<CircleDoc
       issueDate: documentsDocument.issueDate,
       expiryDate: documentsDocument.expiryDate,
       issuingAuthority: documentsDocument.issuingAuthority,
+      circleSharedAt: documentsDocument.circleSharedAt,
     })
     .from(documentsDocument)
-    .where(inArray(documentsDocument.userId, ids))
+    .where(documentVisibleTo(user, otherIds))
     .orderBy(documentsDocument.userId, documentsDocument.id);
 
   if (docs.length === 0) return [];
