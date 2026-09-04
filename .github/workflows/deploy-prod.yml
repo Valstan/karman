@@ -178,6 +178,12 @@ jobs:
           mkdir -p "$BASE/scripts"
           cp -f "$REL/scripts/"*.sh "$BASE/scripts/" 2>/dev/null || true
           sudo systemctl restart karman
+          # Воркер напоминаний перезапускается ВМЕСТЕ с приложением. Без этого он
+          # переживает деплой в старом релиз-каталоге, а чистка ниже этот каталог
+          # удаляет — 2026-09-04 найден работающим из `releases/e19a8e6 (deleted)`
+          # с 30 августа: три деплоя прошли мимо него, и ничто об этом не сообщало.
+          # Правка reminders-worker.mjs выглядела бы задеплоенной и не была бы ею.
+          sudo systemctl restart karman-reminders
           # держим последние 5 релизов
           ls -1dt "$BASE"/releases/*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf
           echo "deployed $SHA"
