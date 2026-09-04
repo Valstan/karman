@@ -4,6 +4,8 @@ import { esaRedirectUri } from '@/lib/auth/oidc-redirect';
 import {
   clearOidcStateCookie,
   readOidcState,
+  readSessionPayload,
+  setOidcConfirmCookie,
   setSessionCookie,
   setTotpPendingCookie,
 } from '@/lib/auth/session';
@@ -95,6 +97,46 @@ export async function GET(req: Request) {
     return deny(req, 'verify_failed');
   }
 
+  // --- Привязка к существующему аккаунту -------------------------------------
+  //
+  // Ветка режима стоит ДО разрешения личности: у привязки нет ничего общего с
+  // входом, кроме дороги через провайдера. Путь входа (`mode: 'login'`) сюда не
+  // попадает никогда — режим подписан в состоянии, дописать его снаружи нельзя.
+  if (saved.mode === 'link') {
+    await logAuthAudit(null, null, `esa_userinfo:${verified.userinfo}`, ip);
+
+    // Сессия обязана быть ЖИВОЙ и ТОЙ ЖЕ. За время похода в ЕСА человек мог
+    // выйти, войти другим или открыть вторую вкладку — привязка «к текущему
+    // аккаунту» в этих случаях означала бы привязку неизвестно к чему.
+    const session = await readSessionPayload();
+    if (!session || session.uid !== saved.uid) {
+      await logAuthAudit(saved.uid ?? null, null, 'esa_link_fail:session_changed', ip);
+      return NextResponse.redirect(new URL('/settings?esa=link_session', req.url));
+    }
+
+    // Второй фактор: привязка добавляет учётке НОВЫЙ путь входа, то есть меняет
+    // её безопасность. Тот же гейт, что у раздела секретов.
+    if ((await totpEnabled(session.uid)) && !session.mfa) {
+      await logAuthAudit(session.uid, null, 'esa_link_fail:mfa_required', ip);
+      return NextResponse.redirect(new URL('/settings?esa=link_mfa', req.url));
+    }
+
+    // Не привязываем здесь. Кладём проверенный результат в короткоживущую
+    // подписанную cookie и показываем человеку, ЧЬЯ личность вернулась.
+    // Обоснование — у `signOidcConfirm`: `prompt=login` мы просим, но исполнит
+    // ли его провайдер, мы не контролируем, а цена ошибки — чужой ключ от
+    // своей двери. Глазами человека это видно, кодом — нет.
+    await setOidcConfirmCookie({
+      uid: session.uid,
+      issuer: cfg.issuer,
+      subject: verified.claims.subject,
+      email: verified.claims.email,
+      name: verified.claims.name,
+    });
+    await logAuthAudit(session.uid, null, 'esa_link_confirm', ip);
+    return NextResponse.redirect(new URL('/settings?esa=confirm', req.url));
+  }
+
   // Исход userinfo пишется ДО разрешения личности: самый интересный для разбора
   // случай — `not_invited`, и именно в нём диагностика бы потерялась. Владелец
   // получил три таких отказа с пустой почтой, не имея ни одной подсказки почему;
@@ -119,6 +161,9 @@ export async function GET(req: Request) {
       user_inactive: 'inactive',
       ambiguous_email: 'ambiguous',
       not_invited: 'not_invited',
+      // Связь была и её отвязали: предлагать «попросите пригласить» неверно —
+      // человек уже приглашён, он сам её убрал и может привязать заново кнопкой.
+      unlinked: 'unlinked',
     } as const;
     return deny(req, DENY_MARKER[resolved.reason]);
   }

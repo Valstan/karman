@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { authOidcIdentity, authUser } from '@/lib/db/schema';
 import type { OidcClaims } from '@/lib/auth/oidc';
@@ -46,7 +46,7 @@ export type ResolvedLogin = {
 
 export type ResolveFailure = {
   ok: false;
-  reason: 'user_inactive' | 'ambiguous_email' | 'not_invited';
+  reason: 'user_inactive' | 'ambiguous_email' | 'not_invited' | 'unlinked';
 };
 export type ResolveResult = { ok: true; login: ResolvedLogin } | ResolveFailure;
 
@@ -67,7 +67,14 @@ export async function resolveOidcLogin(
     .from(authOidcIdentity)
     .innerJoin(authUser, eq(authUser.id, authOidcIdentity.userId))
     .where(
-      and(eq(authOidcIdentity.issuer, issuer), eq(authOidcIdentity.subject, claims.subject)),
+      and(
+        eq(authOidcIdentity.issuer, issuer),
+        eq(authOidcIdentity.subject, claims.subject),
+        // Отозванная связь пускать не вправе — иначе кнопка «Отвязать» была бы
+        // украшением. Уникальность теперь ЧАСТИЧНАЯ (только живые строки),
+        // поэтому без этого предиката .limit(1) мог бы вернуть отозванную.
+        isNull(authOidcIdentity.revokedAt),
+      ),
     )
     .limit(1);
 
@@ -77,7 +84,10 @@ export async function resolveOidcLogin(
     if (!existing.isActive) return { ok: false, reason: 'user_inactive' };
     await db
       .update(authOidcIdentity)
-      .set({ lastLoginAt: now, email: claims.email })
+      // `?? undefined` — не затираем последнюю известную почту, когда ЕСА её
+      // не отдал: иначе один деградировавший вход стирал бы подпись личности
+      // в панели привязки и половину диагностики `esa_userinfo:*`.
+      .set({ lastLoginAt: now, email: claims.email ?? undefined })
       .where(eq(authOidcIdentity.id, existing.identityId));
     return {
       ok: true,
@@ -87,6 +97,19 @@ export async function resolveOidcLogin(
 
   // --- 2. Подтверждённая почта существующего пользователя ---------------------
   if (claims.emailVerified && claims.email) {
+    // Отвязка — зафиксированное «нет», и почтовое совпадение не вправе его
+    // отменять. Без этой проверки кнопка «Отвязать» была бы обманом: человек
+    // убирает связь, а первый же вход через ЕСА молча заводит её заново, и
+    // частичный индекс этому не мешает — в том и смысл частичности.
+    const [revoked] = await db
+      .select({ id: authOidcIdentity.id })
+      .from(authOidcIdentity)
+      .where(
+        and(eq(authOidcIdentity.issuer, issuer), eq(authOidcIdentity.subject, claims.subject)),
+      )
+      .limit(1);
+    if (revoked) return { ok: false, reason: 'unlinked' };
+
     const matches = await db
       .select({ id: authUser.id, username: authUser.username, isActive: authUser.isActive })
       .from(authUser)

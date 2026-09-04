@@ -5,7 +5,27 @@ import { SignJWT, jwtVerify } from 'jose';
  * используется и в middleware, и в Node-роутах. Без БД и next/headers.
  */
 
-export const SESSION_COOKIE = 'karman_session_v2';
+/**
+ * Имена cookie несут префикс `__Host-` (2026-09-04).
+ *
+ * Причина конкретная, не гигиеническая: КАРМАН живёт на `карман.вмалмыже.рф`,
+ * а ЕСА — на `вход.вмалмыже.рф`, то есть это СОСЕДИ под одним `вмалмыже.рф`.
+ * Любой сосед (свой, захваченный или с XSS) вправе выставить cookie с
+ * `Domain=.вмалмыже.рф`, и она приедет к нам под тем же именем. При двух
+ * cookie с одним именем побеждает та, что пришла в заголовке позже, — то есть
+ * подброшенная. Префикс `__Host-` браузер запрещает ставить вместе с `Domain`,
+ * поэтому подбросить cookie с таким именем сосед физически не может.
+ *
+ * До появления кнопки привязки подмена сессии была обратимой (перелогинился —
+ * и всё). С привязкой она становится НЕОБРАТИМОЙ: человек, сидящий в
+ * подброшенной чужой сессии, отдаёт свою личность ЕСА в чужой аккаунт навсегда.
+ *
+ * Старое имя ещё ЧИТАЕТСЯ (`SESSION_COOKIE_LEGACY`), но больше не пишется —
+ * иначе переименование разлогинило бы всех разом. Через `SESSION_TTL_SECONDS`
+ * (14 дней) все живые сессии переедут сами, и легаси-имя можно убирать.
+ */
+export const SESSION_COOKIE = '__Host-karman_session_v2';
+export const SESSION_COOKIE_LEGACY = 'karman_session_v2';
 export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 14; // 14 дней
 
 const DEV_FALLBACK_SECRET = 'dev-insecure-secret-change-me';
@@ -76,7 +96,8 @@ export async function verifySession(token: string | undefined | null): Promise<n
 
 // --- Промежуточный токен второго шага входа (пароль принят, ждём TOTP-код) ---
 
-export const TOTP_PENDING_COOKIE = 'karman_totp_pending';
+export const TOTP_PENDING_COOKIE = '__Host-karman_totp_pending';
+export const TOTP_PENDING_COOKIE_LEGACY = 'karman_totp_pending';
 export const TOTP_PENDING_TTL_SECONDS = 5 * 60;
 
 export async function signTotpPending(uid: number): Promise<string> {
@@ -101,11 +122,27 @@ export async function verifyTotpPending(token: string | undefined | null): Promi
 
 // --- Состояние браузерного редиректа ЕСА (OIDC state + nonce + PKCE) ---------
 
-export const OIDC_STATE_COOKIE = 'karman_oidc_state';
+export const OIDC_STATE_COOKIE = '__Host-karman_oidc_state';
 /** Пользователь должен успеть пройти чужую форму входа; дольше держать незачем. */
 export const OIDC_STATE_TTL_SECONDS = 10 * 60;
 
-export type OidcStatePayload = { state: string; nonce: string; codeVerifier: string };
+/**
+ * `mode` и `uid` лежат ВНУТРИ подписанного токена, а не в query-параметре.
+ *
+ * Иначе режим подменяется тривиально: начатый кем-то вход дописал бы себе
+ * `mode=link`, и возврат привязал бы чужую личность к той сессии, что окажется
+ * в браузере. Подпись делает режим и адресата решением ТОГО, кто начал поток.
+ *
+ * `uid` заполняется только у `link` и сверяется на возврате с живой сессией:
+ * если человек за время похода в ЕСА вышел или вошёл другим, привязки не будет.
+ */
+export type OidcStatePayload = {
+  state: string;
+  nonce: string;
+  codeVerifier: string;
+  mode: 'login' | 'link';
+  uid?: number;
+};
 
 /**
  * Состояние редиректа едет в подписанной cookie, а не в таблице.
@@ -130,11 +167,79 @@ export async function verifyOidcState(
   try {
     const { payload } = await jwtVerify(token, getSecretKey());
     if (payload.stage !== 'oidc') return null;
-    const { state, nonce, codeVerifier } = payload as Record<string, unknown>;
+    const { state, nonce, codeVerifier, mode, uid } = payload as Record<string, unknown>;
     if (typeof state !== 'string' || typeof nonce !== 'string' || typeof codeVerifier !== 'string') {
       return null;
     }
-    return { state, nonce, codeVerifier };
+    // Режим по умолчанию — вход: cookie, выписанная до этой правки, обязана
+    // доиграть как обычный вход, а не как привязка. Неизвестное значение тоже
+    // считаем входом: привязка требует ЯВНОГО 'link'.
+    const parsedMode = mode === 'link' ? 'link' : 'login';
+    if (parsedMode === 'link' && typeof uid !== 'number') return null;
+    return {
+      state,
+      nonce,
+      codeVerifier,
+      mode: parsedMode,
+      ...(parsedMode === 'link' ? { uid: uid as number } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+// --- Подтверждение привязки личности ЕСА -------------------------------------
+
+export const OIDC_CONFIRM_COOKIE = '__Host-karman_oidc_confirm';
+/** Человеку нужно прочитать одну фразу и нажать кнопку; дольше держать незачем. */
+export const OIDC_CONFIRM_TTL_SECONDS = 3 * 60;
+
+export type OidcConfirmPayload = {
+  uid: number;
+  issuer: string;
+  subject: string;
+  email: string | null;
+  name: string | null;
+};
+
+/**
+ * Привязка НЕ совершается в момент возврата из ЕСА — сначала человек видит,
+ * ЧЬЯ личность вернулась, и подтверждает.
+ *
+ * Это страховка, не зависящая от добросовестности провайдера. Запрос на
+ * привязку уходит с `prompt=login`, то есть ЕСА обязан переспросить человека;
+ * но если он этого не сделает (не поддерживает, игнорирует, скомпрометирован),
+ * вернётся та личность, что уже сидит в браузере. Подложи туда кто-нибудь свою
+ * сессию ЕСА — и человек, нажав «Привязать», отдал бы свой аккаунт: чужой ключ
+ * от своей двери, причём молча. Экран подтверждения делает подмену видимой:
+ * привязывается не «то, что вернулось», а то, что человек прочитал глазами.
+ */
+export async function signOidcConfirm(payload: OidcConfirmPayload): Promise<string> {
+  return new SignJWT({ ...payload, stage: 'oidc_confirm' })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime(`${OIDC_CONFIRM_TTL_SECONDS}s`)
+    .sign(getSecretKey());
+}
+
+export async function verifyOidcConfirm(
+  token: string | undefined | null,
+): Promise<OidcConfirmPayload | null> {
+  if (!token) return null;
+  try {
+    const { payload } = await jwtVerify(token, getSecretKey());
+    if (payload.stage !== 'oidc_confirm') return null;
+    const { uid, issuer, subject, email, name } = payload as Record<string, unknown>;
+    if (typeof uid !== 'number' || typeof issuer !== 'string' || typeof subject !== 'string') {
+      return null;
+    }
+    return {
+      uid,
+      issuer,
+      subject,
+      email: typeof email === 'string' ? email : null,
+      name: typeof name === 'string' ? name : null,
+    };
   } catch {
     return null;
   }

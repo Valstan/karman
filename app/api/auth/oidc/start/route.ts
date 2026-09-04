@@ -48,8 +48,13 @@ export async function GET(req: Request) {
     return NextResponse.redirect(new URL('/login?esa=unavailable', req.url));
   }
 
+  // Этот путь — ВСЕГДА вход и никогда привязка. Режим подписывается вместе с
+  // состоянием, поэтому дописать себе `link` снаружи нельзя: привязку выдаёт
+  // только server action, знающий, КТО её начал (`lib/actions/esa-link.ts`).
   const authRequest = newAuthRequest();
-  await setOidcStateCookie(authRequest);
+  await setOidcStateCookie({ ...authRequest, mode: 'login' });
 
-  return NextResponse.redirect(buildAuthorizeUrl(endpoints, cfg, authRequest, redirectUri));
+  return NextResponse.redirect(
+    buildAuthorizeUrl(endpoints, cfg, authRequest, redirectUri, 'login'),
+  );
 }
