@@ -15,11 +15,15 @@ const NAV = [
   { href: '/payments', label: 'Платежи' },
   { href: '/banks', label: 'Банки' },
   { href: '/reminders', label: 'Напоминания' },
-  { href: '/secrets', label: 'Секреты' },
+  // Раздел секретов — только суперпользователю (решение владельца 2026-09-04).
+  // Это ЛИШЬ витрина: настоящая защита стоит в `requireSecretsUser` и
+  // `requireSecretsAccess`. Прятать пункт меню без них было бы обманом —
+  // адрес /secrets набирается руками.
+  { href: '/secrets', label: 'Секреты', superuserOnly: true },
   { href: '/settings', label: 'Настройки' },
 ] as const;
 
-export function Header({ username }: { username: string }) {
+export function Header({ username, isSuperuser }: { username: string; isSuperuser: boolean }) {
   const pathname = usePathname();
   const router = useRouter();
 
@@ -38,7 +42,7 @@ export function Header({ username }: { username: string }) {
           KARMAN
         </Link>
         <nav className="flex items-center gap-1 overflow-x-auto">
-          {NAV.map((item) => (
+          {NAV.filter((item) => !('superuserOnly' in item) || isSuperuser).map((item) => (
             <Link
               key={item.href}
               href={item.href}

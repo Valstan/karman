@@ -95,6 +95,13 @@ export async function GET(req: Request) {
     return deny(req, 'verify_failed');
   }
 
+  // Исход userinfo пишется ДО разрешения личности: самый интересный для разбора
+  // случай — `not_invited`, и именно в нём диагностика бы потерялась. Владелец
+  // получил три таких отказа с пустой почтой, не имея ни одной подсказки почему;
+  // теперь ответ — один SELECT по auth_audit. Длина: префикс 13 символов плюс
+  // самый длинный исход (16) при varchar(40) у auth_audit.action.
+  await logAuthAudit(null, null, `esa_userinfo:${verified.userinfo}`, ip);
+
   const resolved = await resolveOidcLogin(cfg.issuer, verified.claims);
   if (!resolved.ok) {
     // Колонка username в аудите — varchar(150), а почта бывает длиннее:
