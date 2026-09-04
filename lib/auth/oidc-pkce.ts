@@ -100,6 +100,7 @@ export function buildAuthorizeUrl(
   cfg: OidcConfig,
   req: AuthRequest,
   redirectUri: string,
+  mode: 'login' | 'link' = 'login',
 ): string {
   const url = new URL(endpoints.authorizationEndpoint);
   url.searchParams.set('response_type', 'code');
@@ -110,6 +111,15 @@ export function buildAuthorizeUrl(
   url.searchParams.set('nonce', req.nonce);
   url.searchParams.set('code_challenge', codeChallenge(req.codeVerifier));
   url.searchParams.set('code_challenge_method', 'S256');
+  if (mode === 'link') {
+    // Привязка обязана спросить ИМЕННО ТОГО, кто жмёт кнопку. Без `prompt=login`
+    // провайдер молча переиспользует сессию, уже открытую в браузере: подложи
+    // туда кто-нибудь свою — и человек привяжет к своему аккаунту ЧУЖУЮ
+    // личность, то есть отдаст чужому ключ от своей двери. При входе такого
+    // требования нет: там переиспользование сессии и есть смысл единого входа.
+    url.searchParams.set('prompt', 'login');
+    url.searchParams.set('max_age', '0');
+  }
   return url.toString();
 }
 

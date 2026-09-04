@@ -231,3 +231,32 @@ describe('mergeUserinfo', () => {
     expect(r.outcome).toBe('ok_nothing_new');
   });
 });
+
+describe('buildAuthorizeUrl — режим привязки', () => {
+  const endpoints = {
+    authorizationEndpoint: 'https://esa.example/oidc/authorize',
+    tokenEndpoint: 'https://esa.example/oidc/token',
+    jwksUri: 'https://esa.example/.well-known/jwks.json',
+    userinfoEndpoint: 'https://esa.example/oidc/userinfo',
+  };
+  const cfg = { issuer: 'https://esa.example', clientId: 'karman', clientSecret: 's3cret' };
+  const redirect = 'https://app.example/api/auth/oidc/callback';
+
+  it('привязка требует переспросить человека', () => {
+    // Без prompt=login провайдер молча вернёт личность, уже сидящую в браузере,
+    // и человек привяжет к себе чужой аккаунт.
+    const url = new URL(buildAuthorizeUrl(endpoints, cfg, newAuthRequest(), redirect, 'link'));
+    expect(url.searchParams.get('prompt')).toBe('login');
+    expect(url.searchParams.get('max_age')).toBe('0');
+  });
+
+  it('вход НЕ требует — иначе единый вход перестал бы быть единым', () => {
+    const url = new URL(buildAuthorizeUrl(endpoints, cfg, newAuthRequest(), redirect, 'login'));
+    expect(url.searchParams.get('prompt')).toBeNull();
+  });
+
+  it('по умолчанию это вход', () => {
+    const url = new URL(buildAuthorizeUrl(endpoints, cfg, newAuthRequest(), redirect));
+    expect(url.searchParams.get('prompt')).toBeNull();
+  });
+});

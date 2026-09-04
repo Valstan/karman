@@ -586,6 +586,13 @@ export const authOidcIdentity = pgTable('auth_oidc_identity', {
   origin: varchar('origin', { length: 32 }).notNull().default('provisioned'),
   createdAt: tstz('created_at').notNull().defaultNow(),
   lastLoginAt: tstz('last_login_at'),
+  /**
+   * Отвязка — пометка, а не удаление строки (миграция 0016). Уникальность
+   * держится ЧАСТИЧНЫМИ индексами `WHERE revoked_at IS NULL`, поэтому КАЖДОЕ
+   * чтение этой таблицы, кроме журнала отвязок, обязано нести
+   * `isNull(revokedAt)` — иначе отозванная связь снова начнёт пускать.
+   */
+  revokedAt: tstz('revoked_at'),
 });
 
 /**

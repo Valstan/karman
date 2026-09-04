@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  signOidcConfirm,
+  signOidcState,
   signSession,
   signTotpPending,
+  verifyOidcConfirm,
+  verifyOidcState,
   verifySession,
   verifySessionPayload,
   verifyTotpPending,
@@ -56,5 +60,66 @@ describe('verifySessionPayload', () => {
     expect(await verifySessionPayload(null)).toBeNull();
     expect(await verifySessionPayload(undefined)).toBeNull();
     expect(await verifySessionPayload('не.токен.вовсе')).toBeNull();
+  });
+});
+
+/**
+ * Режим потока ЕСА. Привязка отличается от входа ровно одним полем, и это поле
+ * обязано быть ПОДПИСАННЫМ: иначе начатый кем-то вход дописывает себе `link`,
+ * и возврат привязывает чужую личность к той сессии, что окажется в браузере.
+ */
+describe('verifyOidcState — режим и адресат', () => {
+  const base = { state: 's', nonce: 'n', codeVerifier: 'v' };
+
+  it('вход разбирается как login', async () => {
+    const got = await verifyOidcState(await signOidcState({ ...base, mode: 'login' }));
+    expect(got?.mode).toBe('login');
+    expect(got?.uid).toBeUndefined();
+  });
+
+  it('привязка несёт uid', async () => {
+    const got = await verifyOidcState(await signOidcState({ ...base, mode: 'link', uid: 42 }));
+    expect(got?.mode).toBe('link');
+    expect(got?.uid).toBe(42);
+  });
+
+  it('link без uid отвергается целиком', async () => {
+    // Привязывать «к кому-нибудь» нельзя: адресат обязан быть назван заранее.
+    const forged = await signOidcState({ ...base, mode: 'link' } as never);
+    expect(await verifyOidcState(forged)).toBeNull();
+  });
+
+  it('cookie без режима доигрывает как ВХОД, а не как привязка', async () => {
+    // Выписанные до этой правки состояния обязаны остаться входами: привязка
+    // требует явного 'link'. Иначе выкатка молча превратила бы чужие потоки
+    // в привязки.
+    const legacy = await signOidcState(base as never);
+    const got = await verifyOidcState(legacy);
+    expect(got?.mode).toBe('login');
+  });
+
+  it('чужая подпись не проходит', async () => {
+    expect(await verifyOidcState('явно.не.жетон')).toBeNull();
+  });
+});
+
+describe('verifyOidcConfirm', () => {
+  it('возвращает то, что подписали', async () => {
+    const token = await signOidcConfirm({
+      uid: 7,
+      issuer: 'https://esa.example',
+      subject: 'vk-1',
+      email: 'a@b.c',
+      name: 'Имя',
+    });
+    const got = await verifyOidcConfirm(token);
+    expect(got).toMatchObject({ uid: 7, subject: 'vk-1', email: 'a@b.c' });
+  });
+
+  it('токен состояния не принимается как подтверждение', async () => {
+    // Разные stage — разные полномочия: состояние редиректа не должно
+    // сходить за уже проверенный результат.
+    const state = await signOidcState({ state: 's', nonce: 'n', codeVerifier: 'v', mode: 'login' });
+    expect(await verifyOidcConfirm(state)).toBeNull();
   });
 });
