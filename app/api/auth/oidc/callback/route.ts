@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { esaConfig, esaEndpoints, exchangeAndVerify } from '@/lib/auth/oidc';
-import { esaRedirectUri } from '@/lib/auth/oidc-redirect';
+import { appUrl, esaRedirectUri } from '@/lib/auth/oidc-redirect';
 import {
   clearOidcStateCookie,
   readOidcState,
@@ -22,7 +22,7 @@ function clientIp(req: Request): string | null {
 
 /** Отказ всегда выглядит одинаково для пользователя; причина живёт в аудите. */
 function deny(req: Request, marker: string) {
-  return NextResponse.redirect(new URL(`/login?esa=${marker}`, req.url));
+  return NextResponse.redirect(appUrl(`/login?esa=${marker}`, req));
 }
 
 /**
@@ -111,14 +111,14 @@ export async function GET(req: Request) {
     const session = await readSessionPayload();
     if (!session || session.uid !== saved.uid) {
       await logAuthAudit(saved.uid ?? null, null, 'esa_link_fail:session_changed', ip);
-      return NextResponse.redirect(new URL('/settings?esa=link_session', req.url));
+      return NextResponse.redirect(appUrl('/settings?esa=link_session', req));
     }
 
     // Второй фактор: привязка добавляет учётке НОВЫЙ путь входа, то есть меняет
     // её безопасность. Тот же гейт, что у раздела секретов.
     if ((await totpEnabled(session.uid)) && !session.mfa) {
       await logAuthAudit(session.uid, null, 'esa_link_fail:mfa_required', ip);
-      return NextResponse.redirect(new URL('/settings?esa=link_mfa', req.url));
+      return NextResponse.redirect(appUrl('/settings?esa=link_mfa', req));
     }
 
     // Не привязываем здесь. Кладём проверенный результат в короткоживущую
@@ -134,7 +134,7 @@ export async function GET(req: Request) {
       name: verified.claims.name,
     });
     await logAuthAudit(session.uid, null, 'esa_link_confirm', ip);
-    return NextResponse.redirect(new URL('/settings?esa=confirm', req.url));
+    return NextResponse.redirect(appUrl('/settings?esa=confirm', req));
   }
 
   // Исход userinfo пишется ДО разрешения личности: самый интересный для разбора
@@ -174,7 +174,7 @@ export async function GET(req: Request) {
     await setTotpPendingCookie(userId);
     await logAuthAudit(userId, username, `esa_ok_totp_pending:${outcome}`, ip);
     // Форма входа сама покажет шаг кода, увидев pending-cookie.
-    return NextResponse.redirect(new URL('/login?esa=totp', req.url));
+    return NextResponse.redirect(appUrl('/login?esa=totp', req));
   }
 
   // Второго фактора у пользователя нет — сессия выдаётся без отметки mfa.
@@ -183,5 +183,5 @@ export async function GET(req: Request) {
   // и список кредитов, и список комнат vault у него пустые.
   await setSessionCookie(userId);
   await logAuthAudit(userId, username, `esa_ok:${outcome}`, ip);
-  return NextResponse.redirect(new URL('/', req.url));
+  return NextResponse.redirect(appUrl('/', req));
 }
