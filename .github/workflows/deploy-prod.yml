@@ -44,6 +44,11 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # G322: шаг без `shell: bash` идёт под `bash -e {0}` БЕЗ pipefail — `ssh … | sed`
+    # был бы зелёным при любом исходе ssh. С явным shell раннер добавляет `-o pipefail`.
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - uses: actions/checkout@v5
@@ -162,8 +167,19 @@ jobs:
         run: |
           set -e
           if [ -z "$DEPLOY_BASE" ]; then echo "::error::Не задан secrets.DEPLOY_BASE"; exit 1; fi
-          scp -q karman-app.tgz karman:/tmp/karman-app.tgz
-          ssh karman 'bash -s' "${{ github.sha }}" "$DEPLOY_BASE" <<'REMOTE'
+          # G315: stderr ssh/scp НЕ печатаем. Маскировка бьёт по целому значению секрета,
+          # а `ssh: connect to host <хост> port <порт>` печатает хост и порт отдельными
+          # словами — при первом обрыве связи координаты бокса уехали бы в публичный лог.
+          # Код 255 — «ssh не соединился»; всё остальное — код удалённого скрипта, а его
+          # диагностика идёт в stdout (`exec 2>&1` первой строкой), и она НЕ гасится.
+          set +e
+          scp -q karman-app.tgz karman:/tmp/karman-app.tgz 2>/dev/null
+          rc=$?
+          set -e
+          if [ "$rc" != "0" ]; then echo "::error::scp завершился с кодом $rc; детали не печатаем"; exit "$rc"; fi
+          set +e
+          ssh karman 'bash -s' "${{ github.sha }}" "$DEPLOY_BASE" 2>/dev/null <<'REMOTE'
+          exec 2>&1
           set -e
           SHA="$1"
           BASE="$2"
@@ -188,6 +204,10 @@ jobs:
           ls -1dt "$BASE"/releases/*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf
           echo "deployed $SHA"
           REMOTE
+          rc=$?
+          set -e
+          [ "$rc" = "255" ] && echo "::error::ssh не соединился (255); детали не печатаем"
+          exit "$rc"
 
       # #011 smoke: health + корень (307 → логин без сессии — норма).
       - name: Smoke check
@@ -198,7 +218,10 @@ jobs:
         run: |
           set -e
           if [ -z "$APP_PORT" ]; then echo "::error::Не задан vars.DEPLOY_APP_PORT"; exit 1; fi
-          ssh karman 'bash -s' "$APP_PORT" <<'REMOTE'
+          # G315 — см. комментарий в «Ship artifact + restart».
+          set +e
+          ssh karman 'bash -s' "$APP_PORT" 2>/dev/null <<'REMOTE'
+          exec 2>&1
           set -e
           PORT="$1"
           sleep 5   # дать сервису подняться после restart
@@ -216,6 +239,10 @@ jobs:
           check "/"           "200 307"
           exit $fail
           REMOTE
+          rc=$?
+          set -e
+          [ "$rc" = "255" ] && echo "::error::ssh не соединился (255); детали не печатаем"
+          exit "$rc"
 
       - name: On failure — журналы прода
         if: failure()
@@ -236,6 +263,8 @@ jobs:
               | sed -E 's#(://)[^:/@[:space:]]+:[^@[:space:]]+@#\1***:***@#g'
           }
           # `show` вместо `status`: состояние и счётчик падений без путей и журнала.
-          ssh karman "sudo systemctl show karman -p ActiveState -p SubState -p Result -p ExecMainStatus -p NRestarts" 2>&1 | redact || true
+          # G315: stderr ssh-клиента (хост и порт при обрыве) в лог не идёт; stderr
+          # удалённых команд и так пуст — их stdout едет через redact.
+          ssh karman "sudo systemctl show karman -p ActiveState -p SubState -p Result -p ExecMainStatus -p NRestarts" 2>/dev/null | redact || true
           # `-o cat` — только сообщение, без метки времени и хостнейма в каждой строке.
-          ssh karman "sudo journalctl -u karman -n 80 --no-pager -o cat" 2>&1 | redact || true
+          ssh karman "sudo journalctl -u karman -n 80 --no-pager -o cat" 2>/dev/null | redact || true
