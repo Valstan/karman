@@ -25,3 +25,19 @@ export function esaRedirectUri(): string | null {
     return null;
   }
 }
+
+/**
+ * Абсолютный адрес страницы приложения для редиректов из OIDC-роутов.
+ *
+ * `req.url` тут НЕ годится: standalone-сервер Next собирает его из адреса, на
+ * котором слушает (`HOSTNAME=127.0.0.1`, `PORT`), а не из заголовка `Host`, —
+ * на проде за nginx все `NextResponse.redirect(new URL(path, req.url))` уводили
+ * человека на `https://localhost:3002/…` (2026-09-05, владелец не смог войти через
+ * ЕСА). Заголовок `Host` тоже не источник (host-header injection). Единственный
+ * доверенный origin — тот же `ESA_REDIRECT_URI`, что зарегистрирован у провайдера.
+ * Без него (локальная разработка без ЕСА) — прежнее поведение.
+ */
+export function appUrl(path: string, req: { url: string }): URL {
+  const origin = esaRedirectUri();
+  return new URL(path, origin ?? req.url);
+}

@@ -9,7 +9,7 @@ import {
   userinfoNeeded,
 } from './oidc-pkce';
 import type { OidcClaims } from './oidc-pkce';
-import { esaRedirectUri } from './oidc-redirect';
+import { appUrl, esaRedirectUri } from './oidc-redirect';
 
 /**
  * Тесты чистой части входа через ЕСА. Сетевые куски (discovery, обмен кода,
@@ -98,6 +98,22 @@ describe('esaRedirectUri', () => {
     expect(esaRedirectUri()).toBe('https://example.org/api/auth/oidc/callback');
     process.env.ESA_REDIRECT_URI = 'не-url';
     expect(esaRedirectUri()).toBeNull();
+  });
+});
+
+describe('appUrl — редиректы не зависят от адреса, на котором слушает сервер', () => {
+  const req = { url: 'http://localhost:3002/api/auth/oidc/callback?code=x' };
+
+  it('origin берётся из ESA_REDIRECT_URI, путь и query — из аргумента', () => {
+    process.env.ESA_REDIRECT_URI = 'https://example.org/api/auth/oidc/callback';
+    expect(appUrl('/login?esa=not_invited', req).toString()).toBe(
+      'https://example.org/login?esa=not_invited',
+    );
+  });
+
+  it('без ESA_REDIRECT_URI — прежнее поведение от req.url', () => {
+    delete process.env.ESA_REDIRECT_URI;
+    expect(appUrl('/login?esa=off', req).toString()).toBe('http://localhost:3002/login?esa=off');
   });
 });
 

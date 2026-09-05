@@ -7,7 +7,7 @@ import {
 } from '@/lib/auth/oidc';
 import { setOidcStateCookie } from '@/lib/auth/session';
 import { logAuthAudit } from '@/lib/services/twofactor';
-import { esaRedirectUri } from '@/lib/auth/oidc-redirect';
+import { appUrl, esaRedirectUri } from '@/lib/auth/oidc-redirect';
 
 // node:crypto для PKCE — Edge не подходит.
 export const runtime = 'nodejs';
@@ -29,13 +29,13 @@ function clientIp(req: Request): string | null {
 export async function GET(req: Request) {
   const cfg = esaConfig();
   if (!cfg) {
-    return NextResponse.redirect(new URL('/login?esa=off', req.url));
+    return NextResponse.redirect(appUrl('/login?esa=off', req));
   }
 
   const redirectUri = esaRedirectUri();
   if (!redirectUri) {
     await logAuthAudit(null, null, 'esa_misconfigured', clientIp(req));
-    return NextResponse.redirect(new URL('/login?esa=off', req.url));
+    return NextResponse.redirect(appUrl('/login?esa=off', req));
   }
 
   let endpoints;
@@ -45,7 +45,7 @@ export async function GET(req: Request) {
     // Провайдер недоступен — это не ошибка пользователя и не повод показывать
     // ему внутренности. Возвращаем на форму с понятным маркером.
     await logAuthAudit(null, null, 'esa_discovery_failed', clientIp(req));
-    return NextResponse.redirect(new URL('/login?esa=unavailable', req.url));
+    return NextResponse.redirect(appUrl('/login?esa=unavailable', req));
   }
 
   // Этот путь — ВСЕГДА вход и никогда привязка. Режим подписывается вместе с
