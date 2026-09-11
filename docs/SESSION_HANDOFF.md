@@ -155,13 +155,16 @@ critical RCE (GHSA-p293-qw3h-jr36, GHSA-2xp9-vwfh-vxw4), `sharp` — high. Пр�
 
 ## Следующий шаг
 
-0. **Воркер — ход владельца:** Cloudflare → Workers → `karman-tg` → вставить
-   `scripts/cloudflare/karman-tg.js` целиком → Deploy; Settings → Variables → секрет
-   `RELAY_SECRET` = значение `TELEGRAM_RELAY_SECRET` из env-файла бокса
-   (`ssh karman 'grep ^TELEGRAM_RELAY_SECRET= $(systemctl show karman -p EnvironmentFiles --value)'`).
-   **Приёмка подсадным (#114)** — три `curl` из `docs/telegram-reminders.md`: без
-   заголовка 403, с заголовком `getMe` 200, `deleteWebhook` 404. Потом — письмо brain
-   (ответ на 09.09, `ack: report`), в нём же строки на 06.09 и 07.09.
+0. ~~**Воркер — ход владельца**~~ — **сделано 11.09 вечером**, вместе: переменная
+   `RELAY_SECRET` (значение вставил владелец, через мой контекст не проходило), код
+   вставлен через буфер обмена в редактор CF (Claude in Chrome; набор в Monaco искажает
+   скобки), Deploy. **Приёмка подсадным с бокса:** 403 / 403 (неверный) / 200 `getMe` /
+   404 `deleteWebhook` / 405 `DELETE` / 404 корень. Воркер напоминаний молчит = поллинг
+   идёт. Письмо brain —
+   `mailbox/to-brain/2026-09-11-karman-tg-is-ours-and-live-closed-with-x-relay-secret-accepted-by-403.md`
+   (в нём же строки на 06.09 и 07.09). Ложная тревога, пойманная до письма: `GET /file/bot…`
+   с чужими токенами в консоли редактора — это Preview-панель подтянула картинки
+   проксированной страницы Telegram, не чужой трафик.
 0a. **D-078 — вопрос владельцу:** комнату `kalininocks` удалил он и когда? Brain ждёт
    «удалена, дата, что ушло каскадом по факту» — фактов в БД уже нет.
 0b. **G331 (brain 08.09, recommend):** отличима ли у клиента пустая выдача от успешной —
