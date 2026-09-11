@@ -13,6 +13,17 @@ import type { SendMessageParams, TgInlineKeyboard, TgResult } from './types';
 // (напр. Cloudflare Worker). Реле проксирует /bot<token>/<method> на api.telegram.org.
 // См. docs/telegram-reminders.md.
 const API_BASE = (process.env.TELEGRAM_API_BASE || 'https://api.telegram.org').replace(/\/+$/, '');
+// Реле закрыто общим секретом (X-Relay-Secret): без него воркер отвечает 403.
+// Прямому api.telegram.org заголовок не нужен — задаётся только вместе с реле.
+const RELAY_SECRET = process.env.TELEGRAM_RELAY_SECRET || '';
+
+function apiHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (RELAY_SECRET) {
+    headers['x-relay-secret'] = RELAY_SECRET;
+  }
+  return headers;
+}
 
 type TgApiEnvelope<T> = {
   ok: boolean;
@@ -31,7 +42,7 @@ async function callMethod<T>(method: string, params: Record<string, unknown>): P
   try {
     res = await fetch(`${API_BASE}/bot${token}/${method}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: apiHeaders(),
       body: JSON.stringify(params),
     });
   } catch (error) {

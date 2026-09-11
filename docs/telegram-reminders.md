@@ -25,6 +25,7 @@ TELEGRAM_BOT_USERNAME=<имя_бота_без_@>
 REMINDERS_INTERNAL_SECRET=<openssl rand -base64 48>
 # Только если api.telegram.org заблокирован (см. ниже) — иначе НЕ задавать:
 TELEGRAM_API_BASE=https://<relay-host>
+TELEGRAM_RELAY_SECRET=<openssl rand -base64 36>   # тот же, что RELAY_SECRET у воркера
 ```
 
 Веб-приложение НЕ падает без них (ядро самодостаточно) — фича напоминаний просто
@@ -37,30 +38,38 @@ egress живые — проверка: `curl -m10 https://api.telegram.org/botX
 `curl https://www.google.com` → 200). И отправка (`sendMessage`), и опрос
 (`getUpdates`) ходят на `api.telegram.org` → оба не работают напрямую.
 
-**Решение — relay вне блока.** IP Cloudflare в РФ не блокируются, поэтому подойдёт
-бесплатный Cloudflare Worker, проксирующий запросы на Telegram:
+**Решение — relay вне блока.** IP Cloudflare в РФ не блокируются, поэтому работает
+бесплатный Cloudflare Worker `karman-tg`. Исходник — `scripts/cloudflare/karman-tg.js`,
+контракт держит `karman-tg.test.ts`. Деплоится **руками владельца** через панель
+Cloudflare (аккаунт его, wrangler в проекте нет): Workers → `karman-tg` → Edit code →
+вставить файл целиком → Deploy; Settings → Variables → секрет `RELAY_SECRET`.
 
-```js
-// Cloudflare Worker: проксирует /bot<token>/<method> на api.telegram.org
-export default {
-  async fetch(req) {
-    const url = new URL(req.url);
-    const target = 'https://api.telegram.org' + url.pathname + url.search;
-    return fetch(target, { method: req.method, headers: req.headers, body: req.body });
-  },
-};
+**Реле закрыто, а не прозрачно.** До 2026-09 воркер проксировал всё подряд без единой
+проверки — кто угодно, узнав адрес, гонял через аккаунт владельца произвольные вызовы
+Bot API со своим токеном (мандат brain 09.09). Теперь воркер требует заголовок
+`X-Relay-Secret`, равный `RELAY_SECRET`; без переменной он отвечает 503 (закрыт, не
+открыт); пропускает только `GET`/`POST` на `/bot<token>/<метод>` из allowlist
+(`getUpdates`, `sendMessage`, `answerCallbackQuery`, `editMessageReplyMarkup`, `getMe`);
+наружу отдаёт только `content-type`.
+
+На проде тот же секрет — в env-файле сервиса (см. `EnvironmentFile` в юните):
+
 ```
-
-Задеплоить (workers.dev URL вида `https://karman-tg.<sub>.workers.dev`), затем на проде:
-
-```
-TELEGRAM_API_BASE=https://karman-tg.<sub>.workers.dev   # в env-файле сервиса (см. EnvironmentFile в systemd-юните)
+TELEGRAM_API_BASE=https://karman-tg.<sub>.workers.dev
+TELEGRAM_RELAY_SECRET=<тот же, что RELAY_SECRET у воркера>
 sudo systemctl restart karman-reminders karman
 ```
 
-Код читает `TELEGRAM_API_BASE` и в воркере, и в Next-клиенте; реле прозрачно
-проксирует `/bot<token>/<method>`. Защитить Worker от посторонних можно по желанию
-(секретный путь/заголовок) — токен и так в URL только между нами и реле по HTTPS.
+Заголовок шлют все три клиента (`lib/telegram/client.ts`, `scripts/reminders-worker.mjs`,
+`scripts/health_watch.sh`) только когда переменная задана. Порядок выкатки без обрыва:
+сначала секрет в env бокса + рестарт (старый воркер лишний заголовок игнорирует), потом
+воркер. **Приёмка — подсадным запросом (#114), а не чтением панели:**
+
+```
+curl -s -o /dev/null -w '%{http_code}\n' "$TELEGRAM_API_BASE/bot$TELEGRAM_BOT_TOKEN/getMe"                              # → 403
+curl -s -o /dev/null -w '%{http_code}\n' -H "X-Relay-Secret: $TELEGRAM_RELAY_SECRET" "$TELEGRAM_API_BASE/bot$TELEGRAM_BOT_TOKEN/getMe"   # → 200
+curl -s -o /dev/null -w '%{http_code}\n' -H "X-Relay-Secret: $TELEGRAM_RELAY_SECRET" "$TELEGRAM_API_BASE/bot$TELEGRAM_BOT_TOKEN/deleteWebhook"   # → 404
+```
 
 ## Применить миграцию (вручную, ДО деплоя)
 

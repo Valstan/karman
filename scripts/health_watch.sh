@@ -28,7 +28,8 @@
 #
 # Требуемые env: DATABASE_URL, TELEGRAM_BOT_TOKEN (штатные, уже есть).
 # Необязательные: TELEGRAM_API_BASE (реле; см. G307 — прямой api.telegram.org
-# с боксов jino теряет примерно половину SYN), HEALTH_STATE_DIR, HEALTH_BACKUP_LOG.
+# с боксов jino теряет примерно половину SYN) и TELEGRAM_RELAY_SECRET (его
+# секрет), HEALTH_STATE_DIR, HEALTH_BACKUP_LOG.
 
 # ВНИМАНИЕ: намеренно БЕЗ `set -e`. В сторожевом скрипте `-e` — ловушка: первая
 # же неуспешная проверка (а неуспех здесь — штатный результат, ради него всё и
@@ -95,8 +96,13 @@ send_telegram() {
   base="${TELEGRAM_API_BASE:-https://api.telegram.org}"
   base="${base%/}"
   api="$base/bot$TELEGRAM_BOT_TOKEN/sendMessage"
+  # Реле закрыто общим секретом; без него воркер отвечает 403 (в ветку «не
+  # повторяем» — и правильно, повтор тут не поможет). Прямому Bot API не нужен.
+  relay_hdr="X-Relay-Secret: ${TELEGRAM_RELAY_SECRET:-}"
+  [ -n "${TELEGRAM_RELAY_SECRET:-}" ] || relay_hdr='X-Relay-Unset: 1'
   for attempt in 1 2 3 4 5 6; do
     status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 12 \
+      -H "$relay_hdr" \
       --data-urlencode "chat_id=$chat" \
       --data-urlencode "text=$text" \
       "$api" 2>/dev/null)"
