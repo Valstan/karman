@@ -146,6 +146,7 @@ curl -s -o /dev/null -w "%{http_code}\n" \
   -H "Authorization: Bearer $SECRETS_TOKEN" \
   "$VAULT_URL/api/secrets"
 # 200 — токен валиден (пустая комната вернёт {"secrets":{}}); 401 — токен битый/отозван.
+# Это проверка ТОКЕНА, не доставки: для bootstrap'а перечисляйте ожидаемые ключи (ниже, G331).
 ```
 
 ## Сохранить свои секреты (POST, bulk upsert)
@@ -168,7 +169,26 @@ curl -H "Authorization: Bearer $SECRETS_TOKEN" "$VAULT_URL/api/secrets"
 # один ключ:
 curl -H "Authorization: Bearer $SECRETS_TOKEN" \
   "$VAULT_URL/api/secrets?key=DB_PASSWORD"
+
+# bootstrap: перечислите ВСЁ, что ожидаете, — промах любого ключа даёт 404 с именами
+curl -fsS -H "Authorization: Bearer $SECRETS_TOKEN" \
+  "$VAULT_URL/api/secrets?key=DB_PASSWORD,SOME_API_KEY,TELEGRAM_BOT_TOKEN"
+# → 200 {"secrets":{…три ключа…}}
+# → 404 {"error":"Не найдено ключей: 1 из 3","missing":["TELEGRAM_BOT_TOKEN"]}  — и curl -f падает
 ```
+
+### Пустая выдача обязана быть громкой (G331)
+
+`GET /api/secrets` **без** `key` на пустой комнате отвечает `200 {"secrets":{}}` — это
+правильный ответ на вопрос «что у меня есть», но **негодный для bootstrap'а**: потребитель,
+которому не выдали ничего, и потребитель, которому ничего и не полагается, получают один и
+тот же результат — тишину. Сосед 07.09 на этом едва не ответил на вопрос о безопасности
+уверенно и неверно (G331 в библиотеке brain).
+
+Поэтому bootstrap **всегда** ходит с перечнем ожидаемого (`?key=A,B,C` или `?key=A&key=B`):
+любой промах — `404` и поле `missing` с именами, `curl -f` и `raise_for_status()` падают
+сами, без чтения вывода. Молчание остаётся только у запроса без `key` — там «ожидалось
+то, что есть». В аудите промах виден строкой `pull_miss` со списком.
 
 ## Node-сниппет
 
@@ -185,8 +205,11 @@ export async function saveSecrets(secrets) {
   return r.json(); // { ok, written }
 }
 
-export async function loadSecrets() {
-  const r = await fetch(BASE, { headers });
+// expect — список ожидаемых ключей; промах любого → исключение с именами (G331).
+// Без expect — «что есть», пустая комната вернёт {} молча.
+export async function loadSecrets(expect = []) {
+  const url = expect.length ? `${BASE}?key=${expect.join(',')}` : BASE;
+  const r = await fetch(url, { headers });
   if (!r.ok) throw new Error(`secrets load failed: ${r.status} ${await r.text()}`);
   return (await r.json()).secrets; // { KEY: value, ... }
 }
@@ -205,8 +228,10 @@ def save_secrets(secrets: dict) -> dict:
     r.raise_for_status()
     return r.json()  # {"ok": True, "written": N}
 
-def load_secrets() -> dict:
-    r = requests.get(BASE, headers=HEADERS, timeout=10)
+def load_secrets(expect: list[str] = ()) -> dict:
+    # expect — ожидаемые ключи; промах любого → HTTPError 404 с телом {"missing": [...]} (G331)
+    params = {"key": ",".join(expect)} if expect else None
+    r = requests.get(BASE, headers=HEADERS, params=params, timeout=10)
     r.raise_for_status()
     return r.json()["secrets"]  # {"KEY": "value", ...}
 ```
