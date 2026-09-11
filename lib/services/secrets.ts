@@ -1328,17 +1328,22 @@ async function resolveApiToken(rawToken: string): Promise<TokenResolution> {
 
 export type PullResult =
   | { ok: true; secrets: Record<string, string> }
-  | { ok: false; status: 401 | 404 | 500; error: string };
+  | { ok: false; status: 401 | 500; error: string }
+  // 404 несёт список промахов: потребитель обязан видеть, ЧЕГО не выдали (G331).
+  | { ok: false; status: 404; error: string; missing: string[] };
 
 /**
  * Выдаёт секреты проекта по токену (plaintext). Проверяет токен по хэшу, пишет
- * аудит, обновляет last_used_at. keyFilter — вернуть один ключ (или 404).
+ * аудит, обновляет last_used_at. keyFilter — вернуть только перечисленные ключи;
+ * промах любого из них — 404 с `missing` (G331: пустая выдача обязана быть громкой,
+ * молчание — только для запроса без фильтра, где «ожидалось что есть»).
  */
 export async function pullByToken(
   rawToken: string,
   ip: string | null,
-  keyFilter?: string,
+  keyFilter?: string | string[],
 ): Promise<PullResult> {
+  const wanted = keyFilter === undefined ? undefined : Array.isArray(keyFilter) ? keyFilter : [keyFilter];
   const resolved = await resolveApiToken(rawToken);
   if (!resolved.ok) {
     await logAudit(resolved.projectId, resolved.tokenId, 'pull_denied', resolved.reason, ip);
@@ -1383,19 +1388,30 @@ export async function pullByToken(
 
     await db.update(secretsToken).set({ lastUsedAt: isoNow() }).where(eq(secretsToken.id, tok.id));
 
-    if (keyFilter !== undefined) {
-      if (!(keyFilter in secrets)) {
-        await logAudit(tok.projectId, tok.id, 'pull_miss', keyFilter, ip, actor);
-        return { ok: false, status: 404, error: 'Ключ не найден' };
+    if (wanted !== undefined) {
+      const missing = wanted.filter((k) => !(k in secrets));
+      if (missing.length > 0) {
+        await logAudit(tok.projectId, tok.id, 'pull_miss', missing.join(','), ip, actor);
+        return {
+          ok: false,
+          status: 404,
+          error: `Не найдено ключей: ${missing.length} из ${wanted.length}`,
+          missing,
+        };
       }
-      await logAudit(tok.projectId, tok.id, 'pull', `key=${keyFilter}`, ip, actor);
+      await logAudit(tok.projectId, tok.id, 'pull', `key=${wanted.join(',')}`, ip, actor);
+      const asked = new Set(wanted);
       await logGrantReads(
         tok.projectId,
-        delivered.filter((g) => g.aliasKey === keyFilter),
+        delivered.filter((g) => asked.has(g.aliasKey)),
         ip,
         actor,
       );
-      return { ok: true, secrets: { [keyFilter]: secrets[keyFilter]! } };
+      const picked: Record<string, string> = {};
+      for (const k of wanted) {
+        picked[k] = secrets[k]!;
+      }
+      return { ok: true, secrets: picked };
     }
 
     await logAudit(

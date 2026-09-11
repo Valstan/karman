@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { pullByToken, pushByToken } from '@/lib/services/secrets';
 import { rateLimit } from '@/lib/secrets/rate-limit';
+import { parsePullKeys } from '@/lib/secrets/pull-keys';
 import { secretPushSchema } from '@/lib/validation/secret';
 
 // Шифрование/расшифровка (node:crypto) требует Node runtime.
@@ -9,7 +10,10 @@ export const runtime = 'nodejs';
 /**
  * Машинный доступ проектов к секретам.
  *   GET  /api/secrets            → { secrets: { KEY: value, ... } }
- *   GET  /api/secrets?key=FOO    → { secrets: { FOO: value } } (или 404)
+ *   GET  /api/secrets?key=FOO    → { secrets: { FOO: value } }
+ *   GET  /api/secrets?key=A&key=B (или ?key=A,B)
+ *                                → { secrets: { A, B } }; промах любого → 404 { missing: [...] }
+ *                                  (G331: пустая выдача громкая, молчит только запрос без key)
  *   POST /api/secrets            → запись (upsert), тело { secrets: { KEY: value } };
  *                                  требует токен с правом записи (can_write).
  * Авторизация: `Authorization: Bearer skm_…` (токен проекта).
@@ -37,10 +41,14 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'Слишком много запросов' }, { status: 429 });
   }
 
-  const key = new URL(req.url).searchParams.get('key') ?? undefined;
-  const result = await pullByToken(token, ip, key);
+  const keys = parsePullKeys(new URL(req.url).searchParams);
+  if (!keys.ok) {
+    return NextResponse.json({ error: keys.error }, { status: 400 });
+  }
+  const result = await pullByToken(token, ip, keys.keys);
   if (!result.ok) {
-    return NextResponse.json({ error: result.error }, { status: result.status });
+    const body = result.status === 404 ? { error: result.error, missing: result.missing } : { error: result.error };
+    return NextResponse.json(body, { status: result.status });
   }
   return NextResponse.json({ secrets: result.secrets }, { headers: { 'Cache-Control': 'no-store' } });
 }
