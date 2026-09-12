@@ -20,6 +20,8 @@ const NAV = [
   // `requireSecretsAccess`. Прятать пункт меню без них было бы обманом —
   // адрес /secrets набирается руками.
   { href: '/secrets', label: 'Секреты', superuserOnly: true },
+  // Карта экосистемы (решение владельца 11.09): данные от Мозга, файл вне репо (D-038).
+  { href: '/map', label: 'Карта' },
   { href: '/settings', label: 'Настройки' },
 ] as const;
 
