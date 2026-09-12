@@ -106,6 +106,14 @@ export const DOCUMENT_TEMPLATES: readonly DocumentTemplate[] = [
     fields: ['Серия', 'Звание', 'Категория годности', 'ВУС', 'Военкомат', 'Дата постановки на учёт'],
   },
   {
+    id: 'photo',
+    label: 'Фотография (для карточки человека)',
+    documentType: 'Фото',
+    category: 'Личные документы',
+    coreless: true,
+    fields: ['Когда снято'],
+  },
+  {
     id: 'contacts',
     label: 'Телефоны и почта',
     documentType: 'Контакты',

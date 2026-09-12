@@ -3,11 +3,12 @@
 import { Fragment, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Pencil, Trash2, Search, FileText, Share2, Users, UserX } from 'lucide-react';
+import { Pencil, Trash2, Search, FileText, Share2, Users, UserX, CheckSquare, Square } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { cn } from '@/lib/utils';
 import {
   Dialog,
   DialogContent,
@@ -32,6 +33,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { DocumentFormDialog } from './document-form-dialog';
+import { PeopleCards, type PersonCard } from './people-cards';
 import { DocumentSharePanel } from './document-share-panel';
 import { ConfirmDialog } from './confirm-dialog';
 import { deleteDocumentAction, setCircleSharedAction } from '@/lib/actions/documents';
@@ -141,6 +143,61 @@ export function DocumentsTable({
       ),
     [documents],
   );
+
+  // Карточки людей: владелец аккаунта первым, дальше — по алфавиту. «Фото» —
+  // документ вида «Фото» этого человека, иначе первый скан паспорта.
+  const people = useMemo<PersonCard[]>(() => {
+    const keys = ['', ...holders];
+    return keys.map((key) => {
+      const own = documents.filter((d) => d.holder === key);
+      const photo =
+        own.find((d) => /^фото/i.test(d.documentType) && d.previewFileId !== null) ??
+        own.find((d) => /паспорт/i.test(d.documentType) && d.isActive && d.previewFileId !== null);
+      return {
+        key,
+        name: key === '' ? me.name : key,
+        docCount: own.length,
+        fileCount: own.reduce((n, d) => n + d.fileCount, 0),
+        avatarUrl: photo ? `/api/documents/${photo.id}/files/${photo.previewFileId}` : null,
+      };
+    });
+  }, [documents, holders, me.name]);
+
+  // Выборка «люди × виды документов» для скачивания / «поделиться» (решение
+  // владельца 2026-09-12). Пустой набор людей = все люди, пустой набор видов = все.
+  const [pickedPeople, setPickedPeople] = useState<Set<string>>(new Set());
+  const [pickedCats, setPickedCats] = useState<Set<number>>(new Set());
+
+  function togglePerson(key: string) {
+    setPickedPeople((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+  function toggleCat(id: number) {
+    setPickedCats((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function applyPick() {
+    const ids = documents
+      .filter((d) => pickedPeople.size === 0 || pickedPeople.has(d.holder))
+      .filter((d) => pickedCats.size === 0 || pickedCats.has(d.categoryId))
+      .map((d) => d.id);
+    setSelected(new Set(ids));
+    if (ids.length === 0) toast.error('Под такой выбор документов нет');
+    else toast.success(`Отмечено документов: ${ids.length}`);
+  }
+  const activeKey = holder === 'all' ? null : holder === 'mine' ? '' : holder;
+  function openPerson(key: string) {
+    const target = key === '' ? 'mine' : key;
+    setHolder((prev) => (prev === target ? 'all' : target));
+  }
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
 
@@ -237,7 +294,66 @@ export function DocumentsTable({
     query.trim() !== '' || status !== 'all' || categoryId !== 'all' || holder !== 'all';
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-4">
+      <PeopleCards
+        people={people}
+        activeKey={activeKey}
+        picked={pickedPeople}
+        onOpen={openPerson}
+        onTogglePick={togglePerson}
+      />
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Собрать выборку</CardTitle>
+          <CardDescription>
+            Отметьте людей галочками на карточках (никого — значит все) и виды документов
+            (ничего — значит все), затем «Отметить документы»: ниже появятся кнопки «поделиться»,
+            .zip со сканами, Word, печать.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-center gap-2">
+          {categories.map((category) => {
+            const on = pickedCats.has(category.id);
+            return (
+              <button
+                key={category.id}
+                type="button"
+                onClick={() => toggleCat(category.id)}
+                aria-pressed={on}
+                className={cn(
+                  'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm transition-colors',
+                  on
+                    ? 'border-primary bg-primary text-primary-foreground'
+                    : 'border-border bg-background hover:bg-accent hover:text-accent-foreground',
+                )}
+              >
+                {on ? <CheckSquare className="size-4" /> : <Square className="size-4" />}
+                {category.name}
+              </button>
+            );
+          })}
+          <div className="ml-auto flex flex-wrap gap-2">
+            <Button type="button" onClick={applyPick}>
+              Отметить документы
+              {pickedPeople.size > 0 && ` · людей: ${pickedPeople.size}`}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={selected.size === 0 && pickedPeople.size === 0 && pickedCats.size === 0}
+              onClick={() => {
+                setSelected(new Set());
+                setPickedPeople(new Set());
+                setPickedCats(new Set());
+              }}
+            >
+              Снять выбор
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <div className="relative sm:max-w-xs">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -350,8 +466,8 @@ export function DocumentsTable({
                         onChange={() => toggle(doc.id)}
                       />
                     </TableCell>
-                    <TableCell className="font-medium">
-                      <Link href={`/documents/${doc.id}`} className="hover:underline">
+                    <TableCell className="min-w-[12rem] font-medium">
+                      <Link href={`/documents/${doc.id}`} className="line-clamp-2 hover:underline">
                         <HighlightedText text={doc.title} ranges={rangesFor(index, 0)} />
                       </Link>
                       {doc.documentType && doc.documentType !== doc.title && (
@@ -360,7 +476,7 @@ export function DocumentsTable({
                         </span>
                       )}
                     </TableCell>
-                    <TableCell className="whitespace-nowrap">
+                    <TableCell className="min-w-[9rem]">
                       {doc.holder ? (
                         <HighlightedText text={doc.holder} ranges={rangesFor(index, 5)} />
                       ) : (
@@ -381,7 +497,7 @@ export function DocumentsTable({
                         '—'
                       )}
                     </TableCell>
-                    <TableCell>{formatDate(doc.issueDate)}</TableCell>
+                    <TableCell className="whitespace-nowrap">{formatDate(doc.issueDate)}</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
                         <span>{formatDate(doc.expiryDate)}</span>

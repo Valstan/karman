@@ -10,8 +10,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   return (
     <div className="flex min-h-screen flex-col">
       <Header username={user.username} isSuperuser={user.isSuperuser} />
-      <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 md:px-6">{children}</main>
-      <footer className="border-t py-4 text-center text-sm text-muted-foreground">
+      {/* Во всю ширину экрана (решение владельца 2026-09-12); поля растут с экраном. */}
+      <main className="w-full flex-1 px-3 py-5 sm:px-5 md:px-8 xl:px-12">{children}</main>
+      <footer className="border-t border-white/10 py-4 text-center text-sm text-white/70">
         {/* Концепция владельца 2026-09-12: KARMAN — карман, куда складываешь всё своё. */}
         <p>KARMAN — всё своё при себе</p>
         {/* Подпись автора — решение владельца 2026-08-01, единое для всей экосистемы. */}
@@ -21,7 +22,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             href="https://xn--80adkmnnb2b.xn--80adkdyec4j.xn--p1ai/"
             target="_blank"
             rel="noopener noreferrer"
-            className="underline underline-offset-2 hover:text-foreground"
+            className="underline underline-offset-2 hover:text-accent"
           >
             Валентином Савиных
           </a>
