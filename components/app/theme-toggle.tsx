@@ -10,6 +10,7 @@ export function ThemeToggle() {
     <Button
       variant="ghost"
       size="icon"
+      className="text-white hover:bg-white/10 hover:text-accent"
       onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
       aria-label="Сменить тему"
     >

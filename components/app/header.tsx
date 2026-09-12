@@ -25,6 +25,11 @@ const NAV = [
   { href: '/settings', label: 'Настройки' },
 ] as const;
 
+/**
+ * Шапка — тёмная полоса во всю ширину (решение владельца 2026-09-12). Пункты
+ * разделов — тёмные «кнопки» со светлым текстом; текущий раздел — инверсия:
+ * жёлтый фон, тёмный текст, чтобы было видно, где ты.
+ */
 export function Header({ username, isSuperuser }: { username: string; isSuperuser: boolean }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -38,19 +43,22 @@ export function Header({ username, isSuperuser }: { username: string; isSuperuse
   }
 
   return (
-    <header className="sticky top-0 z-20 border-b bg-background/95 backdrop-blur">
-      <div className="mx-auto flex h-14 w-full max-w-6xl items-center gap-4 px-4 md:px-6">
-        <Link href="/" className="text-lg font-bold tracking-tight">
+    <header className="sticky top-0 z-20 border-b border-white/10 bg-primary text-white shadow-md">
+      <div className="flex min-h-14 w-full flex-wrap items-center gap-x-4 gap-y-1 px-3 py-1.5 sm:px-5 md:px-8 xl:px-12">
+        <Link href="/" className="text-lg font-bold tracking-tight text-accent">
           KARMAN
         </Link>
-        <nav className="flex items-center gap-1 overflow-x-auto">
+        <nav className="flex flex-1 flex-wrap items-center gap-1">
           {NAV.filter((item) => !('superuserOnly' in item) || isSuperuser).map((item) => (
             <Link
               key={item.href}
               href={item.href}
+              aria-current={isActive(item.href) ? 'page' : undefined}
               className={cn(
-                'rounded-md px-3 py-1.5 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground',
-                isActive(item.href) ? 'bg-accent text-accent-foreground' : 'text-muted-foreground',
+                'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                isActive(item.href)
+                  ? 'bg-accent text-accent-foreground shadow-sm'
+                  : 'text-white/85 hover:bg-white/10 hover:text-accent',
               )}
             >
               {item.label}
@@ -58,9 +66,15 @@ export function Header({ username, isSuperuser }: { username: string; isSuperuse
           ))}
         </nav>
         <div className="ml-auto flex items-center gap-2">
-          <span className="hidden text-sm text-muted-foreground sm:inline">{username}</span>
+          <span className="hidden text-sm text-white/70 sm:inline">{username}</span>
           <ThemeToggle />
-          <Button variant="ghost" size="icon" onClick={logout} aria-label="Выйти">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="text-white hover:bg-white/10 hover:text-accent"
+            onClick={logout}
+            aria-label="Выйти"
+          >
             <LogOut className="h-5 w-5" />
           </Button>
         </div>
