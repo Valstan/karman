@@ -163,6 +163,8 @@ export type CircleDocument = {
   issueDate: string | null;
   expiryDate: string | null;
   issuingAuthority: string;
+  /** Чей документ внутри аккаунта владельца (пусто — его собственный). */
+  holder: string;
   /** Открыт кругу; у чужих здесь всегда дата — иначе их бы тут не было. */
   circleSharedAt: string | null;
   fields: { name: string; value: string }[];
@@ -187,6 +189,7 @@ export async function listVisibleDocuments(user: SessionUser): Promise<CircleDoc
       issueDate: documentsDocument.issueDate,
       expiryDate: documentsDocument.expiryDate,
       issuingAuthority: documentsDocument.issuingAuthority,
+      holder: documentsDocument.holder,
       circleSharedAt: documentsDocument.circleSharedAt,
     })
     .from(documentsDocument)

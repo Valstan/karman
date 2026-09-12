@@ -158,6 +158,10 @@ export const documentsDocument = pgTable('documents_document', {
   backImage: varchar('back_image', { length: 100 }),
   additionalFiles: varchar('additional_files', { length: 100 }),
   isActive: boolean('is_active').notNull().default(true),
+  // Чей документ — свободная строка (миграция 0017): в одном аккаунте лежат
+  // документы всей семьи, и без подписи человека они в списке неразличимы.
+  // Пусто = мой.
+  holder: varchar('holder', { length: 150 }).notNull().default(''),
   // Открыт кругу явной галочкой «В круг» (миграция 0015). NULL — виден только
   // владельцу: согласие в круге даётся на человека, а что из документов
   // показывать — решение по каждому документу отдельно.

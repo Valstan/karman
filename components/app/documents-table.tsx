@@ -131,6 +131,16 @@ export function DocumentsTable({
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<StatusFilter>('all');
   const [categoryId, setCategoryId] = useState<string>('all');
+  const [holder, setHolder] = useState<string>('all');
+
+  // Люди — из самих документов: пустой holder показывается как «Мои».
+  const holders = useMemo(
+    () =>
+      [...new Set(documents.map((d) => d.holder).filter((h) => h !== ''))].sort((a, b) =>
+        a.localeCompare(b, 'ru'),
+      ),
+    [documents],
+  );
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
 
@@ -140,16 +150,27 @@ export function DocumentsTable({
       if (status === 'active' && !doc.isActive) return false;
       if (status === 'inactive' && doc.isActive) return false;
       if (categoryId !== 'all' && String(doc.categoryId) !== categoryId) return false;
+      if (holder === 'mine' && doc.holder !== '') return false;
+      if (holder !== 'all' && holder !== 'mine' && doc.holder !== holder) return false;
       return true;
     });
+    // Сортировка по людям, внутри человека — по категории: так семья читается
+    // блоками «отец — мать — дети», а не вперемешку по дате заведения.
+    preFiltered.sort(
+      (a, b) =>
+        a.holder.localeCompare(b.holder, 'ru') ||
+        (a.categoryName ?? '').localeCompare(b.categoryName ?? '', 'ru') ||
+        a.title.localeCompare(b.title, 'ru'),
+    );
     return rankMatches(query, preFiltered, (doc) => [
       doc.title,
       doc.categoryName,
       doc.documentType,
       doc.documentNumber,
       doc.issuingAuthority,
+      doc.holder,
     ]);
-  }, [documents, query, status, categoryId]);
+  }, [documents, query, status, categoryId, holder]);
 
   const firstFuzzyIndex = matches.findIndex((m) => m.isFuzzy);
   const rangesFor = (matchIndex: number, field: number) =>
@@ -212,7 +233,8 @@ export function DocumentsTable({
     }
   }
 
-  const isFiltered = query.trim() !== '' || status !== 'all' || categoryId !== 'all';
+  const isFiltered =
+    query.trim() !== '' || status !== 'all' || categoryId !== 'all' || holder !== 'all';
 
   return (
     <div className="flex flex-col gap-3">
@@ -226,6 +248,22 @@ export function DocumentsTable({
             className="pl-8"
           />
         </div>
+        {holders.length > 0 && (
+          <Select value={holder} onValueChange={setHolder}>
+            <SelectTrigger className="sm:w-56">
+              <SelectValue placeholder="Чей документ" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Все люди</SelectItem>
+              <SelectItem value="mine">Мои</SelectItem>
+              {holders.map((h) => (
+                <SelectItem key={h} value={h}>
+                  {h}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         <Select value={categoryId} onValueChange={setCategoryId}>
           <SelectTrigger className="sm:w-48">
             <SelectValue placeholder="Категория" />
@@ -273,6 +311,7 @@ export function DocumentsTable({
                 />
               </TableHead>
               <TableHead>Название</TableHead>
+              <TableHead>Чей</TableHead>
               <TableHead>Категория</TableHead>
               <TableHead>Номер</TableHead>
               <TableHead>Выдан</TableHead>
@@ -285,7 +324,7 @@ export function DocumentsTable({
           <TableBody>
             {matches.length === 0 && (
               <TableRow>
-                <TableCell colSpan={9} className="h-24 text-center text-muted-foreground">
+                <TableCell colSpan={10} className="h-24 text-center text-muted-foreground">
                   {isFiltered ? 'Ничего не найдено.' : 'Документов пока нет — нажмите «Новый документ».'}
                 </TableCell>
               </TableRow>
@@ -296,7 +335,7 @@ export function DocumentsTable({
                 <Fragment key={doc.id}>
                   {isFuzzy && index === firstFuzzyIndex && (
                     <TableRow className="hover:bg-transparent">
-                      <TableCell colSpan={9} className="py-1.5 text-xs text-muted-foreground">
+                      <TableCell colSpan={10} className="py-1.5 text-xs text-muted-foreground">
                         Похожие (неточное совпадение):
                       </TableCell>
                     </TableRow>
@@ -319,6 +358,13 @@ export function DocumentsTable({
                         <span className="ml-2 text-xs text-muted-foreground">
                           <HighlightedText text={doc.documentType} ranges={rangesFor(index, 2)} />
                         </span>
+                      )}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      {doc.holder ? (
+                        <HighlightedText text={doc.holder} ranges={rangesFor(index, 5)} />
+                      ) : (
+                        <span className="text-muted-foreground">Мои</span>
                       )}
                     </TableCell>
                     <TableCell>
@@ -382,6 +428,7 @@ export function DocumentsTable({
                         <DocumentFormDialog
                           document={doc}
                           categories={categories}
+                          holders={holders}
                           trigger={
                             <Button size="icon" variant="ghost" title="Редактировать">
                               <Pencil className="h-4 w-4" />

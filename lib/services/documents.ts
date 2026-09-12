@@ -27,6 +27,8 @@ export type DocumentListItem = {
   issueDate: string | null;
   expiryDate: string | null;
   issuingAuthority: string | null;
+  /** Чей документ (свободная строка); пусто — мой. */
+  holder: string;
   isActive: boolean;
   categoryId: number;
   categoryName: string | null;
@@ -67,6 +69,7 @@ export type DocumentDetail = {
   issueDate: string | null;
   expiryDate: string | null;
   issuingAuthority: string;
+  holder: string;
   isActive: boolean;
   categoryId: number;
   circleSharedAt: string | null;
@@ -96,6 +99,7 @@ export async function listDocuments(user: SessionUser): Promise<DocumentListItem
       issueDate: documentsDocument.issueDate,
       expiryDate: documentsDocument.expiryDate,
       issuingAuthority: documentsDocument.issuingAuthority,
+      holder: documentsDocument.holder,
       isActive: documentsDocument.isActive,
       categoryId: documentsDocument.categoryId,
       categoryName: documentsDocumentcategory.name,
@@ -184,6 +188,7 @@ export async function getDocumentDetail(
     issueDate: row.issueDate,
     expiryDate: row.expiryDate,
     issuingAuthority: row.issuingAuthority,
+    holder: row.holder,
     isActive: row.isActive,
     categoryId: row.categoryId,
     circleSharedAt: row.circleSharedAt,
@@ -321,6 +326,7 @@ export async function createDocument(user: SessionUser, input: DocumentCreateInp
       issueDate: input.issueDate ?? null,
       expiryDate: input.expiryDate ?? null,
       issuingAuthority: input.issuingAuthority ?? '',
+      holder: input.holder ?? '',
       isActive: input.isActive ?? true,
       userId: user.id,
       categoryId: input.categoryId ?? DEFAULT_DOCUMENT_CATEGORY_ID,
@@ -339,6 +345,7 @@ export async function updateDocument(user: SessionUser, input: DocumentUpdateInp
   if (fields.issueDate !== undefined) patch.issueDate = fields.issueDate ?? null;
   if (fields.expiryDate !== undefined) patch.expiryDate = fields.expiryDate ?? null;
   if (fields.issuingAuthority !== undefined) patch.issuingAuthority = fields.issuingAuthority ?? '';
+  if (fields.holder !== undefined) patch.holder = fields.holder ?? '';
   if (fields.isActive !== undefined) patch.isActive = fields.isActive;
   if (fields.categoryId !== undefined) patch.categoryId = fields.categoryId;
 
@@ -396,6 +403,7 @@ export type OwnExportDocument = {
   issueDate: string | null;
   expiryDate: string | null;
   issuingAuthority: string;
+  holder: string;
   fields: { name: string; value: string }[];
   files: { id: number; originalName: string; isImage: boolean }[];
 };
@@ -416,6 +424,7 @@ export async function listOwnExportDocuments(user: SessionUser): Promise<OwnExpo
       issueDate: documentsDocument.issueDate,
       expiryDate: documentsDocument.expiryDate,
       issuingAuthority: documentsDocument.issuingAuthority,
+      holder: documentsDocument.holder,
     })
     .from(documentsDocument)
     .where(ownership(user, documentsDocument.userId))

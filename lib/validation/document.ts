@@ -32,6 +32,7 @@ export const documentCreateSchema = z.object({
   issueDate: optionalDateString,
   expiryDate: optionalDateString,
   issuingAuthority: z.string().trim().max(200).optional().nullable(),
+  holder: z.string().trim().max(150, 'Чей документ — длиннее 150 символов').optional().default(''),
   isActive: z.coerce.boolean().optional().default(true),
   categoryId: z.coerce.number().int().positive().optional(),
 });

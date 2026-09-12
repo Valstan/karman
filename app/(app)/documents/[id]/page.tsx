@@ -56,6 +56,7 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
     issueDate: document.issueDate,
     expiryDate: document.expiryDate,
     issuingAuthority: document.issuingAuthority,
+    holder: document.holder,
     fields: document.fields.map((f) => ({ name: f.name, value: f.value })),
     files: document.files.map((f) => ({ id: f.id, originalName: f.originalName, isImage: f.isImage })),
   };
@@ -63,7 +64,8 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
     document.documentNumber !== '' ||
     document.issueDate !== null ||
     document.expiryDate !== null ||
-    document.issuingAuthority !== '';
+    document.issuingAuthority !== '' ||
+    document.holder !== '';
 
   return (
     <div className="flex flex-col gap-6">
@@ -119,6 +121,7 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
           </CardHeader>
           <CardContent>
             <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <Info label="Чей документ" value={document.holder} />
               <Info label="Тип" value={document.documentType} />
               <Info label="Номер" value={document.documentNumber} />
               <Info label="Дата выдачи" value={formatDate(document.issueDate)} />
