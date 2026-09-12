@@ -124,7 +124,7 @@ export function LoginForm({ esaEnabled, totpPending, esaNotice }: LoginFormProps
       <Card className="w-full max-w-sm">
         <CardHeader className="text-center">
           <CardTitle className="text-2xl">KARMAN</CardTitle>
-          <CardDescription>Учёт кредитов — вход в систему</CardDescription>
+          <CardDescription>Личный органайзер — вход</CardDescription>
         </CardHeader>
         <CardContent>
           {totpStep ? (

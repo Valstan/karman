@@ -8,8 +8,9 @@ import { Toaster } from '@/components/ui/sonner';
 const inter = Inter({ subsets: ['latin', 'cyrillic'], variable: '--font-sans' });
 
 export const metadata: Metadata = {
-  title: 'KARMAN — учёт кредитов',
-  description: 'Личный учёт кредитов, банков, платежей и документов.',
+  title: 'KARMAN — личный органайзер',
+  description:
+    'Всё своё при себе: документы, деньги и обязательства, напоминания, секреты, круг людей.',
 };
 
 export default function RootLayout({

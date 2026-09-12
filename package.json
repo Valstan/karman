@@ -2,7 +2,7 @@
   "name": "karman",
   "version": "2.0.0",
   "private": true,
-  "description": "KARMAN — учёт кредитов. Единое приложение Next.js + TypeScript.",
+  "description": "KARMAN — личный органайзер: всё своё при себе. Единое приложение Next.js + TypeScript.",
   "type": "module",
   "scripts": {
     "dev": "next dev",
