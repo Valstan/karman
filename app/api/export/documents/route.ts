@@ -21,6 +21,7 @@ export async function GET() {
   const documents = await listDocuments(user);
   const headers = [
     'Название',
+    'Чей',
     'Категория',
     'Тип',
     'Номер',
@@ -32,6 +33,7 @@ export async function GET() {
   ];
   const rows = documents.map((d) => [
     d.title,
+    d.holder,
     d.categoryName ?? '',
     d.documentType,
     d.documentNumber,

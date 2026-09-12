@@ -53,6 +53,7 @@ type FormValues = {
   issueDate: string;
   expiryDate: string;
   issuingAuthority: string;
+  holder: string;
   isActive: boolean;
   categoryId: string;
   templateId: string;
@@ -70,6 +71,7 @@ export type DocumentCoreValues = {
   // поле как `string | null`, и сузить тип здесь означало бы приведение в месте
   // вызова — то есть ложь о данных ради удобства формы.
   issuingAuthority: string | null;
+  holder: string;
   isActive: boolean;
   categoryId: number;
 };
@@ -82,6 +84,7 @@ function defaults(doc?: DocumentCoreValues): FormValues {
     issueDate: doc?.issueDate ?? '',
     expiryDate: doc?.expiryDate ?? '',
     issuingAuthority: doc?.issuingAuthority ?? '',
+    holder: doc?.holder ?? '',
     isActive: doc?.isActive ?? true,
     categoryId: doc ? String(doc.categoryId) : '',
     templateId: '',
@@ -100,11 +103,14 @@ function categoryFor(name: string, categories: DocumentCategoryOption[]): string
 export function DocumentFormDialog({
   trigger,
   categories,
+  holders = [],
   document,
   onSaved,
 }: {
   trigger: ReactNode;
   categories: DocumentCategoryOption[];
+  /** Уже встречающиеся «чьи» — подсказки в поле, чтобы имя писалось одинаково. */
+  holders?: string[];
   document?: DocumentCoreValues;
   /** Куда идти после создания; по умолчанию — на экран нового документа. */
   onSaved?: (id: number) => void;
@@ -140,6 +146,7 @@ export function DocumentFormDialog({
       issueDate: values.issueDate === '' ? null : values.issueDate,
       expiryDate: values.expiryDate === '' ? null : values.expiryDate,
       issuingAuthority: values.issuingAuthority,
+      holder: values.holder,
       isActive: values.isActive,
       categoryId: Number(values.categoryId),
     };
@@ -238,6 +245,23 @@ export function DocumentFormDialog({
               />
             </div>
           )}
+          <div className="grid gap-2">
+            <Label htmlFor="holder">Чей документ</Label>
+            <Input
+              id="holder"
+              list="document-holders"
+              placeholder="Пусто — мой; иначе ФИО: жена, сын…"
+              maxLength={150}
+              {...register('holder')}
+            />
+            {holders.length > 0 && (
+              <datalist id="document-holders">
+                {holders.map((h) => (
+                  <option key={h} value={h} />
+                ))}
+              </datalist>
+            )}
+          </div>
           <div className="grid gap-2">
             <Label htmlFor="title">Название</Label>
             <Input id="title" required placeholder="Паспорт РФ, СНИЛС, Диплом…" {...register('title')} />

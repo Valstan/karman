@@ -27,6 +27,8 @@ export type ExportDocument = {
   issueDate: string | null;
   expiryDate: string | null;
   issuingAuthority: string;
+  /** Чей документ; пусто — самого владельца аккаунта. */
+  holder: string;
   fields: { name: string; value: string }[];
   files: { id: number; originalName: string; isImage: boolean }[];
 };
@@ -58,6 +60,9 @@ export type ExportPersonBlock = {
 
 function documentCoreLines(doc: ExportDocument): ExportLine[] {
   const lines: ExportLine[] = [];
+  // «Чей» — первой строкой: получатель выгрузки семьи должен сразу видеть,
+  // паспорт это отца или сына, а не вычислять по номеру.
+  if (doc.holder.trim() !== '') lines.push({ label: 'Чей документ', value: doc.holder });
   if (doc.documentType.trim() !== '') lines.push({ label: 'Вид', value: doc.documentType });
   if (doc.documentNumber.trim() !== '') lines.push({ label: 'Номер', value: doc.documentNumber });
   if (doc.issueDate) {

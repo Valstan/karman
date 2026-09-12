@@ -30,6 +30,7 @@ const passport: ExportDocument = {
   issueDate: '2010-03-01',
   expiryDate: null,
   issuingAuthority: 'ОВД',
+  holder: '',
   fields: [
     { name: 'Код подразделения', value: '430-001' },
     { name: 'Место рождения', value: '' },
@@ -173,5 +174,19 @@ describe('exportFileName', () => {
   it('склеивает имя с датой — часов в чистом модуле нет намеренно', () => {
     expect(exportFileName('txt', '2026-09-04')).toBe('karman-2026-09-04.txt');
     expect(exportFileName('zip', '2026-09-04')).toBe('karman-2026-09-04.zip');
+  });
+});
+
+describe('holder — «чей документ» в выгрузке', () => {
+  it('непустой holder идёт первой строкой документа, пустой — не показывается', () => {
+    const sonDoc: ExportDocument = { ...passport, id: 12, holder: 'Савиных Даниил' };
+    const blocks = composeExport([ulyana], [passport, sonDoc], {
+      personIds: [2],
+      fieldKeys: [],
+      documentIds: [10, 12],
+    });
+    const [mine, sons] = blocks[0]!.documents;
+    expect(mine!.lines[0]).toEqual({ label: 'Вид', value: 'Паспорт РФ' });
+    expect(sons!.lines[0]).toEqual({ label: 'Чей документ', value: 'Савиных Даниил' });
   });
 });
