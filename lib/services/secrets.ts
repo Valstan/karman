@@ -23,6 +23,7 @@ import {
 } from '@/lib/secrets/crypto';
 import { generateToken, hashToken, looksLikeToken } from '@/lib/secrets/token';
 import { ACTOR_SYSTEM, actorOwner, actorPassport, actorRoom, actorToken } from '@/lib/secrets/actor';
+import { projectDeletedDetail } from '@/lib/secrets/audit-detail';
 import { resolveGrants, type GrantAlias } from '@/lib/secrets/grant';
 import { grantState, type GrantState } from '@/lib/secrets/grant-state';
 import { isUniqueViolation } from '@/lib/db/pg-error';
@@ -159,12 +160,48 @@ export async function updateProject(user: SessionUser, input: SecretProjectUpdat
   return result.length > 0;
 }
 
+/**
+ * Удаление комнаты. Каскад сносит и её аудит (`secrets_audit.project_id` → cascade),
+ * поэтому факт удаления пишется ОТДЕЛЬНОЙ строкой с `project_id = NULL` (как у
+ * `provision_denied`) — **до** `DELETE`, в той же транзакции: удалилась комната —
+ * есть строка, откатилось — нет ни того, ни другого. В detail — то, что каскад
+ * уничтожит и о чём потом спросят (D-078: «комната исчезла, сколько в ней было»):
+ * slug, число строк аудита, число токенов. Рекомендация Мозга 12.09.
+ */
 export async function deleteProject(user: SessionUser, id: number): Promise<boolean> {
-  const result = await db
-    .delete(secretsProject)
-    .where(and(eq(secretsProject.id, id), ownership(user, secretsProject.userId)))
-    .returning({ id: secretsProject.id });
-  return result.length > 0;
+  return db.transaction(async (tx) => {
+    const [project] = await tx
+      .select({ id: secretsProject.id, slug: secretsProject.slug })
+      .from(secretsProject)
+      .where(and(eq(secretsProject.id, id), ownership(user, secretsProject.userId)))
+      .limit(1);
+    if (!project) return false;
+
+    const [[auditN], [tokenN], [itemN]] = await Promise.all([
+      tx.select({ n: count() }).from(secretsAudit).where(eq(secretsAudit.projectId, id)),
+      tx.select({ n: count() }).from(secretsToken).where(eq(secretsToken.projectId, id)),
+      tx.select({ n: count() }).from(secretsItem).where(eq(secretsItem.projectId, id)),
+    ]);
+
+    await tx.insert(secretsAudit).values({
+      projectId: null,
+      tokenId: null,
+      action: 'project_deleted',
+      detail: projectDeletedDetail(project.slug, {
+        audit: auditN?.n ?? 0,
+        tokens: tokenN?.n ?? 0,
+        items: itemN?.n ?? 0,
+      }),
+      ip: null,
+      actor: actorOwner(user.id),
+    });
+
+    const result = await tx
+      .delete(secretsProject)
+      .where(eq(secretsProject.id, project.id))
+      .returning({ id: secretsProject.id });
+    return result.length > 0;
+  });
 }
 
 export async function getProjectDetail(
