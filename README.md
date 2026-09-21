@@ -81,4 +81,4 @@ bash scripts/deploy_remote.sh   # ручной перезапуск деплоя
 
 - Пользователи — таблица `auth_user` (создана исторически в Django).
 - Пароли проверяются в формате Django `pbkdf2_sha256` (существующие хеши работают без сброса).
-- Сессия — подписанный JWT в HttpOnly-cookie `karman_session_v2`.
+- Сессия — подписанный JWT в HttpOnly-cookie `__Host-karman_session_v2`.

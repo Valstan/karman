@@ -6,10 +6,8 @@ import {
   OIDC_STATE_COOKIE,
   OIDC_STATE_TTL_SECONDS,
   SESSION_COOKIE,
-  SESSION_COOKIE_LEGACY,
   SESSION_TTL_SECONDS,
   TOTP_PENDING_COOKIE,
-  TOTP_PENDING_COOKIE_LEGACY,
   TOTP_PENDING_TTL_SECONDS,
   signOidcConfirm,
   verifyOidcConfirm,
@@ -63,23 +61,12 @@ export async function setSessionCookie(uid: number, mfa = false): Promise<void> 
 }
 
 export async function clearSessionCookie(): Promise<void> {
-  // Гасим оба имени: у человека может лежать ещё легаси-cookie, и выход,
-  // оставивший её живой, был бы выходом только на вид.
   await killCookie(SESSION_COOKIE);
-  await killCookie(SESSION_COOKIE_LEGACY);
 }
 
-/**
- * Читаем новое имя, при промахе — легаси.
- *
- * Так переименование на `__Host-` не разлогинивает никого: живые сессии
- * доигрывают по старому имени, а новое выдаётся при следующем входе. Записи по
- * легаси-имени больше нет нигде, поэтому за `SESSION_TTL_SECONDS` (14 дней)
- * старое имя вымрет само и строку можно будет убрать.
- */
 async function readSessionToken(): Promise<string | undefined> {
   const cookieStore = await cookies();
-  return cookieStore.get(SESSION_COOKIE)?.value ?? cookieStore.get(SESSION_COOKIE_LEGACY)?.value;
+  return cookieStore.get(SESSION_COOKIE)?.value;
 }
 
 export async function readSessionUid(): Promise<number | null> {
@@ -104,15 +91,11 @@ export async function setTotpPendingCookie(uid: number): Promise<void> {
 
 export async function readTotpPendingUid(): Promise<number | null> {
   const cookieStore = await cookies();
-  return verifyTotpPending(
-    cookieStore.get(TOTP_PENDING_COOKIE)?.value ??
-      cookieStore.get(TOTP_PENDING_COOKIE_LEGACY)?.value,
-  );
+  return verifyTotpPending(cookieStore.get(TOTP_PENDING_COOKIE)?.value);
 }
 
 export async function clearTotpPendingCookie(): Promise<void> {
   await killCookie(TOTP_PENDING_COOKIE);
-  await killCookie(TOTP_PENDING_COOKIE_LEGACY);
 }
 
 // --- Состояние браузерного редиректа ЕСА --------------------------------------
