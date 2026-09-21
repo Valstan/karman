@@ -40,7 +40,7 @@ KARMAN — личный органайзер «всё своё при себе»
 ## Аутентификация и доступ
 
 - Пароли: `verifyDjangoPassword` (pbkdf2_sha256 / pbkdf2_sha1) — совместимость с историческими хешами.
-- Сессия: JWT (HS256, `jose`) в HttpOnly-cookie `karman_session_v2`, срок 14 дней.
+- Сессия: JWT (HS256, `jose`) в HttpOnly-cookie `__Host-karman_session_v2`, срок 14 дней.
 - Гард в два слоя: `proxy.ts` (Edge, без БД) + `(app)/layout.tsx` (`getCurrentUser`, ловит `is_active`).
 - Фильтрация по владельцу: `ownership(user, column)` — `column = user.id`, **без исключений,
   включая superuser** (решение владельца 2026-09-03; регрессия — `lib/auth/rbac.test.ts`).

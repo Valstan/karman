@@ -20,12 +20,10 @@ import { SignJWT, jwtVerify } from 'jose';
  * и всё). С привязкой она становится НЕОБРАТИМОЙ: человек, сидящий в
  * подброшенной чужой сессии, отдаёт свою личность ЕСА в чужой аккаунт навсегда.
  *
- * Старое имя ещё ЧИТАЕТСЯ (`SESSION_COOKIE_LEGACY`), но больше не пишется —
- * иначе переименование разлогинило бы всех разом. Через `SESSION_TTL_SECONDS`
- * (14 дней) все живые сессии переедут сами, и легаси-имя можно убирать.
+ * Переименование 2026-09-04 прошло без разлогина: две недели старое имя
+ * дочитывалось, потом (2026-09-21) ветка чтения снята — сессии старше TTL мертвы сами.
  */
 export const SESSION_COOKIE = '__Host-karman_session_v2';
-export const SESSION_COOKIE_LEGACY = 'karman_session_v2';
 export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 14; // 14 дней
 
 const DEV_FALLBACK_SECRET = 'dev-insecure-secret-change-me';
@@ -97,7 +95,6 @@ export async function verifySession(token: string | undefined | null): Promise<n
 // --- Промежуточный токен второго шага входа (пароль принят, ждём TOTP-код) ---
 
 export const TOTP_PENDING_COOKIE = '__Host-karman_totp_pending';
-export const TOTP_PENDING_COOKIE_LEGACY = 'karman_totp_pending';
 export const TOTP_PENDING_TTL_SECONDS = 5 * 60;
 
 export async function signTotpPending(uid: number): Promise<string> {
