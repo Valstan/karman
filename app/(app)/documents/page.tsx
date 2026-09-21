@@ -1,4 +1,5 @@
-import { Download, Plus } from 'lucide-react';
+import Link from 'next/link';
+import { Download, Network, Plus } from 'lucide-react';
 import { requireUser } from '@/lib/auth/current-user';
 import {
   listDocuments,
@@ -43,6 +44,9 @@ export default async function DocumentsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Link href="/documents/family" className={buttonVariants({ variant: 'outline' })}>
+            <Network className="mr-1 h-4 w-4" /> Древо семьи
+          </Link>
           {documents.length > 0 && (
             <a href="/api/export/documents" className={buttonVariants({ variant: 'outline' })}>
               <Download className="mr-1 h-4 w-4" /> CSV
