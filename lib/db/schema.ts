@@ -726,6 +726,68 @@ export const circleMember = pgTable('circle_member', {
 export type CircleRow = typeof circle.$inferSelect;
 export type CircleMemberRow = typeof circleMember.$inferSelect;
 
+/**
+ * Древо семьи (задача владельца 2026-09-21). Человек древа — не аккаунт и не
+ * участник круга: у прадеда аккаунта нет. Даты рождения/смерти — строкой:
+ * «примерно 1900-е» и «1952» — законные значения, а колонка date заставила бы
+ * либо выдумывать число, либо оставлять пусто.
+ *
+ * Хранятся только два вида связи (`family_relation.kind`): родитель→ребёнок и
+ * супруги. Братья, дяди, прадеды, тесть — вычисляются (`lib/family/kinship.ts`):
+ * хранить «дядя» строкой значило бы держать вывод рядом с посылками.
+ */
+export const familyPerson = pgTable('family_person', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => authUser.id, { onDelete: 'cascade' }),
+  lastName: varchar('last_name', { length: 150 }).notNull().default(''),
+  firstName: varchar('first_name', { length: 150 }).notNull().default(''),
+  middleName: varchar('middle_name', { length: 150 }).notNull().default(''),
+  maidenName: varchar('maiden_name', { length: 150 }).notNull().default(''),
+  /** Как зовут в семье: «бабушка Люся». */
+  nickname: varchar('nickname', { length: 150 }).notNull().default(''),
+  /** 'm' | 'f' | '' — для слов родства (дядя/тётя). */
+  sex: varchar('sex', { length: 1 }).notNull().default(''),
+  born: varchar('born', { length: 100 }).notNull().default(''),
+  birthPlace: text('birth_place').notNull().default(''),
+  died: varchar('died', { length: 100 }).notNull().default(''),
+  deathPlace: text('death_place').notNull().default(''),
+  residence: text('residence').notNull().default(''),
+  occupation: text('occupation').notNull().default(''),
+  nationality: varchar('nationality', { length: 100 }).notNull().default(''),
+  surnameMeaning: text('surname_meaning').notNull().default(''),
+  notes: text('notes').notNull().default(''),
+  /** Привязка к `documents_document.holder` — переход к документам человека. */
+  holder: varchar('holder', { length: 150 }).notNull().default(''),
+  /** Точка отсчёта родства («я»). */
+  isSelf: boolean('is_self').notNull().default(false),
+  sortOrder: integer('sort_order').notNull().default(0),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+  updatedAt: tstz('updated_at').notNull().defaultNow(),
+});
+
+export const familyRelation = pgTable('family_relation', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => authUser.id, { onDelete: 'cascade' }),
+  /** 'parent': from — родитель, to — ребёнок. 'spouse': пара. */
+  kind: varchar('kind', { length: 10 }).notNull().$type<'parent' | 'spouse'>(),
+  fromId: bigint('from_id', { mode: 'number' })
+    .notNull()
+    .references(() => familyPerson.id, { onDelete: 'cascade' }),
+  toId: bigint('to_id', { mode: 'number' })
+    .notNull()
+    .references(() => familyPerson.id, { onDelete: 'cascade' }),
+  /** «брак 1985», «в разводе», «приёмный». */
+  note: varchar('note', { length: 200 }).notNull().default(''),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+});
+
+export type FamilyPersonRow = typeof familyPerson.$inferSelect;
+export type FamilyRelationRow = typeof familyRelation.$inferSelect;
+
 export type SecretsProjectRow = typeof secretsProject.$inferSelect;
 export type SecretsItemRow = typeof secretsItem.$inferSelect;
 export type SecretsTokenRow = typeof secretsToken.$inferSelect;
