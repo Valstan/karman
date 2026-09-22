@@ -45,6 +45,19 @@ jobs:
       # увидеть их можно было, только запустив audit руками. Dev-зависимости
       # исключены намеренно: они не едут в прод-артефакт, а их шум глушил бы гейт.
       - run: npm audit --omit=dev --audit-level=high
+      # Потолок живого backlog'а (D-096, письмо brain 2026-09-18). Файл читается целиком
+      # каждым /start, и к 21.09 дорос до 66 КБ — закрытое уезжает в docs/pending-archive/.
+      # Гейт, а не памятка: проверка только в голове агента гейтом не считается (#125).
+      # stat -c, а не wc -c: wc печатает имя файла, и сравнение чисел падает молча.
+      - name: PENDING_FOLLOWUPS.md size
+        run: |
+          set -euo pipefail
+          size=$(stat -c %s docs/PENDING_FOLLOWUPS.md)
+          echo "docs/PENDING_FOLLOWUPS.md: ${size} bytes (limit 51200)"
+          if [ "$size" -gt 51200 ]; then
+            echo "::error::PENDING_FOLLOWUPS.md exceeds 50 KB - move closed items to docs/pending-archive/"
+            exit 1
+          fi
       # Сканер секретов (мандат brain 2026-08-17 / D-030). Репозиторий публичный
       # с 17.08, а у публичного репо утёкший секрет скомпрометирован С СЕКУНДЫ
       # пуша — форки и кэши не отозвать, «удалить коммит» не лечит.
