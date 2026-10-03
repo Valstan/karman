@@ -4,9 +4,9 @@
 > `/close_session` — историю (в т.ч. подробности 11–14.09: `karman-tg`, G331, D-078, D-090,
 > документы семьи #143–#152) смотри через `git log --follow -- docs/SESSION_HANDOFF.md`.
 
-**Status:** все три находки 10.10 закрыты досрочно; пилот переговорной пройден 04.10; KULTURA_PUBLISH_KEY: грант id 17 pending (accept за setka), дальше сверка grant_in
+**Status:** все три находки 10.10 закрыты досрочно; пилот переговорной пройден 04.10; KULTURA_PUBLISH_KEY: грант id 17 pending (accept за setka); done Сарафану переотправлен читаемо по просьбе Мозга
 **Updated:** 2026-10-04
-**Branch:** `docs/hotline-publish-grant-verify`
+**Branch:** `docs/hotline-done-resend`
 **Прод:** код #157 (древо семьи), `next` 16.3.5, миграции `0014`–`0020` применены
 (`0019_session_epoch` — psql 03.10; `0020_recovery_codes_kdf` — psql 03.10, деплой run
 37152042528 зелёный, smoke 200/307). В env сервиса `MEDIA_ROOT` и
