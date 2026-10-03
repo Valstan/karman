@@ -25,7 +25,7 @@
 «на странице». Гейт страницы не прикрывает ни Server Action (его зовут POST'ом по
 собственному идентификатору из чужого браузера), ни HTTP-роут.
 
-## 2. Server Actions — `lib/actions/*.ts` (15 модулей, 67 действий)
+## 2. Server Actions — `lib/actions/*.ts` (15 модулей, 68 действий)
 
 | Модуль | Пишет | Право, которое требует сервер |
 |---|---|---|
@@ -41,7 +41,7 @@
 | `secrets.ts` (19) | комнаты, секреты, карточки, поля, выдачи, токены, времянки | **суперпользователь + второй фактор** (`requireSecretsAccess`, `lib/actions/_internal.ts:28`) + владение комнатой в каждом запросе (`secrets.ts:85,139,158,176,214,382,688`) |
 | `passport.ts` (2) | `passport_identity`, токены комнат | то же, что `secrets.ts` (выдача личности — операция уровня комнаты) |
 | `esa-link.ts` (4) | `auth_oidc_identity` (в `confirm`), cookie состояния | сессия + **второй фактор при включённом 2FA** (`requireLinkAccess`, `esa-link.ts:27`). Исключение: `dismissEsaLinkAction` — **без гейта**, гасит cookie подтверждения своей сессии, БД не касается |
-| `twofactor.ts` (3) | `twofactor_secret`, `auth_audit`, `auth_user.session_epoch` | **step-up** (`requireAccountSecurity`): включение и выключение 2FA меняют безопасность учётки — без этого сессия учётки без 2FA могла подвесить чужой TOTP и выбить владельца из `/secrets`, а восстановления в приложении нет |
+| `twofactor.ts` (4) | `twofactor_secret`, `auth_audit`, `auth_user.session_epoch`, `auth_recovery_code` | **step-up** (`requireAccountSecurity`): включение, выключение 2FA и перевыпуск recovery-кодов меняют безопасность учётки. Перевыпуск дополнительно требует действующий TOTP-код — иначе новый запасной путь входа выдавала бы украденная сессия |
 | `telegram-link.ts` (1) | привязка Telegram к своему uid | сессия, только свой uid |
 | `map.ts` (1) | ничего (инвалидация кэша) | сессия (`requireUser`) |
 
