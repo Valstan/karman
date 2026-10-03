@@ -39,6 +39,22 @@ export async function listAccounts(user: SessionUser): Promise<AccountListItem[]
 const TEMP_ALPHABET = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const TEMP_LENGTH = 12;
 
+/**
+ * Отметка «последний вход» — единственный сигнал «что-то входит не туда», который
+ * владелец видит, не читая БД руками. Колонка была объявлена, отдавалась в DTO и
+ * рисовалась в панели, но не заполнялась ни одним путём: панель показывала «не входил»
+ * ВСЕМ, включая тех, кто вошёл секунду назад (аудит #057, H6).
+ *
+ * Пишется на обоих путях успешного входа — паролем и ЕСА. Событие `login_ok` в
+ * `auth_audit` при этом остаётся: там есть IP, здесь его нет.
+ */
+export async function touchLastLogin(userId: number): Promise<void> {
+  await db
+    .update(authUser)
+    .set({ lastLogin: new Date().toISOString() })
+    .where(eq(authUser.id, userId));
+}
+
 function generateTempPassword(): string {
   let out = '';
   for (let i = 0; i < TEMP_LENGTH; i += 1) {

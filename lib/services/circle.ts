@@ -508,10 +508,17 @@ export async function removeFromCircle(
   // этого состояния человек не возвращается по своей воле. Пока метка была
   // одна, исключённый видел у себя блок «вы вышли» с кнопкой «Вернуться» —
   // и она работала.
-  await db
+  //
+  // `.returning()` — как у соседних операций модуля (`leaveCircle`, `respondToInvite`,
+  // `renameCircle`): без него UPDATE безусловно выглядит успешным, и интерфейс
+  // сообщал «Участник исключён» даже когда участника в круге не было, а повторный вызов
+  // перетирал исходную метку времени (аудит #057, H4).
+  const result = await db
     .update(circleMember)
     .set({ removedAt: sql`NOW()` })
-    .where(and(eq(circleMember.circleId, circleId), eq(circleMember.userId, targetUserId)));
+    .where(and(eq(circleMember.circleId, circleId), eq(circleMember.userId, targetUserId)))
+    .returning({ id: circleMember.id });
+  if (result.length === 0) return { ok: false, error: 'Участник не найден в этом круге' };
   return { ok: true };
 }
 

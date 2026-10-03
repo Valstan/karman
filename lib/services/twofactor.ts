@@ -22,14 +22,28 @@ import {
 
 const isoNow = () => new Date().toISOString();
 
-/** Аудит входов/2FA. Отдельно от secrets_audit — другой субъект (пользователь). */
+/**
+ * Аудит входов/2FA. Отдельно от secrets_audit — другой субъект (пользователь).
+ *
+ * Обрезка — ЗДЕСЬ, а не в вызывающих: `username` — `varchar(150)`, `ip` — `varchar(64)`,
+ * а `loginSchema` задаёт логину только `.min(1)` без верхней границы. Анонимный
+ * `POST /api/auth/login` с логином длиннее 150 символов ронял INSERT (PG 22001), и вместо
+ * 401 наружу уходил 500 (аудит #057, D4). Тот же класс уже лечили в вызывающем коде для
+ * почты ЕСА (`oidc/callback`: `.slice(0, 150)`) — то есть вывод сделали, но не туда, откуда
+ * он защищает всех.
+ */
 export async function logAuthAudit(
   userId: number | null,
   username: string | null,
   action: string,
   ip: string | null,
 ): Promise<void> {
-  await db.insert(authAudit).values({ userId, username, action, ip });
+  await db.insert(authAudit).values({
+    userId,
+    username: username === null ? null : username.slice(0, 150),
+    action,
+    ip: ip === null ? null : ip.slice(0, 64),
+  });
 }
 
 /** Включён ли 2FA у пользователя (enrollment подтверждён кодом). */

@@ -10,15 +10,11 @@ import {
   setTotpPendingCookie,
 } from '@/lib/auth/session';
 import { resolveOidcLogin } from '@/lib/services/oidc-login';
+import { touchLastLogin } from '@/lib/services/users';
 import { logAuthAudit, totpEnabled } from '@/lib/services/twofactor';
+import { clientIp } from '@/lib/api/client-ip';
 
 export const runtime = 'nodejs';
-
-function clientIp(req: Request): string | null {
-  const xff = req.headers.get('x-forwarded-for');
-  if (xff) return xff.split(',')[0]?.trim() ?? null;
-  return req.headers.get('x-real-ip');
-}
 
 /** Отказ всегда выглядит одинаково для пользователя; причина живёт в аудите. */
 function deny(req: Request, marker: string) {
@@ -182,6 +178,7 @@ export async function GET(req: Request) {
   // доступ к данным фильтруется по владельцу (`lib/auth/rbac.ts`), поэтому
   // и список кредитов, и список комнат vault у него пустые.
   await setSessionCookie(userId);
+  await touchLastLogin(userId);
   await logAuthAudit(userId, username, `esa_ok:${outcome}`, ip);
   return NextResponse.redirect(appUrl('/', req));
 }
