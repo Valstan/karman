@@ -1,0 +1,127 @@
+# Пути записи и требуемые права
+
+> **D-096, срок 16.10 (#015).** Мандат: «таблица всех путей записи (HTTP-роуты, Server
+> Actions, воркер напоминаний, `karman-tg`, синк ЕСА) и права, которое сервер требует;
+> „authenticated“ без роли — дыра; найденное закрыть тем же PR или дата».
+> Сделано 2026-10-03,PR #164. Гейт, который не даёт таблице разойтись с кодом, —
+> `lib/security/write-paths.test.ts` (раздел 6).
+
+## 1. Что считается путём записи
+
+Путём записи считается любое место, где изменяется состояние: строки БД, файлы в
+`MEDIA_ROOT`, сессионные cookie, аудит. Три класса:
+
+1. **Сессионные** — Server Actions (`lib/actions/*.ts`): человек в браузере, cookie сессии.
+2. **Машинные** — HTTP-роуты (`app/api/**/route.ts`): `Authorization: Bearer` (токен комнаты,
+   удостоверение CI, внутренний секрет воркера, provisioning-ключ) либо сессионная cookie.
+3. **Внешние процессы** — то, что пишет в БД мимо Next: cron, миграции, ручные операции.
+
+Читающие пути (GET-выгрузки CSV, `/api/secrets` на чтение, `/api/circle/files`,
+`/api/secrets/self`, `/api/health`) в таблицу не входят — кроме POST-стороны `/api/secrets`
+и health-эндпоинта, их отметили явно.
+
+**Правило, из которого растёт таблица:** право — это то, что сервер проверяет **до первой
+записи**, и проверка обязана стоять в том же слое, где запись (действие → сервис), а не
+«на странице». Гейт страницы не прикрывает ни Server Action (его зовут POST'ом по
+собственному идентификатору из чужого браузера), ни HTTP-роут.
+
+## 2. Server Actions — `lib/actions/*.ts` (15 модулей, 67 действий)
+
+| Модуль | Пишет | Право, которое требует сервер |
+|---|---|---|
+| `credits.ts` (4) | `credits_credit`, `credits_payment`, график платежей | сессия + **владение** строки кредита (`ownership()` в `UPDATE`/`DELETE`/`WHERE`) |
+| `payments.ts` (3) | `credits_payment` | сессия + владение через кредит (`credits.ts:87`, `payments.ts:46,68`) |
+| `reminders.ts` (4) | `reminder`, журнал срабатываний | сессия + владение (`reminders.ts:87,129,164,177`) |
+| `documents.ts` (5) | `documents_document`, `document_field`, `circle_shared_at` | сессия + владение (`documents.ts:113,165,313,360,368,391`) |
+| `family.ts` (6) | `family_person`, `family_relation` | сессия + владение (`family.ts` → `lib/services/family.ts`) |
+| `profile.ts` (1) | `person_profile` | сессия, **только своя** строка (`user_id = user.id` в upsert) |
+| `circle.ts` (7) | `circle`, `circle_member` | сессия + **участие/владение кругом**: переименовать и приглашать может только владелец круга (`circle.owner_user_id`), отвечать на приглашение и выходить — только за себя (`circle_member.user_id`) |
+| `banks.ts` (3) | `credits_bank` | **асимметрия**: завести банк может любой вошедший (справочник общий, решение владельца 2026-09-03), **править и удалять — только суперпользователь** (проверка в действии, `banks.ts:31,49`) |
+| `users.ts` (4) | `auth_user`, пароли | `createAccount` / `setAccountActive` / `resetAccountPassword` — **суперпользователь** (проверка в сервисе `lib/services/users.ts:75,135,158`, не в действии); `changeOwnPassword` — сессия + **текущий пароль** |
+| `secrets.ts` (19) | комнаты, секреты, карточки, поля, выдачи, токены, времянки | **суперпользователь + второй фактор** (`requireSecretsAccess`, `lib/actions/_internal.ts:28`) + владение комнатой в каждом запросе (`secrets.ts:85,139,158,176,214,382,688`) |
+| `passport.ts` (2) | `passport_identity`, токены комнат | то же, что `secrets.ts` (выдача личности — операция уровня комнаты) |
+| `esa-link.ts` (4) | `auth_oidc_identity` (в `confirm`), cookie состояния | сессия + **второй фактор при включённом 2FA** (`requireLinkAccess`, `esa-link.ts:27`). Исключение: `dismissEsaLinkAction` — **без гейта**, гасит cookie подтверждения своей сессии, БД не касается |
+| `twofactor.ts` (3) | `twofactor_secret`, `auth_audit` | сессия, **только свой** uid |
+| `telegram-link.ts` (1) | привязка Telegram к своему uid | сессия, только свой uid |
+| `map.ts` (1) | ничего (инвалидация кэша) | сессия (`requireUser`) |
+
+Два слоя, а не один, — не избыточность, а необходимость: действие проверяет «кто зовёт»,
+сервис — «чью строку». `ownership()` (`lib/auth/rbac.ts`) **не имеет исключений для
+суперпользователя** по решению владельца 2026-09-03: суперпользователь администрирует
+аккаунты, но чужие данные видит только через явное согласие (круг).
+
+## 3. HTTP-роуты — `app/api/**/route.ts` (21 файл, 26 обработчиков, 15 пишущих)
+
+| Роут | Методы | Пишет | Авторизация |
+|---|---|---|---|
+| `/api/auth/login` | POST | сессионная cookie, `auth_audit` | **публичный** (пароль + login-guard по логину и IP) |
+| `/api/auth/totp` | POST | сессионная cookie `mfa:true`, аудит | pending-cookie после верного пароля + тот же guard |
+| `/api/auth/logout` | POST | гасит сессионную cookie | публичный (операция только над своей сессией) |
+| `/api/auth/oidc/start` | GET | cookie состояния OIDC | публичный (дальше всё упирается в `state`) |
+| `/api/auth/oidc/callback` | GET | сессия / pending / cookie подтверждения, `auth_oidc_identity` (при входе), аудит | публичный, но `state`+`nonce`+PKCE и **живая сессия того же uid** для режима `link` |
+| `/api/secrets` | GET, **POST** | `secrets_item` (upsert), аудит | `Bearer skm_…` токен комнаты; POST требует **права записи** (`can_write`), принципал `room:<slug>` |
+| `/api/secrets/session` | **POST**, **DELETE** | `secrets_token` (паспортная сессия часа), аудит | POST — `Bearer` **удостоверение CI** (OIDC-JWT, audience `karman-vault`, личность из подписи); DELETE — свой `skm_`-токен |
+| `/api/secrets/claim` | **POST** | `secrets_token`, аудит | `Bearer skb_…` времянка (минуты, одна комната, гасится обменом); все отказы — один 401 |
+| `/api/secrets/self` | GET | — | `Bearer skm_…` (интроспекция своего токена) |
+| `/api/secrets/provision` | **POST** | `secrets_project`, первый токен комнаты, аудит | `Bearer <VAULT_PROVISION_KEY>` (env-секрет, **не** токен комнаты) |
+| `/api/secrets/grants` | GET, **POST**, **DELETE** | `secrets_grant`, аудит | `Bearer skm_…` с **правом записи** (через `grantsGate`) |
+| `/api/secrets/grants/[id]/accept` | **POST** | `secrets_grant` → `active`, `secrets_item` получателя | `Bearer skm_…` **получателя** с правом записи (вторая рука, D-061) |
+| `/api/reminders/dispatch` | **POST** | `reminder` (слот сработавшего), отправка в Telegram | внутренний Bearer (`REMINDERS_INTERNAL_SECRET`) — зовёт воркер |
+| `/api/telegram/ingest` | **POST** | по команде: `reminder`, привязки, профиль | внутренний Bearer; `proxy.ts` не трогает `/api/*`, поэтому защита здесь |
+| `/api/documents/[id]/files` | **POST** | файл в `MEDIA_ROOT` + `document_file` | сессия + **владение документом** (`getDocumentOwnerId`) |
+| `/api/documents/[id]/files/[fileId]` | GET, **DELETE** | удаление файла и строки | сессия + владение документом и файлом |
+| `/api/circle/files/[fileId]` | GET | — | сессия + **согласие круга** (`circleFilePath` → `documentVisibleTo`) |
+| `/api/export/credits`, `/api/export/credits/[id]/payments`, `/api/export/documents` | GET | — | сессия (выгрузка фильтруется `ownership()`) |
+| `/api/health` | GET | — (только `SELECT 1`) | **публичный** — сознательно: это сторож (`scripts/health_watch.sh`) |
+
+## 4. Внешние процессы — то, что пишет мимо Next
+
+| Процесс | Что пишет | Чем защищён |
+|---|---|---|
+| `scripts/reminders-worker.mjs` (systemd `karman-reminders`) | в нашу БД **не пишет**: long-poll Telegram → `POST /api/telegram/ingest`, таймер → `POST /api/reminders/dispatch` | `REMINDERS_INTERNAL_SECRET` в Bearer; на боксе запускается юнитом |
+| `scripts/cloudflare/karman-tg.js` (Cloudflare Worker) | в нашу БД **не пишет**: реле к `api.telegram.org` (обход RKN), allowlist методов | `X-Relay-Secret` без переменной — 503 (fail-closed); деплоит владелец руками |
+| cron `scripts/backup_vault.sh` (03:30) | `vault.sql` (перечень таблиц явный), `media.tar.gz`, `MANIFEST.txt`, зашифрованные на Диск | pg_dump из env сервиса; права на бэкап — у юнита |
+| cron `scripts/health_watch.sh` (каждые 10 мин) | кэш `chat_id` на диск, сообщение в Telegram **только при смене состояния** | `curl /api/health` + токен бота |
+| `lib/db/migrations/*.sql` | схема | psql вручную; `Migration guard` в `deploy-prod.yml` не даёт коду уехать раньше схемы |
+| Ручные `psql` по мандату владельца (#025) | любые строки | подтверждение владельца **в том же ходе**; операция обязана оставить след в аудите (`token_revoked`, актор `system`, происхождение в `detail` — образец 02.10) |
+| Синк ЕСА | `auth_oidc_identity`: при входе — автосвязка по почте (`lib/services/oidc-login.ts:86,126`), при привязке — `lib/services/esa-link.ts` | вход — по подписи провайдера + `state`; привязка — сессия + 2FA + явное подтверждение личности человеком |
+
+## 5. Что нашлось: «authenticated» без роли
+
+Прогон 2026-10-03: **дыр не найдено.** 15/15 модулей Server Actions гейтят сессию в первых
+строках экспорта; 15/15 пишущих HTTP-обработчиков имеют явную авторизацию; роль нигде не
+выводится из факта «вошёл».
+
+Три асимметрии, зафиксированные **намеренно** (закрывать нечего, но переписывать без
+причины нельзя):
+
+1. `createBankAction` — любой вошедший пишет в общий справочник банков; правка и удаление
+   только суперпользователем (решение владельца 2026-09-03, `lib/actions/banks.ts:31,49`).
+2. `users.ts` — суперпользователь проверяется **в сервисе** (`lib/services/users.ts`), а не в
+   действии: у этих действий один вызывающий, и проверка в двух местах разъехалась бы при
+   появлении второго пути.
+3. `dismissEsaLinkAction` — единственное действие без гейта: гасит cookie подтверждения
+   своей сессии, ни одной строки в БД не пишет.
+
+Проверено и то, что легко пропустить: `ownership()` не имеет исключения для суперпользователя,
+а круг — единственный путь к чужим данным, и он проверяется согласием (`consented_at` с обеих
+сторон, никто не вышел), а не владением.
+
+## 6. Как таблица не протухает
+
+Гейт: `lib/security/write-paths.test.ts` (идёт в `npm run test` → `gates` в CI).
+
+- **Каждая точка входа описана.** Каждый файл `app/api/**/route.ts` и каждый
+  `lib/actions/*.ts` обязан встречаться в этом документе: новая точка записи без строки
+  в таблице роняет сборку. Считать руками ничего не нужно — тест сам пересчитывает числа
+  из кода (21 роут / 26 обработчиков / 15 модулей действий / 66 действий) и сверяет их с
+  числами из заголовка документа.
+- **Каждое действие гейтит сессию.** У каждого экспорта в первых восьми строках обязан быть
+  один из вызовов `currentUserOrNull()` / `requireSecretsAccess()` / `requireUser()` /
+  `requireLinkAccess()`. Исключения — список с причиной, а не тишина.
+- **Каждый пишущий обработчик имеет авторизацию.** POST/PUT/PATCH/DELETE в `app/api/**`
+  обязан ссылаться на bearer-гейт, внутренний секрет или сессионную cookie; публичные
+  перечислены явно (login, totp, logout, oidc/*).
+
+Проверка, живёт только в памятке, гейтом не считается (#125) — поэтому всё это в тесте, а не
+в этом разделе.
