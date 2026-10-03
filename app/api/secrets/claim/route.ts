@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { claimBootstrap } from '@/lib/services/bootstrap';
 import { rateLimit } from '@/lib/secrets/rate-limit';
+import { clientIp } from '@/lib/api/client-ip';
 
 // hashBootstrapCode + генерация токена (node:crypto) требуют Node runtime.
 export const runtime = 'nodejs';
@@ -23,12 +24,6 @@ function bearerToken(req: Request): string | null {
   const m = /^Bearer\s+(.+)$/i.exec((req.headers.get('authorization') ?? '').trim());
   const token = m?.[1]?.trim();
   return token ? token : null;
-}
-
-function clientIp(req: Request): string | null {
-  const xff = req.headers.get('x-forwarded-for');
-  if (xff) return xff.split(',')[0]?.trim() ?? null;
-  return req.headers.get('x-real-ip');
 }
 
 export async function POST(req: Request) {

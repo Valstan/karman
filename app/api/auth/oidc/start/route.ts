@@ -8,15 +8,10 @@ import {
 import { setOidcStateCookie } from '@/lib/auth/session';
 import { logAuthAudit } from '@/lib/services/twofactor';
 import { appUrl, esaRedirectUri } from '@/lib/auth/oidc-redirect';
+import { clientIp } from '@/lib/api/client-ip';
 
 // node:crypto для PKCE — Edge не подходит.
 export const runtime = 'nodejs';
-
-function clientIp(req: Request): string | null {
-  const xff = req.headers.get('x-forwarded-for');
-  if (xff) return xff.split(',')[0]?.trim() ?? null;
-  return req.headers.get('x-real-ip');
-}
 
 /**
  * Начало входа через ЕСА: генерируем state/nonce/PKCE, кладём их в подписанную

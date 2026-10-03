@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, exists, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { creditsBank, creditsCredit, creditsPayment } from '@/lib/db/schema';
 import { ownership, type SessionUser } from '@/lib/auth/rbac';
@@ -101,7 +101,9 @@ export async function updatePayment(user: SessionUser, input: PaymentUpdateInput
 
   const patch: Record<string, unknown> = {};
   if (input.amount !== undefined) patch.amount = input.amount;
-  // principal/interest в БД NOT NULL — null из формы превращаем в '0.00'.
+  // principal/interest в БД NOT NULL — явный null из формы превращаем в '0.00'.
+  // Ключа нет → поля не трогаем: именно это отличает «не передали» от «стёрли»
+  // (аудит #057, H3 — кнопка «отметить оплаченным» шлёт только status и paidDate).
   if (input.principalAmount !== undefined) patch.principalAmount = input.principalAmount ?? '0.00';
   if (input.interestAmount !== undefined) patch.interestAmount = input.interestAmount ?? '0.00';
   if (input.dueDate !== undefined) patch.dueDate = input.dueDate;
@@ -112,14 +114,44 @@ export async function updatePayment(user: SessionUser, input: PaymentUpdateInput
     return false;
   }
 
-  await db.update(creditsPayment).set(patch).where(eq(creditsPayment.id, input.id));
-  return true;
+  // Владение — В ПРЕДИКАТЕ, а не предварительным SELECT: иначе между проверкой и
+  // записью успевает измениться owner_id кредита. Соседние сервисы (credits.ts:208,
+  // documents.ts:357) уже так сделаны; здесь was единственным исключением.
+  const result = await db
+    .update(creditsPayment)
+    .set(patch)
+    .where(
+      and(
+        eq(creditsPayment.id, input.id),
+        exists(
+          db
+            .select({ one: sql`1` })
+            .from(creditsCredit)
+            .where(and(eq(creditsCredit.id, creditsPayment.creditId), ownership(user, creditsCredit.userId))),
+        ),
+      ),
+    )
+    .returning({ id: creditsPayment.id });
+  return result.length > 0;
 }
 
 export async function deletePayment(user: SessionUser, id: number): Promise<boolean> {
   if (!canAccess(user, await ownerOfPayment(id))) {
     return false;
   }
-  await db.delete(creditsPayment).where(eq(creditsPayment.id, id));
-  return true;
+  const result = await db
+    .delete(creditsPayment)
+    .where(
+      and(
+        eq(creditsPayment.id, id),
+        exists(
+          db
+            .select({ one: sql`1` })
+            .from(creditsCredit)
+            .where(and(eq(creditsCredit.id, creditsPayment.creditId), ownership(user, creditsCredit.userId))),
+        ),
+      ),
+    )
+    .returning({ id: creditsPayment.id });
+  return result.length > 0;
 }

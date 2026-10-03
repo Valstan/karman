@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { logProvisionAuthDenied, provisionRoom } from '@/lib/services/secrets';
 import { rateLimit } from '@/lib/secrets/rate-limit';
 import { checkProvisionKey, provisionKeyConfigured } from '@/lib/secrets/provision-key';
+import { clientIp } from '@/lib/api/client-ip';
 import { secretProvisionSchema } from '@/lib/validation/secret';
 
 // node:crypto (timingSafeEqual, генерация токена) требует Node runtime.
@@ -20,12 +21,6 @@ function bearerToken(req: Request): string | null {
   const m = /^Bearer\s+(.+)$/i.exec((req.headers.get('authorization') ?? '').trim());
   const token = m?.[1]?.trim();
   return token ? token : null;
-}
-
-function clientIp(req: Request): string | null {
-  const xff = req.headers.get('x-forwarded-for');
-  if (xff) return xff.split(',')[0]?.trim() ?? null;
-  return req.headers.get('x-real-ip');
 }
 
 export async function POST(req: Request) {
