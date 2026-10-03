@@ -186,7 +186,7 @@ describe('таблица путей записи (docs/write-paths.md) опис�
     expect(handlers.length, 'обработчиков').toBe(26);
     expect(writes.length, 'пишущих обработчиков').toBe(15);
     expect(modules.length, 'модулей действий').toBe(15);
-    expect(actions.length, 'действий').toBe(67);
+    expect(actions.length, 'действий').toBe(68);
 
     // Числа в prose документа — не украшение: следующий аудит ссылается на них.
     expect(doc).toContain(`${routes.length} файл, ${handlers.length} обработчиков, ${writes.length} пишущих`);

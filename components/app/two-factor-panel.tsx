@@ -12,6 +12,7 @@ import {
   startTotpEnrollmentAction,
   confirmTotpEnrollmentAction,
   disableTotpAction,
+  regenerateRecoveryCodesAction,
 } from '@/lib/actions/twofactor';
 
 type Enrollment = { otpauthUri: string; qrDataUrl: string; secret: string };
@@ -27,6 +28,9 @@ export function TwoFactorPanel({
   const [enrollment, setEnrollment] = useState<Enrollment | null>(null);
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
   const [code, setCode] = useState('');
+  // Отдельное поле для перевыпуска: два блока с общим состоянием означали бы, что
+  // напечатанный код отключения появляется и в поле перевыпуска.
+  const [regenCode, setRegenCode] = useState('');
   const [busy, setBusy] = useState(false);
 
   async function start() {
@@ -64,6 +68,20 @@ export function TwoFactorPanel({
     }
     setCode('');
     toast.success('2FA отключена');
+    router.refresh();
+  }
+
+  async function regenerate() {
+    setBusy(true);
+    const result = await regenerateRecoveryCodesAction({ code: regenCode });
+    setBusy(false);
+    if (!result.ok) {
+      toast.error(result.error);
+      return;
+    }
+    setRegenCode('');
+    setRecoveryCodes(result.data!.recoveryCodes);
+    toast.success('Коды перевыпущены, старые больше не работают');
     router.refresh();
   }
 
@@ -126,6 +144,27 @@ export function TwoFactorPanel({
                 Отключить 2FA
               </Button>
             </div>
+            <div className="flex items-end gap-2">
+              <div className="grid gap-1">
+                <Label htmlFor="regen-code" className="text-xs">
+                  Код из приложения для перевыпуска
+                </Label>
+                <Input
+                  id="regen-code"
+                  value={regenCode}
+                  onChange={(e) => setRegenCode(e.target.value)}
+                  placeholder="123 456"
+                  autoComplete="one-time-code"
+                  className="w-36 font-mono"
+                />
+              </div>
+              <Button variant="outline" disabled={busy || regenCode.trim().length < 6} onClick={regenerate}>
+                Выдать коды заново
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Перевыпуск выдаёт новые коды взамен старых: старые перестают работать сразу.
+            </p>
           </div>
         ) : enrollment ? (
           <div className="flex flex-col gap-3">

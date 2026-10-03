@@ -340,6 +340,12 @@ export const authRecoveryCode = pgTable('auth_recovery_code', {
     .notNull()
     .references(() => authUser.id, { onDelete: 'cascade' }),
   codeHash: varchar('code_hash', { length: 64 }).notNull(),
+  /**
+   * Соль для KDF recovery-кода (аудит #057 S2, миграция 0020). NULL — строка старой
+   * редакции: там был несолёный SHA-256, и такие коды должны продолжать работать, пока
+   * владелец не перевыдаст их кнопкой в настройках.
+   */
+  codeSalt: varchar('code_salt', { length: 64 }),
   usedAt: tstz('used_at'),
   createdAt: tstz('created_at').notNull().defaultNow(),
 });

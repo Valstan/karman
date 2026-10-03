@@ -7,6 +7,7 @@ import {
   disableTotp,
   logAuthAudit,
   bumpSessionEpoch,
+  regenerateRecoveryCodes,
   type TotpEnrollment,
 } from '@/lib/services/twofactor';
 import { rotateSessionCookie } from '@/lib/auth/session';
@@ -77,4 +78,29 @@ export async function disableTotpAction(values: unknown): Promise<ActionResult> 
   await rotateSessionCookie(user.id);
   revalidateAll();
   return { ok: true };
+}
+
+/**
+ * Перевыпуск recovery-кодов (аудит #057 S2, решение владельца 2026-10-03).
+ *
+ * Гейт тот же step-up, что у остальных операций безопасности учётки: новый запасной путь входа
+ * меняет то, чем человек восстанавливается при потере телефона. Плюс действующий TOTP-код —
+ * владелец подтверждает, что телефон у него в руках.
+ *
+ * Поколение сессии здесь НЕ растёт: старые коды не путь, открытый сессией, — они заменяются
+ * целиком в одной транзакции, и висящей копии не остаётся.
+ */
+export async function regenerateRecoveryCodesAction(
+  values: unknown,
+): Promise<ActionResult<{ recoveryCodes: string[] }>> {
+  const guard = await requireAccountSecurity();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const user = guard.user;
+  const parsed = totpCodeSchema.safeParse(values);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? 'Введите код' };
+  const result = await regenerateRecoveryCodes(user.id, parsed.data.code);
+  if (!result) return { ok: false, error: 'Неверный код' };
+  await logAuthAudit(user.id, user.username, 'recovery_codes_regenerated', null);
+  revalidateAll();
+  return { ok: true, data: result };
 }
