@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS auth_user (
   email        VARCHAR(254) NOT NULL DEFAULT '',
   is_staff     BOOLEAN NOT NULL DEFAULT FALSE,
   is_active    BOOLEAN NOT NULL DEFAULT TRUE,
+  session_epoch INTEGER NOT NULL DEFAULT 0,
   date_joined  TIMESTAMPTZ DEFAULT NOW()
 );
 

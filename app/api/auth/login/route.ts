@@ -3,7 +3,7 @@ import { or, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { authUser } from '@/lib/db/schema';
 import { verifyDjangoPassword } from '@/lib/auth/password';
-import { setSessionCookie, setTotpPendingCookie } from '@/lib/auth/session';
+import { setSessionCookie, setTotpPendingCookie, currentSessionEpoch } from '@/lib/auth/session';
 import { loginGuardKey, loginAllowed, registerFailure, registerSuccess } from '@/lib/auth/login-guard';
 import { totpEnabled, logAuthAudit } from '@/lib/services/twofactor';
 import { touchLastLogin } from '@/lib/services/users';
@@ -90,7 +90,13 @@ export async function POST(req: Request) {
     return NextResponse.json({ totpRequired: true });
   }
 
-  await setSessionCookie(user.id);
+  // Поколение обязательно: без него чеканется токен поколения 0, то есть тот самый,
+  // который нельзя отозвать до первого инкремента счётчика (аудит #057 R2).
+  const epoch = await currentSessionEpoch(user.id);
+  if (epoch === null) {
+    return NextResponse.json({ message: 'Неверный логин или пароль' }, { status: 401 });
+  }
+  await setSessionCookie(user.id, false, epoch);
   await touchLastLogin(user.id);
   await logAuthAudit(user.id, username, 'login_ok', ip);
   return NextResponse.json({

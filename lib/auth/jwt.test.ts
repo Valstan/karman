@@ -29,13 +29,38 @@ import {
 
 describe('verifySessionPayload', () => {
   it('принимает настоящую сессию', async () => {
-    const token = await signSession(42, false);
-    expect(await verifySessionPayload(token)).toEqual({ uid: 42, mfa: false });
+    const token = await signSession(42, false, 0);
+    expect(await verifySessionPayload(token)).toEqual({ uid: 42, mfa: false, epoch: 0 });
   });
 
   it('сохраняет отметку пройденного второго фактора', async () => {
-    const token = await signSession(42, true);
-    expect(await verifySessionPayload(token)).toEqual({ uid: 42, mfa: true });
+    const token = await signSession(42, true, 0);
+    expect(await verifySessionPayload(token)).toEqual({ uid: 42, mfa: true, epoch: 0 });
+  });
+
+  /**
+   * Поколение сессии (аудит #057 R2, миграция 0019).
+   *
+   * Механизм отзыва стоит на ТРЁХ утверждениях, и каждое проверяется отдельно: значение
+   * доезжает до токена, разные поколения различимы, а токен без поля не принимается вовсе.
+   * Третье — самое важное: «считать отсутствующее поле за 0» означало бы, что все сессии,
+   * выданные до миграции, бессмертны (у них поколение 0, а счётчик начнёт с 0 и только
+   * когда-нибудь сдвинется).
+   */
+  it('несёт поколение сессии и различает его значения', async () => {
+    const fresh = await signSession(42, false, 0);
+    const rotated = await signSession(42, false, 1);
+    expect(await verifySessionPayload(fresh)).toEqual({ uid: 42, mfa: false, epoch: 0 });
+    expect(await verifySessionPayload(rotated)).toEqual({ uid: 42, mfa: false, epoch: 1 });
+  });
+
+  it('НЕ принимает токен без поколения — сессии старше миграции неотзываемы', async () => {
+    // Токен ровно той формы, какие были выданы до миграции: поля `epoch` в подписи нет.
+    // Собран тем же модулем и тем же ключом, поэтому проверяется настоящий путь разбора,
+    // а не рукотворный JWT, подписанный неизвестно чем.
+    const legacy = await signSession(42, true, undefined as unknown as number);
+    expect(await verifySessionPayload(legacy)).toBeNull();
+    expect(await verifySession(legacy)).toBeNull();
   });
 
   it('НЕ принимает промежуточный токен второго фактора как сессию', async () => {
@@ -53,7 +78,7 @@ describe('verifySessionPayload', () => {
   });
 
   it('сессия не принимается вместо промежуточного токена', async () => {
-    expect(await verifyTotpPending(await signSession(42))).toBeNull();
+    expect(await verifyTotpPending(await signSession(42, false, 0))).toBeNull();
   });
 
   it('мусор и пустое отвергаются', async () => {

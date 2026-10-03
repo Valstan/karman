@@ -53,6 +53,14 @@ export const authUser = pgTable('auth_user', {
   email: varchar('email', { length: 254 }).notNull().$defaultFn(() => ''),
   isStaff: boolean('is_staff').notNull().default(false),
   isActive: boolean('is_active').notNull().default(true),
+  /**
+   * Поколение сессии (аудит #057 R2). Сессия — статeless JWT, и отозвать выданный
+   * токен было нечем: ни смена пароля, ни сброс пароля суперпользователем не трогали
+   * валидность. Значение кладётся в токен и сверяется на каждом запросе; любое изменение
+   * безопасности учётки увеличивает счётчик и убивает все ранее выданные сессии.
+   * Миграция 0019.
+   */
+  sessionEpoch: integer('session_epoch').notNull().default(0),
   dateJoined: timestamp('date_joined', { withTimezone: true, mode: 'string' })
     .notNull()
     .$defaultFn(isoNow),

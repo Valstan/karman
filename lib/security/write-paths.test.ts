@@ -31,6 +31,9 @@ const ACTION_GATES = [
   'requireSecretsAccess()',
   'requireUser()',
   'requireLinkAccess()',
+  // Step-up для операций, меняющих безопасность учётки (аудит #057 R3/R4):
+  // сброс пароля суперпользователем, включение и выключение 2FA, блокировка учётки.
+  'requireAccountSecurity()',
 ] as const;
 
 /**

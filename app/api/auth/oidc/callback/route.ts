@@ -7,6 +7,7 @@ import {
   readSessionPayload,
   setOidcConfirmCookie,
   setSessionCookie,
+  currentSessionEpoch,
   setTotpPendingCookie,
 } from '@/lib/auth/session';
 import { resolveOidcLogin } from '@/lib/services/oidc-login';
@@ -177,7 +178,12 @@ export async function GET(req: Request) {
   // Заведённый этим входом пользователь при этом не видит ничего чужого: весь
   // доступ к данным фильтруется по владельцу (`lib/auth/rbac.ts`), поэтому
   // и список кредитов, и список комнат vault у него пустые.
-  await setSessionCookie(userId);
+  const epoch = await currentSessionEpoch(userId);
+  if (epoch === null) {
+    // Учётка исчезла между разрешением личности и выдачей сессии — вход не состоялся.
+    return deny(req, 'inactive');
+  }
+  await setSessionCookie(userId, false, epoch);
   await touchLastLogin(userId);
   await logAuthAudit(userId, username, `esa_ok:${outcome}`, ip);
   return NextResponse.redirect(appUrl('/', req));
