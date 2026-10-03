@@ -1,5 +1,8 @@
 import 'server-only';
 import { cookies } from 'next/headers';
+import { eq } from 'drizzle-orm';
+import { db } from '@/lib/db/client';
+import { authUser } from '@/lib/db/schema';
 import {
   OIDC_CONFIRM_COOKIE,
   OIDC_CONFIRM_TTL_SECONDS,
@@ -54,10 +57,29 @@ async function killCookie(name: string): Promise<void> {
   cookieStore.set(name, '', { ...COOKIE_ATTRS, maxAge: 0 });
 }
 
-export async function setSessionCookie(uid: number, mfa = false): Promise<void> {
-  const token = await signSession(uid, mfa);
+export async function setSessionCookie(uid: number, mfa: boolean, epoch: number): Promise<void> {
+  const token = await signSession(uid, mfa, epoch);
   const cookieStore = await cookies();
   cookieStore.set(SESSION_COOKIE, token, { ...COOKIE_ATTRS, maxAge: SESSION_TTL_SECONDS });
+}
+
+/**
+ * Перевыпуск cookie с текущим поколением сессии (аудит #057 R2).
+ *
+ * Операции, двигающие счётчик поколений (смена пароля, сброс пароля, включение и
+ * выключение 2FA), убивают ВСЕ ранее выданные токены — иначе механизм отзыва не работал
+ * бы. Но текущий браузер ходил легитимно: разлогинивать человека, который только что
+ * подтвердил смену пароля, не нужно. Здесь epoch берётся из БД ПОСЛЕ инкремента, то есть
+ * cookie получает новое поколение и продолжает работать.
+ *
+ * Отдельный браузер (второе устройство) закономерно останется разлогиненным — это и есть
+ * смысл механизма: «если это сделал не я, я хочу, чтобы всё другое отвалилось».
+ */
+export async function rotateSessionCookie(userId: number): Promise<void> {
+  const epoch = await currentSessionEpoch(userId);
+  if (epoch === null) return;
+  const payload = await readSessionPayload();
+  await setSessionCookie(userId, payload?.mfa ?? false, epoch);
 }
 
 export async function clearSessionCookie(): Promise<void> {
@@ -73,9 +95,26 @@ export async function readSessionUid(): Promise<number | null> {
   return verifySession(await readSessionToken());
 }
 
-/** Полный payload сессии (uid + mfa) — для гейта /secrets. */
+/** Полный payload сессии (uid + mfa + epoch) — для гейта /secrets и отзыва. */
 export async function readSessionPayload(): Promise<SessionPayload | null> {
   return verifySessionPayload(await readSessionToken());
+}
+
+/**
+ * Поколение сессии учётки в БД; null — учётки нет.
+ *
+ * Обязательный параметр при выдаче cookie, поэтому экспортируется: три места входа
+ * (`login`, `totp`, OIDC callback) обязаны чеканить токен ТЕКУЩЕГО поколения, а не
+ * угадывать. Значение по умолчанию здесь означало бы токен поколения 0 — тот самый,
+ * который не отзывается до первого инкремента.
+ */
+export async function currentSessionEpoch(userId: number): Promise<number | null> {
+  const [row] = await db
+    .select({ epoch: authUser.sessionEpoch })
+    .from(authUser)
+    .where(eq(authUser.id, userId))
+    .limit(1);
+  return row?.epoch ?? null;
 }
 
 // --- Второй шаг входа (пароль принят, ждём TOTP-код) --------------------------

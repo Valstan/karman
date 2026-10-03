@@ -157,7 +157,12 @@ export async function setAccountActive(
     .limit(1);
   if (!target) return { ok: false, error: 'Аккаунт не найден' };
 
-  await db.update(authUser).set({ isActive }).where(eq(authUser.id, targetId));
+  // Поколение сессии растёт и здесь: блокировка и разблокировка — события безопасности
+  // учётки, и висящая сессия не должна переживать ни то, ни другое (аудит #057 R2).
+  await db
+    .update(authUser)
+    .set({ isActive, sessionEpoch: sql`${authUser.sessionEpoch} + 1` })
+    .where(eq(authUser.id, targetId));
   await logAuthAudit(target.id, target.username, isActive ? 'account_enabled' : 'account_disabled', null);
   await logAuthAudit(user.id, user.username, 'account_state_changed_by', null);
   return { ok: true, username: target.username };
@@ -166,6 +171,11 @@ export async function setAccountActive(
 /**
  * Сбрасывает пароль аккаунта на временный; возвращает plaintext ОДИН раз
  * (владелец передаёт его человеку разово). null — нет прав или нет аккаунта.
+ *
+ * Здесь же растёт `session_epoch`: пароль сменён — все ранее выданные сессии этой учётки
+ * мертвы (аудит #057 R2). Иначе сброс пароля был бы косметическим: старый токен продолжал бы
+ * открывать vault суперпользователя ещё 14 дней, то есть операция, которой владелец чинит
+ * последствия кражи, сама не закрывала кражу.
  */
 export async function resetAccountPassword(
   user: SessionUser,
@@ -182,7 +192,10 @@ export async function resetAccountPassword(
   const tempPassword = generateTempPassword();
   await db
     .update(authUser)
-    .set({ password: hashDjangoPassword(tempPassword) })
+    .set({
+      password: hashDjangoPassword(tempPassword),
+      sessionEpoch: sql`${authUser.sessionEpoch} + 1`,
+    })
     .where(eq(authUser.id, targetId));
   // Две записи: кому сброшен и кто сбросил (у auth_audit нет колонки detail).
   await logAuthAudit(target.id, target.username, 'password_reset', null);
@@ -204,7 +217,10 @@ export async function changeOwnPassword(
   if (!row || !verifyDjangoPassword(currentPassword, row.password)) return false;
   await db
     .update(authUser)
-    .set({ password: hashDjangoPassword(nextPassword) })
+    .set({
+      password: hashDjangoPassword(nextPassword),
+      sessionEpoch: sql`${authUser.sessionEpoch} + 1`,
+    })
     .where(eq(authUser.id, user.id));
   await logAuthAudit(user.id, user.username, 'password_changed', null);
   return true;

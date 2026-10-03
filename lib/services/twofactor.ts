@@ -1,8 +1,8 @@
 import 'server-only';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { toDataURL } from 'qrcode';
 import { db } from '@/lib/db/client';
-import { authTotp, authRecoveryCode, authAudit } from '@/lib/db/schema';
+import { authTotp, authRecoveryCode, authAudit, authUser } from '@/lib/db/schema';
 import { encryptSecret, decryptSecret } from '@/lib/secrets/crypto';
 import {
   generateTotpSecret,
@@ -54,6 +54,23 @@ export async function totpEnabled(userId: number): Promise<boolean> {
     .where(eq(authTotp.userId, userId))
     .limit(1);
   return Boolean(row?.enabledAt);
+}
+
+/**
+ * Растить поколение сессии (аудит #057 R2, миграция 0019).
+ *
+ * Вызывается из операций, меняющих безопасность учётки. Рост означает, что ВСЕ ранее выданные
+ * токены этой учётки перестают проходить сверку в `getCurrentUser` — то есть операция, которой
+ * человек чинит последствия кражи, теперь эти последствия закрывает.
+ *
+ * Порядок вызывающих важен: сначала инкремент, потом `rotateSessionCookie` — она читает
+ * поколение из БД, поэтому до инкремента перевыпустила бы токен старого поколения.
+ */
+export async function bumpSessionEpoch(userId: number): Promise<void> {
+  await db
+    .update(authUser)
+    .set({ sessionEpoch: sql`${authUser.sessionEpoch} + 1` })
+    .where(eq(authUser.id, userId));
 }
 
 export type TotpEnrollment = { otpauthUri: string; qrDataUrl: string; secret: string };

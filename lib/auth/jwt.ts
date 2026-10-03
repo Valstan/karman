@@ -51,16 +51,30 @@ function getSecretKey(): Uint8Array {
   return cachedKey;
 }
 
-/** mfa — сессия прошла второй фактор (TOTP/recovery); гейт раздела /secrets. */
-export async function signSession(uid: number, mfa = false): Promise<string> {
-  return new SignJWT({ uid, mfa })
+/**
+ * `epoch` — поколение сессии (миграция 0019, аудит #057 R2).
+ *
+ * Сессия статeless: без числа в payload и сверки с БД выданный токен нечем отозвать, и
+ * окно в 14 дней не прерывает НИЧТО — смена пароля пишет только `auth_user.password`.
+ * Значение кладётся в токентри выдаче и сверяется в `getCurrentUser`; любое изменение
+ * безопасности учётки увеличивает счётчик и убивает все ранее выданные токены.
+ *
+ * Токены, выпущенные до миграции, поля не несут и отвергаются как «поколение не
+ * совпало» — осознанный разлогин всех устройств (см. комментарий миграции).
+ *
+ * Параметр ОБЯЗАТЕЛЬНЫЙ и без значения по умолчанию: дефолт `0` означал бы, что забытый
+ * аргумент у вызывающего чеканит токен нулевого поколения — то есть ровно тот, который
+ * нельзя отозвать до первого инкремента. Тип это ловит, молчание — нет.
+ */
+export async function signSession(uid: number, mfa: boolean, epoch: number): Promise<string> {
+  return new SignJWT({ uid, mfa, epoch })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setExpirationTime(`${SESSION_TTL_SECONDS}s`)
     .sign(getSecretKey());
 }
 
-export type SessionPayload = { uid: number; mfa: boolean };
+export type SessionPayload = { uid: number; mfa: boolean; epoch: number };
 
 export async function verifySessionPayload(
   token: string | undefined | null,
@@ -82,7 +96,11 @@ export async function verifySessionPayload(
     // разлогинила бы всех), а любой будущий этапный токен отсекается сам —
     // даже если про эту функцию забудут.
     if (payload.stage !== undefined) return null;
-    return { uid: payload.uid, mfa: payload.mfa === true };
+    // Отсутствие epoch — токен старше миграции 0019: он не может быть отозван, поэтому
+    // возвращается как `null` и человек входит заново. Не «считаем за 0»: это означало
+    // бы, что старые токены бессмертны, пока counter не сдвинется.
+    if (typeof payload.epoch !== 'number') return null;
+    return { uid: payload.uid, mfa: payload.mfa === true, epoch: payload.epoch };
   } catch {
     return null;
   }

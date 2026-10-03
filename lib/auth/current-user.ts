@@ -4,18 +4,29 @@ import { notFound, redirect } from 'next/navigation';
 import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { authUser } from '@/lib/db/schema';
-import { readSessionUid, readSessionPayload } from './session';
-import { totpEnabled } from '@/lib/services/twofactor';
+import { readSessionPayload } from './session';
+import { totpEnabled, logAuthAudit } from '@/lib/services/twofactor';
 import type { SessionUser } from './rbac';
 
 /**
  * Авторитетная проверка сессии: читает uid из cookie и подтягивает
  * пользователя из БД (ловит деактивированных). Обёрнуто в React cache(),
  * поэтому в рамках одного запроса БД опрашивается один раз.
+ *
+ * ## Поколение сессии (аудит #057 R2)
+ *
+ * Кроме `is_active` сверяется `session_epoch` из токена со значением в БД. Это единственный
+ * способ отозвать выданный токен статeless-JWT: без него смена пароля (своя и сбросом
+ * суперпользователем) не прерывала окно в 14 дней, а деактивировать себя владелец не может —
+ * то есть kill-switch'а у суперпользователя не было вовсе.
+ *
+ * Расхождение трактуется как «сессии больше нет» и попадает в `auth_audit`: человек должен
+ * видеть в панели учётных записей, что его выкинуло с чужого устройства, иначе он ищет
+ * причину в браузере, а не в журнале.
  */
 export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
-  const uid = await readSessionUid();
-  if (uid === null) {
+  const session = await readSessionPayload();
+  if (session === null) {
     return null;
   }
 
@@ -28,13 +39,18 @@ export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
       lastName: authUser.lastName,
       isSuperuser: authUser.isSuperuser,
       isActive: authUser.isActive,
+      sessionEpoch: authUser.sessionEpoch,
     })
     .from(authUser)
-    .where(eq(authUser.id, uid))
+    .where(eq(authUser.id, session.uid))
     .limit(1);
 
   const user = rows[0];
   if (!user || !user.isActive) {
+    return null;
+  }
+  if (user.sessionEpoch !== session.epoch) {
+    await logAuthAudit(user.id, user.username, 'session_revoked', null);
     return null;
   }
 

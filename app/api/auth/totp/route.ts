@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import {
   setSessionCookie,
+  currentSessionEpoch,
   readTotpPendingUid,
   clearTotpPendingCookie,
 } from '@/lib/auth/session';
@@ -53,7 +54,13 @@ export async function POST(req: Request) {
 
   registerSuccess(guardKey, accountKey);
   await clearTotpPendingCookie();
-  await setSessionCookie(uid, true);
+  // Поколение обязательно: учётка могла исчезнуть между выдачей pending-cookie и
+  // подтверждением кода (удалённый аккаунт), и тогда чеканить токен не для кого.
+  const epoch = await currentSessionEpoch(uid);
+  if (epoch === null) {
+    return NextResponse.json({ message: 'Сессия входа истекла — войдите заново' }, { status: 401 });
+  }
+  await setSessionCookie(uid, true, epoch);
   await logAuthAudit(uid, null, result.usedRecovery ? 'login_ok_recovery' : 'login_ok_totp', ip);
   return NextResponse.json({ ok: true });
 }
