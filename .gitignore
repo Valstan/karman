@@ -58,3 +58,8 @@ Thumbs.db
 # Misc
 *.tar.gz
 *.sql.gz
+
+# hotline (pilot brain 03.10): presence.json is gitignored,
+# outbox tape is committed with the normal flow and is visible
+# to the peer via GitHub (the degraded second channel).
+hotline/presence.json
