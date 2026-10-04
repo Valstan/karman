@@ -182,14 +182,17 @@ describe('таблица путей записи (docs/write-paths.md) опис�
     const writes = handlers.filter((h) => (WRITE_METHODS as readonly string[]).includes(h.method));
     const actions = modules.flatMap((m) => m.exports);
 
-    expect(routes.length, 'роутов').toBe(21);
-    expect(handlers.length, 'обработчиков').toBe(26);
-    expect(writes.length, 'пишущих обработчиков').toBe(15);
+    expect(routes.length, 'роутов').toBe(23);
+    expect(handlers.length, 'обработчиков').toBe(30);
+    expect(writes.length, 'пишущих обработчиков').toBe(17);
     expect(modules.length, 'модулей действий').toBe(15);
     expect(actions.length, 'действий').toBe(68);
 
     // Числа в prose документа — не украшение: следующий аудит ссылается на них.
-    expect(doc).toContain(`${routes.length} файл, ${handlers.length} обработчиков, ${writes.length} пишущих`);
+    // Форма слова «файл» склоняется (21 файл, 23 файла), поэтому счёт роутов
+    // сверяется регексом, а не дословной подстрокой.
+    expect(doc).toMatch(new RegExp(`\\(${routes.length} файла?,`));
+    expect(doc).toContain(`${handlers.length} обработчиков, ${writes.length} пишущих`);
     expect(doc).toContain(`${modules.length} модулей, ${actions.length} действий`);
   });
 
@@ -257,6 +260,7 @@ describe('HTTP-роуты: у пишущих обработчиков есть �
   const AUTH_MARKERS = [
     'bearerToken',
     'checkInternalBearer',
+    'checkHotlineBearer',
     'checkProvisionKey',
     'grantsGate',
     'getCurrentUser',

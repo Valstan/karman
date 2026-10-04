@@ -56,7 +56,7 @@
 поэтому гейт «суперпользователь» на операции, возвращающей пароль открытым текстом, не
 удерживал ничего.
 
-## 3. HTTP-роуты — `app/api/**/route.ts` (21 файл, 26 обработчиков, 15 пишущих)
+## 3. HTTP-роуты — `app/api/**/route.ts` (23 файла, 30 обработчиков, 17 пишущих)
 
 | Роут | Методы | Пишет | Авторизация |
 |---|---|---|---|
@@ -74,6 +74,8 @@
 | `/api/secrets/grants/[id]/accept` | **POST** | `secrets_grant` → `active`, `secrets_item` получателя | `Bearer skm_…` **получателя** с правом записи (вторая рука, D-061) |
 | `/api/reminders/dispatch` | **POST** | `reminder` (слот сработавшего), отправка в Telegram | внутренний Bearer (`REMINDERS_INTERNAL_SECRET`) — зовёт воркер |
 | `/api/telegram/ingest` | **POST** | по команде: `reminder`, привязки, профиль | внутренний Bearer; `proxy.ts` не трогает `/api/*`, поэтому защита здесь |
+| `/api/hotline` | GET, **POST** | `hotline_message` (POST), чтение ленты (GET) | общий секрет relay (`HOTLINE_RELAY_SECRET`, `checkHotlineBearer`, fail-closed 503 без секрета); POST — rate-limit по IP + серверный deny-линт до записи |
+| `/api/hotline/presence` | GET, **POST** | `hotline_presence` (upsert по метке) | тот же секрет relay; чтение присутствия — тем же Bearer |
 | `/api/documents/[id]/files` | **POST** | файл в `MEDIA_ROOT` + `document_file` | сессия + **владение документом** (`getDocumentOwnerId`) |
 | `/api/documents/[id]/files/[fileId]` | GET, **DELETE** | удаление файла и строки | сессия + владение документом и файлом |
 | `/api/circle/files/[fileId]` | GET | — | сессия + **согласие круга** (`circleFilePath` → `documentVisibleTo`) |
@@ -125,7 +127,7 @@
 - **Каждая точка входа описана.** Каждый файл `app/api/**/route.ts` и каждый
   `lib/actions/*.ts` обязан встречаться в этом документе: новая точка записи без строки
   в таблице роняет сборку. Считать руками ничего не нужно — тест сам пересчитывает числа
-  из кода (21 роут / 26 обработчиков / 15 модулей действий / 66 действий) и сверяет их с
+  из кода (23 роута / 30 обработчиков / 15 модулей действий / 68 действий) и сверяет их с
   числами из заголовка документа.
 - **Каждое действие гейтит сессию.** У каждого экспорта в первых восьми строках обязан быть
   один из вызовов `currentUserOrNull()` / `requireSecretsAccess()` / `requireUser()` /

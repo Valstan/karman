@@ -807,3 +807,28 @@ export type SecretsItemRow = typeof secretsItem.$inferSelect;
 export type SecretsTokenRow = typeof secretsToken.$inferSelect;
 export type SecretsGrantRow = typeof secretsGrant.$inferSelect;
 export type SecretsAuditRow = typeof secretsAudit.$inferSelect;
+
+/**
+ * Relay Телефона (Ф1, миграция 0021). Комнаты в v2-a — пространства имён при
+ * общем секрете relay (не криптограница); персональные токены комнат — v2-b.
+ * Лимит текста дублирует CHECK миграции: контракт Ф0 — 2000 символов.
+ */
+export const hotlineMessage = pgTable('hotline_message', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  room: varchar('room', { length: 64 }).notNull(),
+  sender: varchar('sender', { length: 64 }).notNull(),
+  kind: varchar('kind', { length: 16 })
+    .notNull()
+    .$type<'question' | 'answer' | 'done' | 'ping' | 'wakeup' | 'ack'>(),
+  text: varchar('text', { length: 2000 }).notNull(),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+});
+
+export const hotlinePresence = pgTable('hotline_presence', {
+  label: varchar('label', { length: 64 }).primaryKey(),
+  aliveUntil: tstz('alive_until').notNull(),
+  updatedAt: tstz('updated_at').notNull().defaultNow(),
+});
+
+export type HotlineMessageRow = typeof hotlineMessage.$inferSelect;
+export type HotlinePresenceRow = typeof hotlinePresence.$inferSelect;

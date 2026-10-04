@@ -85,6 +85,7 @@ pg_dump "$DATABASE_URL" --no-owner --no-privileges \
   -t documents_documentcategory -t documents_document \
   -t document_field -t document_file \
   -t circle -t circle_member \
+  -t hotline_message -t hotline_presence \
   > "$WORK/vault.sql"
 
 # --- 2. media/ (сканы документов) ------------------------------------------
@@ -110,7 +111,7 @@ fi
 cat > "$WORK/MANIFEST.txt" <<EOF
 KARMAN vault backup
 created_utc: ${STAMP}
-includes: vault.sql (secrets_*/passport_*/auth_oidc_identity/auth_totp/auth_recovery_code/auth_audit/person_profile/documents_*/document_field/document_file/circle*), media.tar.gz
+includes: vault.sql (secrets_*/passport_*/auth_oidc_identity/auth_totp/auth_recovery_code/auth_audit/person_profile/documents_*/document_field/document_file/circle*/hotline_*), media.tar.gz
 excludes: credits_* (кредиты и платежи — восстановимы из выписок банка)
 excludes: SECRETS_MASTER_KEY (корень доверия — хранится у владельца отдельно, pool #008)
 excludes: passport_jwks_cache (кеш чужих публичных ключей — восстанавливается фетчем)
