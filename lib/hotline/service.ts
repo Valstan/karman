@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, asc, desc, gt, lt } from 'drizzle-orm';
+import { and, asc, count, desc, gt, lt, max } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { hotlineMessage, hotlinePresence } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
@@ -116,4 +116,45 @@ export async function readPresence() {
     })
     .from(hotlinePresence)
     .orderBy(desc(hotlinePresence.updatedAt));
+}
+
+/**
+ * Витрина владельца (только чтение): сводка по комнатам для `/hotline`.
+ * Три маленьких запроса вместо одного сложного — читаемость важнее одного
+ * round-trip (R1: сервис без тестов держим короче объяснений).
+ */
+export async function readRoomStats() {
+  return db
+    .select({
+      room: hotlineMessage.room,
+      total: count(hotlineMessage.id),
+      lastTs: max(hotlineMessage.createdAt),
+    })
+    .from(hotlineMessage)
+    .groupBy(hotlineMessage.room)
+    .orderBy(desc(max(hotlineMessage.createdAt)));
+}
+
+export async function readRoomDayCounts() {
+  const dayAgo = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+  return db
+    .select({
+      room: hotlineMessage.room,
+      dayCount: count(hotlineMessage.id),
+    })
+    .from(hotlineMessage)
+    .where(gt(hotlineMessage.createdAt, dayAgo))
+    .groupBy(hotlineMessage.room);
+}
+
+export async function readRoomSenders() {
+  return db
+    .select({
+      room: hotlineMessage.room,
+      sender: hotlineMessage.sender,
+      lastTs: max(hotlineMessage.createdAt),
+    })
+    .from(hotlineMessage)
+    .groupBy(hotlineMessage.room, hotlineMessage.sender)
+    .orderBy(asc(hotlineMessage.room), desc(max(hotlineMessage.createdAt)));
 }
