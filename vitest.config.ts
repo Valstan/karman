@@ -3,7 +3,12 @@ import path from 'node:path';
 
 export default defineConfig({
   resolve: {
-    alias: { '@': path.resolve(__dirname, '.') },
+    alias: {
+      '@': path.resolve(__dirname, '.'),
+      // R1: `server-only` резолвится только резолвером Next; в vitest гаснет
+      // в пустой стаб (сервисы несут его маркером «только сервер»).
+      'server-only': path.resolve(__dirname, 'lib/db/server-only-stub.ts'),
+    },
   },
   test: {
     environment: 'node',
