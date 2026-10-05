@@ -66,10 +66,19 @@ export async function heartbeatPresence(
   if (lineState !== undefined) {
     set.lineState = lineState;
   }
-  await db.insert(hotlinePresence).values({ label, aliveUntil }).onConflictDoUpdate({
-    target: hotlinePresence.label,
-    set,
-  });
+  // Событие обязано попасть и в INSERT, а не только в UPDATE: первая строка
+  // метки идёт путём вставки (конфликта нет) и иначе получила бы дефолт
+  // 'offline' вместо переданного события. Поймано живой проверкой 05.10:
+  // pickup новой метки отвечал line_state 'offline'.
+  await db
+    .insert(hotlinePresence)
+    .values(
+      lineState === undefined ? { label, aliveUntil } : { label, aliveUntil, lineState },
+    )
+    .onConflictDoUpdate({
+      target: hotlinePresence.label,
+      set,
+    });
   // Возвращаем хранимое состояние, а не эхо входа: тик без поля обязан
   // увидеть прежнее значение (G54-контроль пары «поле прошло все слои»).
   const [row] = await db
