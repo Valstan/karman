@@ -20,6 +20,9 @@ const NAV = [
   // `requireSecretsAccess`. Прятать пункт меню без них было бы обманом —
   // адрес /secrets набирается руками.
   { href: '/secrets', label: 'Секреты', superuserOnly: true },
+  // Витрина Телефона (мандат 04.10, срок 16.10): тот же superuserOnly-паттерн —
+  // витрина прячется, защита стоит в requireSecretsUser на странице.
+  { href: '/hotline', label: 'Телефон', superuserOnly: true },
   // Карта проектов (D-090): вкладки, содержимое — из репо Мозга через GitHub API.
   { href: '/map', label: 'Карта' },
   { href: '/settings', label: 'Настройки' },
