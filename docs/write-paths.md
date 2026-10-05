@@ -75,7 +75,7 @@
 | `/api/reminders/dispatch` | **POST** | `reminder` (слот сработавшего), отправка в Telegram | внутренний Bearer (`REMINDERS_INTERNAL_SECRET`) — зовёт воркер |
 | `/api/telegram/ingest` | **POST** | по команде: `reminder`, привязки, профиль | внутренний Bearer; `proxy.ts` не трогает `/api/*`, поэтому защита здесь |
 | `/api/hotline` | GET, **POST** | `hotline_message` (POST), чтение ленты (GET) | общий секрет relay (`HOTLINE_RELAY_SECRET`, `checkHotlineBearer`, fail-closed 503 без секрета); POST — rate-limit по IP + серверный deny-линт до записи |
-| `/api/hotline/presence` | GET, **POST** | `hotline_presence` (upsert по метке) | тот же секрет relay; чтение присутствия — тем же Bearer |
+| `/api/hotline/presence` | GET, **POST** | `hotline_presence` (upsert по метке) + сторож линии: GET/POST гасят протухшие `on_line` → `offline` (два пропуска по 30с, мандат 05.10) | тот же секрет relay; чтение присутствия — тем же Bearer |
 | `/api/documents/[id]/files` | **POST** | файл в `MEDIA_ROOT` + `document_file` | сессия + **владение документом** (`getDocumentOwnerId`) |
 | `/api/documents/[id]/files/[fileId]` | GET, **DELETE** | удаление файла и строки | сессия + владение документом и файлом |
 | `/api/circle/files/[fileId]` | GET | — | сессия + **согласие круга** (`circleFilePath` → `documentVisibleTo`) |

@@ -44,4 +44,21 @@ describe('контракт relay', () => {
       hotlinePresenceSchema.safeParse({ label: 'KARMAN', alive_minutes: 1441 }).success,
     ).toBe(false);
   });
+
+  it('сторож: line_state опционально, только offline/on_line; тик без поля валиден', () => {
+    const base = { label: 'KARMAN', alive_minutes: 60 };
+    // Тик без поля — обычный heartbeat, состояние не трогает (G54).
+    const plain = hotlinePresenceSchema.safeParse(base);
+    expect(plain.success && plain.data.line_state).toBe(undefined);
+    for (const line_state of ['offline', 'on_line']) {
+      expect(hotlinePresenceSchema.safeParse({ ...base, line_state }).success, line_state).toBe(
+        true,
+      );
+    }
+    for (const line_state of ['busy', 'online', '', 'на проводе']) {
+      expect(hotlinePresenceSchema.safeParse({ ...base, line_state }).success, line_state).toBe(
+        false,
+      );
+    }
+  });
 });

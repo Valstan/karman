@@ -827,6 +827,13 @@ export const hotlineMessage = pgTable('hotline_message', {
 export const hotlinePresence = pgTable('hotline_presence', {
   label: varchar('label', { length: 64 }).primaryKey(),
   aliveUntil: tstz('alive_until').notNull(),
+  /**
+   * Состояние линии (сторож, мандат 05.10, миграция 0022): 'offline' (трубка
+   * положена) / 'on_line' (на проводе). Пишется событием через POST presence,
+   * обычный тик не трогает; протухшие 'on_line' гасит sweep после двух
+   * пропущенных тиков. Канон пары — docs/hotline-relay.md.
+   */
+  lineState: varchar('line_state', { length: 16 }).notNull().default('offline'),
   updatedAt: tstz('updated_at').notNull().defaultNow(),
 });
 
