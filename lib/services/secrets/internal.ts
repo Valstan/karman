@@ -1,14 +1,30 @@
 import 'server-only';
+import { and, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
-import { secretsAudit } from '@/lib/db/schema';
+import { secretsAudit, secretsProject } from '@/lib/db/schema';
+import { ownership, type SessionUser } from '@/lib/auth/rbac';
 
 /**
  * Помощники, общие для зон `lib/services/secrets*` (вынос 05.10, R3).
  * Ничего не знают ни про одну зону — поэтому цикла импортов не возникает:
- * и `secrets.ts`, и `secrets/token.ts` берут помощники отсюда.
+ * `secrets.ts`, `secrets/token.ts` и `secrets/cards.ts` берут помощники отсюда.
  */
 
 export const isoNow = () => new Date().toISOString();
+
+/**
+ * id комнаты, если она принадлежит пользователю; иначе null. Суперпользователь
+ * исключением НЕ является (решение владельца 03.09, `lib/auth/rbac.ts`) — он
+ * администрирует аккаунты, но чужие комнаты видит только по согласию.
+ */
+export async function ownedProjectId(user: SessionUser, projectId: number): Promise<number | null> {
+  const [row] = await db
+    .select({ id: secretsProject.id })
+    .from(secretsProject)
+    .where(and(eq(secretsProject.id, projectId), ownership(user, secretsProject.userId)))
+    .limit(1);
+  return row?.id ?? null;
+}
 
 /**
  * Строка аудита. `actor` — «кто», а не «что предъявили» (долг ADR-0012 §6):
