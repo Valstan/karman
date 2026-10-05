@@ -25,9 +25,8 @@ Report Мозгу по `2026-10-04-hotline-secret-via-grants-owner-out` — эт
 
 ## Следующий шаг
 
-1. Ветка `feat/r1-secrets-invariants` (этот PR): 16 инвариантов `secrets.ts` —
-CI → merge. R1 после него закрыт целиком; разблокирован R3 (резать
-`secrets.ts` по зонам).
+1. Ветка `refactor/secrets-by-zone` (этот PR): первая зона `secrets.ts` вынесена
+(машинный доступ по токену) — CI → merge. Дальше R3: карточки, provisioning.
 2. Владельцу глянуть вживую `/hotline` — сделано 05.10 (скриншот: всё норм).
 3. Грант 19 принят setka 13:34:30Z, report Мозгу ушёл (#205).
 
