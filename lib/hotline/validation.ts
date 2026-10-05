@@ -46,7 +46,16 @@ export const hotlinePresenceSchema = z.object({
   label: hotlineLabel,
   /** Минуты, как в `presence --alive 60` («я в чате на час»). */
   alive_minutes: z.coerce.number().int().min(1).max(1440),
+  /**
+   * Событие линии (сторож, мандат 05.10): снятие трубки — 'on_line', отбой —
+   * 'offline'. Опционально намеренно (G54): тик БЕЗ поля — обычный heartbeat,
+   * состояние не трогает; тик С полем — событие. Сервер никогда не выводит
+   * состояние из частоты тиков, кроме авто-отбоя после двух пропусков.
+   */
+  line_state: z.enum(['offline', 'on_line']).optional(),
 });
+
+export type HotlineLineState = z.infer<typeof hotlinePresenceSchema>['line_state'];
 
 export type HotlinePost = z.infer<typeof hotlinePostSchema>;
 export type HotlineKind = z.infer<typeof hotlineKind>;

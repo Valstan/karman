@@ -1,9 +1,12 @@
 import { NextResponse } from 'next/server';
 import { checkHotlineBearer, hotlineConfigured } from '@/lib/hotline/auth';
-import { heartbeatPresence, readPresence } from '@/lib/hotline/service';
+import { heartbeatPresence, readPresence, sweepStaleLines } from '@/lib/hotline/service';
 import { hotlinePresenceSchema } from '@/lib/hotline/validation';
 
-// Присутствие Телефона: POST — heartbeat «я в чате», GET — кто жив.
+// Присутствие Телефона: POST — heartbeat «я в чате» (+ опциональное событие
+// линии `line_state`), GET — кто жив и кто на проводе. Сторож (мандат 05.10):
+// оба обработчика сначала гасят протухшие 'on_line' (два пропуска по 30с),
+// таблица truthful без отдельного расписания — см. docs/hotline-relay.md.
 // Та же защита, что у relay: fail-closed 503 без секрета, 401 чужому.
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,6 +39,11 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   }
-  const done = await heartbeatPresence(parsed.data.label, parsed.data.alive_minutes);
-  return NextResponse.json(done, { status: 201 });
+  const done = await heartbeatPresence(
+    parsed.data.label,
+    parsed.data.alive_minutes,
+    parsed.data.line_state,
+  );
+  const swept = await sweepStaleLines();
+  return NextResponse.json({ ...done, swept_stale: swept }, { status: 201 });
 }
