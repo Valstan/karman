@@ -3,6 +3,7 @@
   "version": "2.0.0",
   "private": true,
   "description": "KARMAN — личный органайзер: всё своё при себе. Единое приложение Next.js + TypeScript.",
+  "//overrides": "Пин транзитивной зависимости под гейт npm audit (source-map-js 1.0.0–1.2.1 = GHSA-68fv-2mgg-jv7q, high, DoS через source-map; тянется рантаймом next → postcss). Обновлять через `npm audit fix` нельзя: он заодно поднимает vitest, а 4.1.11 ломает резолв vite в @vitest/mocker — тесты не стартуют. Поэтому точечный override, а не переразрешение дерева.",
   "type": "module",
   "scripts": {
     "dev": "next dev",
@@ -44,6 +45,9 @@
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.6.0",
     "zod": "^4.4.3"
+  },
+  "overrides": {
+    "source-map-js": "1.2.2"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",
