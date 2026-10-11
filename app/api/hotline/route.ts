@@ -14,17 +14,17 @@ export const dynamic = 'force-dynamic';
 
 const NO_STORE = { headers: { 'Cache-Control': 'no-store' } };
 
-function denied() {
-  if (!hotlineConfigured()) {
+async function denied(): Promise<Response | null> {
+  if (!(await hotlineConfigured())) {
     return NextResponse.json({ error: 'hotline relay не настроен' }, { status: 503 });
   }
   return null;
 }
 
 export async function GET(req: Request) {
-  const off = denied();
+  const off = await denied();
   if (off) return off;
-  if (!checkHotlineBearer(req.headers.get('authorization'))) {
+  if (!(await checkHotlineBearer(req.headers.get('authorization')))) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
   const url = new URL(req.url);
@@ -45,9 +45,9 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const off = denied();
+  const off = await denied();
   if (off) return off;
-  if (!checkHotlineBearer(req.headers.get('authorization'))) {
+  if (!(await checkHotlineBearer(req.headers.get('authorization')))) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
   if (!rateLimit(`hotline|${clientIp(req) ?? '-'}`)) {

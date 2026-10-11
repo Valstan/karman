@@ -106,6 +106,21 @@ read-write токен (`can_write`), выданный соответствующ
 (`POST /api/secrets/provision` под `VAULT_PROVISION_KEY`, см. client-guide) или владельцем в UI;
 raw-INSERT-bootstrap по SSH — разовый workaround прошлого, больше не применять (ADR-0006 §6).
 
+## Собакоедение: КАРМАН читает свой vault (S1, D-119)
+
+Сервисные секреты (пока — `HOTLINE_RELAY_SECRET` relay Телефона)
+восстанавливаются из vault при старте, а не живут только в env:
+`lib/ecosystem/vault-client.ts` — тот же HTTP-контракт, что и у
+соседей (`docs/secrets-client-guide.md`), `lib/ecosystem/runtime-secrets.ts`
+— ленивое восстановление при первом обращении + обновление кэша по
+TTL 10 мин (ротация перекрытием подхватывается без перезапуска) +
+stale-while-revalidate (vault недоступен — отдаём последний кэш).
+Env (`HOTLINE_RELAY_SECRET`) остаётся фолбэком на случай, пока vault
+не поднялся; секрет нигде не найден — fail-closed 503, как раньше.
+Подключение: `VAULT_URL` + `SECRETS_TOKEN` (токен комнаты сервиса)
+в env бокса — runbook `docs/access-selfserve-runbook.md` (слайс 5,
+live-включение).
+
 ## Карточки секретов (vault Ф1)
 
 Человекочитаемый слой поверх env-пар (план — `docs/secrets-vault-plan.md`, миграция `0004`):

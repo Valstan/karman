@@ -14,10 +14,10 @@ export const dynamic = 'force-dynamic';
 const NO_STORE = { headers: { 'Cache-Control': 'no-store' } };
 
 export async function GET(req: Request) {
-  if (!hotlineConfigured()) {
+  if (!(await hotlineConfigured())) {
     return NextResponse.json({ error: 'hotline relay не настроен' }, { status: 503 });
   }
-  if (!checkHotlineBearer(req.headers.get('authorization'))) {
+  if (!(await checkHotlineBearer(req.headers.get('authorization')))) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
   const presence = await readPresence();
@@ -25,10 +25,10 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  if (!hotlineConfigured()) {
+  if (!(await hotlineConfigured())) {
     return NextResponse.json({ error: 'hotline relay не настроен' }, { status: 503 });
   }
-  if (!checkHotlineBearer(req.headers.get('authorization'))) {
+  if (!(await checkHotlineBearer(req.headers.get('authorization')))) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
   const body: unknown = await req.json().catch(() => null);
