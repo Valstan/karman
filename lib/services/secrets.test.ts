@@ -13,6 +13,7 @@ import {
 import {
   acceptGrantByToken,
   deleteProject,
+  listTokenInventory,
   proposeGrantByToken,
   pullByToken,
   pushByToken,
@@ -330,5 +331,111 @@ describe('владение комнатой: исключений нет даж�
       .from(secretsAudit)
       .where(eq(secretsAudit.action, 'project_deleted'));
     expect(audit).toMatchObject({ projectId: null, action: 'project_deleted' });
+  });
+});
+
+describe('инвентарь токенов', () => {
+  /** Пустая комната — токены добавляем явно, чтобы счёт в инвентаре был предсказуем. */
+  async function makeEmptyRoom(slug: string): Promise<number> {
+    const db = refs.current!;
+    const [p] = await db
+      .insert(secretsProject)
+      .values({ userId: 1, name: slug, slug })
+      .returning({ id: secretsProject.id });
+    return p!.id;
+  }
+
+  /** Обычный статический токен (без личности, без использования). */
+  async function mintStaticToken(projectId: number) {
+    const db = refs.current!;
+    const t = generateToken();
+    await db.insert(secretsToken).values({
+      projectId,
+      name: 'inv-static',
+      tokenPrefix: t.prefix,
+      tokenHash: t.hash,
+      canWrite: false,
+    });
+  }
+
+  /** Токен под паспортной личностью (issuer — с slug: уникален на тест). */
+  async function mintIdentityToken(slug: string, projectId: number, label: string, lastUsedAt: Date | null) {
+    const db = refs.current!;
+    const [iss] = await db
+      .insert(passportIssuer)
+      .values({
+        issuer: `https://inv-issuer-${slug}`,
+        jwksUri: `https://inv-issuer-${slug}/jwks`,
+        audience: 'karman-vault',
+        subjectPattern: '^repo:',
+        identityClaim: 'repository_id',
+      })
+      .returning({ id: passportIssuer.id });
+    const [ident] = await db
+      .insert(passportIdentity)
+      .values({
+        issuerId: iss!.id,
+        identityValue: label,
+        label,
+        projectId,
+        canWrite: true,
+      })
+      .returning({ id: passportIdentity.id });
+    const t = generateToken();
+    await db.insert(secretsToken).values({
+      projectId,
+      name: 'inv-session',
+      tokenPrefix: t.prefix,
+      tokenHash: t.hash,
+      canWrite: true,
+      lastUsedAt: lastUsedAt ? lastUsedAt.toISOString() : null,
+      identityId: ident!.id,
+    });
+  }
+
+  it('собирает токены всех комнат: комната, префикс, личность, last_used', async () => {
+    const a = await makeEmptyRoom('inv-a');
+    const b = await makeEmptyRoom('inv-b');
+    await mintIdentityToken('inv-a', a, 'Valstan/alpha', new Date('2026-10-01T00:00:00Z'));
+    await mintStaticToken(b);
+    const rows = await listTokenInventory();
+    expect(rows).toHaveLength(2);
+    // Свежее использование сверху; ни-разу-не-использованный — внизу.
+    const first = rows[0]!;
+    const second = rows[1]!;
+    expect(first.projectSlug).toBe('inv-a');
+    expect(first.identityLabel).toBe('Valstan/alpha');
+    expect(new Date(first.lastUsedAt!).toISOString()).toBe('2026-10-01T00:00:00.000Z');
+    expect(second.projectSlug).toBe('inv-b');
+    expect(second.lastUsedAt).toBeNull();
+    expect(second.identityLabel).toBeNull();
+  });
+
+  it('отозванный и истёкший видны с признаками; порядок отозванных по времени отзыва', async () => {
+    const a = await makeEmptyRoom('inv-c');
+    const b = await makeEmptyRoom('inv-d');
+    await mintStaticToken(a);
+    await mintStaticToken(b);
+    const db = refs.current!;
+    const now = new Date();
+    await db
+      .update(secretsToken)
+      .set({ revokedAt: new Date(now.getTime() - 60_000).toISOString() })
+      .where(eq(secretsToken.projectId, a));
+    await db
+      .update(secretsToken)
+      .set({ expiresAt: new Date(now.getTime() - 60_000).toISOString() })
+      .where(eq(secretsToken.projectId, b));
+    const rows = await listTokenInventory();
+    expect(rows).toHaveLength(2);
+    const revoked = rows.find((r) => r.projectSlug === 'inv-c')!;
+    const expired = rows.find((r) => r.projectSlug === 'inv-d')!;
+    expect(revoked.revokedAt).not.toBeNull();
+    expect(expired.expiresAt).not.toBeNull();
+    expect(expired.revokedAt).toBeNull();
+  });
+
+  it('пустой vault — пустой инвентарь', async () => {
+    expect(await listTokenInventory()).toEqual([]);
   });
 });

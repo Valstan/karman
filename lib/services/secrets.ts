@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, count, desc, eq, isNotNull, isNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { db } from '@/lib/db/client';
 import {
@@ -8,6 +8,7 @@ import {
   secretsToken,
   secretsAudit,
   secretsGrant,
+  passportIdentity,
 } from '@/lib/db/schema';
 import { ownership, type SessionUser } from '@/lib/auth/rbac';
 import { encryptSecret, decryptSecret, secretAad } from '@/lib/secrets/crypto';
@@ -242,6 +243,60 @@ export async function getProjectDetail(
     .limit(20);
 
   return { project, items, tokens, audit };
+}
+
+// --- Инвентарь токенов (S1: «видно, что живо, что протухло») ----------------
+
+export type SecretTokenInventoryEntry = {
+  id: number;
+  projectId: number;
+  projectSlug: string;
+  projectName: string;
+  name: string;
+  tokenPrefix: string;
+  canWrite: boolean;
+  /** Паспортная личность, которой выдан токен (ADR-0012); null — статический токен владельца. */
+  identityLabel: string | null;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+};
+
+/**
+ * Инвентарь токенов по всем комнатам хранилища. Только админский вид: страница
+ * `/secrets/tokens` стоит за `requireSecretsUser` (суперпользователь + 2FA),
+ * поэтому фильтр по владельцу комнаты здесь не нужен — комнаты заводит владелец.
+ * Без него же: фильтр `ownership()` показал бы владельцу только «свои» комнаты
+ * и скрыл чужие токены, а инвентарь обязан видеть весь vault.
+ *
+ * Порядок: свежее использование сверху, ни-разу-не-использованные внизу
+ * («потерянные» видны последними), отозванные — по времени отзыва.
+ */
+export async function listTokenInventory(): Promise<SecretTokenInventoryEntry[]> {
+  return db
+    .select({
+      id: secretsToken.id,
+      projectId: secretsProject.id,
+      projectSlug: secretsProject.slug,
+      projectName: secretsProject.name,
+      name: secretsToken.name,
+      tokenPrefix: secretsToken.tokenPrefix,
+      canWrite: secretsToken.canWrite,
+      identityLabel: passportIdentity.label,
+      lastUsedAt: secretsToken.lastUsedAt,
+      revokedAt: secretsToken.revokedAt,
+      expiresAt: secretsToken.expiresAt,
+      createdAt: secretsToken.createdAt,
+    })
+    .from(secretsToken)
+    .innerJoin(secretsProject, eq(secretsProject.id, secretsToken.projectId))
+    .leftJoin(passportIdentity, eq(passportIdentity.id, secretsToken.identityId))
+    .orderBy(
+      sql`secrets_token.last_used_at DESC NULLS LAST`,
+      sql`secrets_token.revoked_at ASC NULLS FIRST`,
+      asc(secretsToken.id),
+    );
 }
 
 // --- Секреты ----------------------------------------------------------------
