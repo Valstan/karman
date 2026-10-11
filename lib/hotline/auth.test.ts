@@ -10,18 +10,18 @@ afterEach(() => {
 });
 
 describe('вход relay', () => {
-  it('без секрета — выключено: любая проверка false', () => {
+  it('без секрета — выключено: любая проверка false', async () => {
     delete process.env[ENV_KEY];
-    expect(hotlineConfigured()).toBe(false);
-    expect(checkHotlineBearer('Bearer anything')).toBe(false);
+    expect(await hotlineConfigured()).toBe(false);
+    expect(await checkHotlineBearer('Bearer anything')).toBe(false);
   });
 
-  it('с секретом: свой проходит, чужой и бесформенный — нет', () => {
+  it('с секретом: свой проходит, чужой и бесформенный — нет', async () => {
     process.env[ENV_KEY] = 'test-relay-secret-123';
-    expect(hotlineConfigured()).toBe(true);
-    expect(checkHotlineBearer('Bearer test-relay-secret-123')).toBe(true);
-    expect(checkHotlineBearer('Bearer wrong')).toBe(false);
-    expect(checkHotlineBearer(null)).toBe(false);
-    expect(checkHotlineBearer('test-relay-secret-123')).toBe(false);
+    expect(await hotlineConfigured()).toBe(true);
+    expect(await checkHotlineBearer('Bearer test-relay-secret-123')).toBe(true);
+    expect(await checkHotlineBearer('Bearer wrong')).toBe(false);
+    expect(await checkHotlineBearer(null)).toBe(false);
+    expect(await checkHotlineBearer('test-relay-secret-123')).toBe(false);
   });
 });
