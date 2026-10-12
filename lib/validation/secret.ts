@@ -141,6 +141,25 @@ export const secretGrantApiRevokeSchema = z.object({
 });
 
 /**
+ * Тело POST /api/secrets/policies — объявление политики приёма
+ * (S2, D-119). Комната-получатель объявляет СВОЙ allowlist своим
+ * пишущим токеном: «принимаю source_key от source_slug как alias».
+ * note необязателен: политика — согласие получателя, основание
+ * хранится в самой политике; авто-приём включается сразу.
+ */
+export const secretPolicyDeclareSchema = z.object({
+  source_slug: secretProjectCreateSchema.shape.slug,
+  source_key: secretKeyName,
+  alias: secretKeyName.optional().or(z.literal('').transform(() => undefined)),
+  note: optionalNote,
+});
+
+/** Тело DELETE /api/secrets/policies — отзыв политики приёма токеном получателя. */
+export const secretPolicyRevokeSchema = z.object({
+  id: z.coerce.number().int().positive(),
+});
+
+/**
  * Тело POST /api/secrets/provision — self-serve onboarding комнаты (мандат brain
  * 2026-07-12). name опционально: по умолчанию совпадает со slug.
  */

@@ -104,7 +104,8 @@ BACKUP_EXCLUDES=(
 
 pg_dump "$DATABASE_URL" --no-owner --no-privileges \
   -t secrets_project -t secrets_item -t secrets_token -t secrets_audit \
-  -t secrets_card -t secrets_card_field -t secrets_grant -t secrets_bootstrap \
+  -t secrets_card -t secrets_card_field -t secrets_grant -t secrets_grant_policy \
+  -t secrets_bootstrap \
   -t passport_issuer -t passport_identity -t passport_assertion \
   -t auth_totp -t auth_recovery_code -t auth_audit -t auth_oidc_identity \
   -t person_profile \

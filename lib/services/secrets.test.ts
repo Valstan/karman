@@ -12,12 +12,15 @@ import {
 } from '@/lib/db/schema';
 import {
   acceptGrantByToken,
+  declarePolicyByToken,
   deleteProject,
+  listPolicies,
   listTokenInventory,
   proposeGrantByToken,
   pullByToken,
   pushByToken,
   revokeGrantByToken,
+  revokePolicyByToken,
   updateProject,
 } from '@/lib/services/secrets';
 import { generateToken, hashToken } from '@/lib/secrets/token';
@@ -272,6 +275,246 @@ describe('двусторонние выдачи', () => {
     expect(res.ok).toBe(false);
     if (!res.ok && res.status === 404) expect(res.missing).toEqual(['GONE']);
     else throw new Error(`ожидался 404-missing, получено: ${JSON.stringify(res)}`);
+  });
+});
+
+describe('политики приёма: auto-accept по allowlist получателя (S2, D-119)', () => {
+  async function propose(src: Room, dstSlug: string, key = 'K', alias?: string) {
+    return proposeGrantByToken(src.rwToken, null, {
+      key,
+      target_slug: dstSlug,
+      alias,
+      note: 'test',
+    });
+  }
+
+  it('живая политика принимает предложение сразу — значение читается', async () => {
+    const src = await makeRoom('pol-src');
+    const dst = await makeRoom('pol-dst');
+    await pushByToken(src.rwToken, null, { K: 's3cr3t' });
+    expect(
+      await declarePolicyByToken(dst.rwToken, null, {
+        source_slug: 'pol-src',
+        source_key: 'K',
+        alias: 'ALIAS',
+        note: 'тест',
+      }),
+    ).toEqual({ ok: true, id: expect.any(Number), autoAccept: true });
+    const p = await propose(src, 'pol-dst', 'K');
+    expect(p).toEqual({ ok: true, id: expect.any(Number), autoAccepted: true });
+    if (!p.ok) throw new Error('propose failed');
+    expect(await pullByToken(dst.rwToken, null, ['ALIAS'])).toEqual({
+      ok: true,
+      secrets: { ALIAS: 's3cr3t' },
+    });
+  });
+
+  it('без alias в политике — принимается под именем ключа источника', async () => {
+    const src = await makeRoom('pol-src2');
+    const dst = await makeRoom('pol-dst2');
+    await pushByToken(src.rwToken, null, { K: 'v' });
+    await declarePolicyByToken(dst.rwToken, null, { source_slug: 'pol-src2', source_key: 'K' });
+    const p = await propose(src, 'pol-dst2', 'K');
+    expect(p).toEqual({ ok: true, id: expect.any(Number), autoAccepted: true });
+    expect(await pullByToken(dst.rwToken, null, ['K'])).toEqual({
+      ok: true,
+      secrets: { K: 'v' },
+    });
+  });
+
+  it('имя приёма фиксирует политика, а не предложение', async () => {
+    const src = await makeRoom('pol-src3');
+    const dst = await makeRoom('pol-dst3');
+    await pushByToken(src.rwToken, null, { K: 'v' });
+    await declarePolicyByToken(dst.rwToken, null, {
+      source_slug: 'pol-src3',
+      source_key: 'K',
+      alias: 'BY_POLICY',
+    });
+    const p = await propose(src, 'pol-dst3', 'K', 'SUGGESTED');
+    expect(p).toEqual({ ok: true, id: expect.any(Number), autoAccepted: true });
+    expect(await pullByToken(dst.rwToken, null, ['BY_POLICY'])).toEqual({
+      ok: true,
+      secrets: { BY_POLICY: 'v' },
+    });
+    const res = await pullByToken(dst.rwToken, null, ['SUGGESTED']);
+    expect(res.ok).toBe(false);
+  });
+
+  it('отозванная политика — предложение снова ждёт accept', async () => {
+    const src = await makeRoom('pol-src4');
+    const dst = await makeRoom('pol-dst4');
+    await pushByToken(src.rwToken, null, { K: 'v' });
+    const d = await declarePolicyByToken(dst.rwToken, null, {
+      source_slug: 'pol-src4',
+      source_key: 'K',
+    });
+    if (!d.ok) throw new Error('declare failed');
+    expect(await revokePolicyByToken(dst.rwToken, null, d.id)).toEqual({ ok: true, id: d.id });
+    const p = await propose(src, 'pol-dst4', 'K');
+    expect(p).toEqual({ ok: true, id: expect.any(Number), autoAccepted: false });
+    const res = await pullByToken(dst.rwToken, null, ['K']);
+    expect(res.ok).toBe(false);
+  });
+
+  it('политика по другому ключу на auto-accept не влияет', async () => {
+    const src = await makeRoom('pol-src5');
+    const dst = await makeRoom('pol-dst5');
+    await pushByToken(src.rwToken, null, { K: 'v' });
+    await declarePolicyByToken(dst.rwToken, null, {
+      source_slug: 'pol-src5',
+      source_key: 'OTHER',
+    });
+    const p = await propose(src, 'pol-dst5', 'K');
+    expect(p).toEqual({ ok: true, id: expect.any(Number), autoAccepted: false });
+  });
+
+  it('принятая по политике выдача живёт и после отзыва политики', async () => {
+    const src = await makeRoom('pol-src6');
+    const dst = await makeRoom('pol-dst6');
+    await pushByToken(src.rwToken, null, { K: 'v' });
+    const d = await declarePolicyByToken(dst.rwToken, null, {
+      source_slug: 'pol-src6',
+      source_key: 'K',
+    });
+    if (!d.ok) throw new Error('declare failed');
+    await propose(src, 'pol-dst6', 'K');
+    expect(await revokePolicyByToken(dst.rwToken, null, d.id)).toEqual({ ok: true, id: d.id });
+    expect(await pullByToken(dst.rwToken, null, ['K'])).toEqual({
+      ok: true,
+      secrets: { K: 'v' },
+    });
+  });
+
+  it('авто-приём не снимает инварианты: занятое имя — 409', async () => {
+    const src = await makeRoom('pol-src7');
+    const dst = await makeRoom('pol-dst7');
+    await pushByToken(src.rwToken, null, { K: 'v' });
+    await pushByToken(dst.rwToken, null, { ALIAS: 'mine' });
+    await declarePolicyByToken(dst.rwToken, null, {
+      source_slug: 'pol-src7',
+      source_key: 'K',
+      alias: 'ALIAS',
+    });
+    const p = await propose(src, 'pol-dst7', 'K');
+    expect(p).toEqual({
+      ok: false,
+      status: 409,
+      error: 'У комнаты «pol-dst7» есть собственный ключ ALIAS — он выигрывает у выданного доступа. Выберите другое имя или удалите свой ключ.',
+    });
+  });
+
+  it('объявляет политику только пишущий токен САМОЙ комнаты-получателя', async () => {
+    await makeRoom('pol-src8'); // источник существует для source_slug
+    const dst = await makeRoom('pol-dst8');
+    // read-only — 403
+    expect(
+      await declarePolicyByToken(dst.roToken, null, {
+        source_slug: 'pol-src8',
+        source_key: 'K',
+      }),
+    ).toEqual({
+      ok: false,
+      status: 403,
+      error: 'Политику приёма может объявить только токен с правом записи',
+    });
+    // битый — 401, как у выдач (неразличимость отказов)
+    expect(
+      await declarePolicyByToken('nota-token', null, {
+        source_slug: 'pol-src8',
+        source_key: 'K',
+      }),
+    ).toEqual({ ok: false, status: 401, error: 'Недействительный токен' });
+    // чужой токен третьей комнаты объявляет СВОЮ политику, не чужую
+    const third = await makeRoom('pol-third8');
+    expect(
+      await declarePolicyByToken(third.rwToken, null, {
+        source_slug: 'pol-src8',
+        source_key: 'K',
+      }),
+    ).toEqual({ ok: true, id: expect.any(Number), autoAccept: true });
+    const policies = await listPolicies(dst.projectId);
+    expect(policies).toEqual([]);
+  });
+
+  it('дубль живой политики — 409, себя в качестве источника — 409, чужой источник — 404', async () => {
+    await makeRoom('pol-src9'); // источник существует для source_slug
+    const dst = await makeRoom('pol-dst9');
+    const d = await declarePolicyByToken(dst.rwToken, null, {
+      source_slug: 'pol-src9',
+      source_key: 'K',
+    });
+    if (!d.ok) throw new Error('declare failed');
+    expect(
+      await declarePolicyByToken(dst.rwToken, null, {
+        source_slug: 'pol-src9',
+        source_key: 'K',
+      }),
+    ).toEqual({
+      ok: false,
+      status: 409,
+      error: 'Политика приёма «K от pol-src9» уже объявлена',
+    });
+    expect(
+      await declarePolicyByToken(dst.rwToken, null, {
+        source_slug: 'pol-dst9',
+        source_key: 'K',
+      }),
+    ).toEqual({
+      ok: false,
+      status: 409,
+      error: 'Комната-источник и комната-получатель совпадают',
+    });
+    expect(
+      await declarePolicyByToken(dst.rwToken, null, {
+        source_slug: 'no-such-room',
+        source_key: 'K',
+      }),
+    ).toEqual({ ok: false, status: 404, error: 'Комната-источник не найдена' });
+    // отзыв повторно — 409
+    expect(await revokePolicyByToken(dst.rwToken, null, d.id)).toEqual({ ok: true, id: d.id });
+    expect(await revokePolicyByToken(dst.rwToken, null, d.id)).toEqual({
+      ok: false,
+      status: 409,
+      error: 'Политика приёма уже отозвана',
+    });
+    // чужая политика не отзывалась: 404
+    const third = await makeRoom('pol-third9');
+    expect(await revokePolicyByToken(third.rwToken, null, d.id)).toEqual({
+      ok: false,
+      status: 404,
+      error: 'Политика приёма не найдена',
+    });
+  });
+
+  it('аудит: объявление, auto-accept с номером политики, отзыв', async () => {
+    const src = await makeRoom('pol-src10');
+    const dst = await makeRoom('pol-dst10');
+    await pushByToken(src.rwToken, null, { K: 'v' });
+    const d = await declarePolicyByToken(dst.rwToken, null, {
+      source_slug: 'pol-src10',
+      source_key: 'K',
+      alias: 'ALIAS',
+    });
+    if (!d.ok) throw new Error('declare failed');
+    const p = await propose(src, 'pol-dst10', 'K');
+    if (!p.ok) throw new Error('propose failed');
+    await revokePolicyByToken(dst.rwToken, null, d.id);
+
+    const db = refs.current!;
+    const rows = await db
+      .select()
+      .from(secretsAudit)
+      .where(eq(secretsAudit.projectId, dst.projectId));
+    const actions = rows.map((r) => r.action);
+    expect(actions).toContain('policy_declared');
+    expect(actions).toContain('grant_in');
+    expect(actions).toContain('policy_revoked');
+    const grantIn = rows.find((r) => r.action === 'grant_in');
+    expect(grantIn?.detail).toContain('авто-приём по политике приёма #');
+    const declared = rows.find((r) => r.action === 'policy_declared');
+    expect(declared?.actor).toBe('room:pol-dst10');
+    expect(declared?.detail).toContain('принимаю K от комнаты «pol-src10» как ALIAS');
   });
 });
 

@@ -9,7 +9,9 @@ export const runtime = 'nodejs';
 /**
  * Выдачи комнаты машинным путём — ДВУСТОРОННИЕ (D-061, мандат brain 2026-09-03).
  *   POST   /api/secrets/grants {key, target_slug, alias?, note}
- *          → 201 { ok, id, state: "pending" } — токен ИСТОЧНИКА предлагает выдачу
+ *          → 201 { ok, id, state: "pending"|"active" } — токен ИСТОЧНИКА
+ *            предлагает выдачу; живая политика приёма получателя
+ *            принимает сразу — state "active" (S2, D-119)
  *   POST   /api/secrets/grants/<id>/accept → токен ПОЛУЧАТЕЛЯ принимает (см. [id]/accept)
  *   GET    /api/secrets/grants[?pending=1] → { slug, issued, received } — обе стороны
  *          видят свои; `pending=1` — только входящие предложения (для CI получателя)
@@ -59,7 +61,10 @@ export async function POST(req: Request) {
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: result.status });
   }
-  return NextResponse.json({ ok: true, id: result.id, state: 'pending' }, { status: 201, ...GRANTS_NO_STORE });
+  // S2 (D-119): живая политика приёма получателя принимает
+  // предложение сразу — строка сразу active, не pending.
+  const state = result.autoAccepted ? 'active' : 'pending';
+  return NextResponse.json({ ok: true, id: result.id, state }, { status: 201, ...GRANTS_NO_STORE });
 }
 
 export async function DELETE(req: Request) {

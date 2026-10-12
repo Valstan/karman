@@ -35,6 +35,10 @@ health 200. Тесты 512 (было 488). Гранты 18/19/20 Действу�
 **Прогресс:** ✅ слайс 1 — инвентарь токенов (`/secrets/tokens`, PR #220).
 ✅ слайс 2 — vault-client + восстановление секретов из vault при старте
 (`HOTLINE_RELAY_SECRET` через runtime-резолвер, env — фолбэк).
+✅ слайс 3 — политика приёма: миграция 0023 `secrets_grant_policy` + зона
+политий (`declare/revoke/list/match`) + авто-accept в `proposeGrantByToken`
+(имя приёма фиксирует политика, аудит несёт номер; `isUniqueViolation` починен
+на `.cause` — drizzle оборачивает ошибки драйвера, гонки были бы 500).
 
 ## Контекст
 
