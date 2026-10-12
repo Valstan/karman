@@ -17,6 +17,7 @@ import { actorOwner, actorRoom } from '@/lib/secrets/actor';
 import { projectDeletedDetail } from '@/lib/secrets/audit-detail';
 import { grantState, type GrantState } from '@/lib/secrets/grant-state';
 import { isUniqueViolation } from '@/lib/db/pg-error';
+import { matchGrantPolicy } from './secrets/policy';
 import type {
   SecretProjectCreateInput,
   SecretProjectUpdateInput,
@@ -92,6 +93,15 @@ export {
   logProvisionAuthDenied,
   type ProvisionResult,
 } from './secrets/provision';
+export {
+  listPolicies,
+  declarePolicyByToken,
+  revokePolicyByToken,
+  countLivePolicies,
+  type SecretPolicyListItem,
+  type SecretPolicyDeclareInput,
+  type PolicyApiResult,
+} from './secrets/policy';
 
 // Гейт `resolveApiToken` нужен зоне выдач (машинный путь), но живёт в зоне
 // машинного доступа — реэкспортируем, чтобы не было цикла импортов.
@@ -796,12 +806,13 @@ async function touchToken(tokenId: number): Promise<void> {
   await db.update(secretsToken).set({ lastUsedAt: isoNow() }).where(eq(secretsToken.id, tokenId));
 }
 
-/** Предложение выдачи токеном комнаты-источника: строка `pending`, аудит обеим сторонам. */
+/** Предложение выдачи токеном комнаты-источника: строка `pending`, аудит обеим сторонам.
+ * Живая политика приёма по тройке принимает сразу — `autoAccepted` (S2, D-119). */
 export async function proposeGrantByToken(
   rawToken: string,
   ip: string | null,
   input: SecretGrantProposeInput,
-): Promise<{ ok: true; id: number } | GrantApiError> {
+): Promise<{ ok: true; id: number; autoAccepted: boolean } | GrantApiError> {
   const r = await resolveGrantRoom(rawToken, ip);
   if ('ok' in r) return r;
 
@@ -815,19 +826,25 @@ export async function proposeGrantByToken(
     return { ok: false, status: 409, error: 'Комната-источник и комната-получатель совпадают' };
   }
 
+  // S2 (D-119): живая политика приёма получателя — согласие,
+  // выраженное один раз. По тройке (получатель, источник, ключ)
+  // предложение принимается автоматически; имя приёма фиксирует
+  // политика (воля получателя), а не предложение. Номер политики
+  // уходит в аудит обеих сторон основанием.
+  const policy = await matchGrantPolicy(target.id, r.room.id, input.key);
   const created = await insertGrant({
     source: r.room,
     target,
     sourceKey: input.key,
-    aliasKey: input.alias ?? input.key,
-    basis: input.note,
+    aliasKey: policy ? policy.aliasKey : (input.alias ?? input.key),
+    basis: policy ? `авто-приём по политике приёма #${policy.id}` : input.note,
     actor: r.actor,
     ip,
-    accepted: false,
+    accepted: policy !== null,
   });
   await touchToken(r.token.id);
   if (!created.ok) return { ok: false, status: 409, error: created.error };
-  return { ok: true, id: created.id };
+  return { ok: true, id: created.id, autoAccepted: policy !== null };
 }
 
 /**

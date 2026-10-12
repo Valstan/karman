@@ -537,6 +537,31 @@ export const secretsGrant = pgTable('secrets_grant', {
 });
 
 /**
+ * Политика приёма выдачи (S2 дорожной карты доступов, D-119):
+ * комната-получатель ОДИН раз объявляет allowlist — «принимаю
+ * sourceKey от комнаты-источника как aliasKey» — и дальше
+ * предложения источника принимаются автоматически (auto-accept,
+ * аудит на каждое движение). Отзыв политики — одной строкой,
+ * вступает сразу: будущие предложения ждут ручного accept.
+ * Одна живая политика на (target, source, key) — частичный
+ * уникальный индекс в миграции 0023.
+ */
+export const secretsGrantPolicy = pgTable('secrets_grant_policy', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  targetProjectId: bigint('target_project_id', { mode: 'number' })
+    .notNull()
+    .references(() => secretsProject.id, { onDelete: 'cascade' }),
+  sourceProjectId: bigint('source_project_id', { mode: 'number' })
+    .notNull()
+    .references(() => secretsProject.id, { onDelete: 'cascade' }),
+  sourceKey: varchar('source_key', { length: 200 }).notNull(),
+  aliasKey: varchar('alias_key', { length: 200 }).notNull(),
+  note: text('note'),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+  revokedAt: tstz('revoked_at'),
+});
+
+/**
  * Одноразовый bootstrap-код комнаты («времянка»): владелец выпускает, проект
  * меняет на токен своей комнаты, код гаснет. В БД — только хэш, как у токенов.
  */
