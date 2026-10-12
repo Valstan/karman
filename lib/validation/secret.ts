@@ -160,6 +160,23 @@ export const secretPolicyRevokeSchema = z.object({
 });
 
 /**
+ * Форма GUI «Политика приёма»: комната-получатель — своя (server action
+ * проверит владение), комнаты по id, как у выдачи (secretGrantCreateSchema).
+ */
+export const secretPolicyCreateSchema = z
+  .object({
+    targetProjectId: z.coerce.number().int().positive(),
+    sourceProjectId: z.coerce.number().int().positive(),
+    sourceKey: secretKeyName,
+    aliasKey: secretKeyName.optional().or(z.literal('').transform(() => undefined)),
+    note: optionalNote,
+  })
+  .refine((v) => v.sourceProjectId !== v.targetProjectId, {
+    message: 'Комната-источник и комната-получатель совпадают',
+    path: ['targetProjectId'],
+  });
+
+/**
  * Тело POST /api/secrets/provision — self-serve onboarding комнаты (мандат brain
  * 2026-07-12). name опционально: по умолчанию совпадает со slug.
  */
