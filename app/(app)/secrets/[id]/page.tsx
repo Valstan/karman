@@ -2,12 +2,19 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { ArrowLeft } from 'lucide-react';
 import { requireSecretsUser } from '@/lib/auth/current-user';
-import { getProjectDetail, listCards, listGrants, listProjects } from '@/lib/services/secrets';
+import {
+  getProjectDetail,
+  listCards,
+  listGrants,
+  listPoliciesForUser,
+  listProjects,
+} from '@/lib/services/secrets';
 import { listBootstraps } from '@/lib/services/bootstrap';
 import { SecretCardsPanel } from '@/components/app/secret-cards-panel';
 import { SecretItemsPanel } from '@/components/app/secret-items-panel';
 import { SecretTokensPanel } from '@/components/app/secret-tokens-panel';
 import { SecretGrantsPanel } from '@/components/app/secret-grants-panel';
+import { SecretPoliciesPanel } from '@/components/app/secret-policies-panel';
 import { SecretBootstrapPanel } from '@/components/app/secret-bootstrap-panel';
 import {
   Table,
@@ -33,6 +40,7 @@ export default async function SecretProjectPage({
   if (!detail) notFound();
   const cards = (await listCards(user, projectId)) ?? [];
   const grants = (await listGrants(user, projectId)) ?? { issued: [], received: [] };
+  const policies = (await listPoliciesForUser(user, projectId)) ?? [];
   const rooms = (await listProjects(user)).map((p) => ({ id: p.id, name: p.name, slug: p.slug }));
   const bootstraps = (await listBootstraps(user, projectId)) ?? [];
 
@@ -59,6 +67,7 @@ export default async function SecretProjectPage({
         items={detail.items}
         rooms={rooms}
       />
+      <SecretPoliciesPanel projectId={detail.project.id} policies={policies} rooms={rooms} />
 
       <div className="flex flex-col gap-3">
         <h2 className="text-lg font-semibold">Аудит доступа</h2>

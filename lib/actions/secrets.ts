@@ -10,6 +10,7 @@ import {
   secretCardFieldUpsertSchema,
   secretCardImportSchema,
   secretGrantCreateSchema,
+  secretPolicyCreateSchema,
   secretBootstrapCreateSchema,
 } from '@/lib/validation/secret';
 import {
@@ -30,6 +31,8 @@ import {
   importCards,
   createGrant,
   revokeGrant,
+  createPolicy,
+  revokePolicy,
 } from '@/lib/services/secrets';
 import { createBootstrap, revokeBootstrap } from '@/lib/services/bootstrap';
 import { isUniqueViolation } from '@/lib/db/pg-error';
@@ -242,6 +245,30 @@ export async function revokeGrantAction(id: number): Promise<ActionResult> {
   const user = guard.user;
   const ok = await revokeGrant(user, id);
   if (!ok) return { ok: false, error: 'Выдача не найдена' };
+  revalidateAll();
+  return { ok: true };
+}
+
+// --- Политика приёма (S2, D-119) ----------------------------------------------
+
+/** Объявляет политику приёма своей комнаты: дальше предложения по тройке принимаются сразу. */
+export async function createPolicyAction(values: unknown): Promise<ActionResult<{ id: number }>> {
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const user = guard.user;
+  const parsed = secretPolicyCreateSchema.safeParse(values);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? 'Некорректные данные' };
+  const result = await createPolicy(user, parsed.data);
+  if (!result.ok) return { ok: false, error: result.error };
+  revalidateAll();
+  return { ok: true, data: { id: result.id } };
+}
+
+export async function revokePolicyAction(id: number): Promise<ActionResult> {
+  const guard = await requireSecretsAccess();
+  if (guard.user === null) return { ok: false, error: guard.error };
+  const ok = await revokePolicy(guard.user, id);
+  if (!ok) return { ok: false, error: 'Политика приёма не найдена' };
   revalidateAll();
   return { ok: true };
 }

@@ -95,12 +95,18 @@ export {
 } from './secrets/provision';
 export {
   listPolicies,
+  listPoliciesByToken,
+  listPoliciesForUser,
   declarePolicyByToken,
   revokePolicyByToken,
+  createPolicy,
+  revokePolicy,
   countLivePolicies,
   type SecretPolicyListItem,
   type SecretPolicyDeclareInput,
+  type SecretPolicyCreateInput,
   type PolicyApiResult,
+  type PolicyOwnerResult,
 } from './secrets/policy';
 
 // Гейт `resolveApiToken` нужен зоне выдач (машинный путь), но живёт в зоне

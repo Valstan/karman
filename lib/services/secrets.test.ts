@@ -12,14 +12,17 @@ import {
 } from '@/lib/db/schema';
 import {
   acceptGrantByToken,
+  createPolicy,
   declarePolicyByToken,
   deleteProject,
   listPolicies,
+  listPoliciesForUser,
   listTokenInventory,
   proposeGrantByToken,
   pullByToken,
   pushByToken,
   revokeGrantByToken,
+  revokePolicy,
   revokePolicyByToken,
   updateProject,
 } from '@/lib/services/secrets';
@@ -515,6 +518,106 @@ describe('политики приёма: auto-accept по allowlist получа
     const declared = rows.find((r) => r.action === 'policy_declared');
     expect(declared?.actor).toBe('room:pol-dst10');
     expect(declared?.detail).toContain('принимаю K от комнаты «pol-src10» как ALIAS');
+  });
+});
+
+describe('политики приёма: путь владельца из GUI (S2, D-119)', () => {
+  // Владелец комнат из makeRoom — auth_user id 1 (см. makeRoom: userId 1).
+  const owner = {
+    id: 1,
+    username: 'admin',
+    email: '',
+    firstName: '',
+    lastName: '',
+    isSuperuser: true,
+  };
+
+  async function propose(src: Room, dstSlug: string, key = 'K') {
+    return proposeGrantByToken(src.rwToken, null, { key, target_slug: dstSlug, note: 'test' });
+  }
+
+  it('объявление из GUI принимает предложения сразу, аудит — owner:1', async () => {
+    const src = await makeRoom('own-src');
+    const dst = await makeRoom('own-dst');
+    await pushByToken(src.rwToken, null, { K: 'v' });
+    expect(
+      await createPolicy(owner, {
+        targetProjectId: dst.projectId,
+        sourceProjectId: src.projectId,
+        sourceKey: 'K',
+        aliasKey: 'ALIAS',
+        note: 'тест',
+      }),
+    ).toEqual({ ok: true, id: expect.any(Number) });
+    const p = await propose(src, 'own-dst');
+    expect(p).toEqual({ ok: true, id: expect.any(Number), autoAccepted: true });
+    expect(await pullByToken(dst.rwToken, null, ['ALIAS'])).toEqual({
+      ok: true,
+      secrets: { ALIAS: 'v' },
+    });
+    const db = refs.current!;
+    const [declared] = await db
+      .select({ actor: secretsAudit.actor, action: secretsAudit.action })
+      .from(secretsAudit)
+      .where(eq(secretsAudit.action, 'policy_declared'));
+    expect(declared?.actor).toBe('owner:1');
+  });
+
+  it('чужую комнату в качестве получателя не объявить и её политики не трогать', async () => {
+    const db = refs.current!;
+    const [foreignUser] = await db
+      .insert(authUser)
+      .values({ username: 'foreign2', password: 'x', email: '' })
+      .returning({ id: authUser.id });
+    const [foreignRoom] = await db
+      .insert(secretsProject)
+      .values({ userId: foreignUser!.id, name: 'foreign', slug: 'foreign-x' })
+      .returning({ id: secretsProject.id });
+    const [src] = await db
+      .insert(secretsProject)
+      .values({ userId: 1, name: 's', slug: 'own-src2' })
+      .returning({ id: secretsProject.id });
+    // объявление на чужую комнату — отказ, строка не создана
+    expect(
+      await createPolicy(owner, {
+        targetProjectId: foreignRoom!.id,
+        sourceProjectId: src!.id,
+        sourceKey: 'K',
+      }),
+    ).toEqual({ ok: false, error: 'Комната-получатель не найдена' });
+    // чужих политик не видно и не отзывается
+    const dst = await makeRoom('own-dst2');
+    const d = await declarePolicyByToken(dst.rwToken, null, {
+      source_slug: 'own-src2',
+      source_key: 'K',
+    });
+    if (!d.ok) throw new Error('declare failed');
+    expect(await revokePolicy({ ...owner, id: 99 }, d.id)).toBe(false);
+    expect(await listPoliciesForUser({ ...owner, id: 99 }, dst.projectId)).toBeNull();
+    expect(await listPoliciesForUser(owner, dst.projectId)).toHaveLength(1);
+  });
+
+  it('отзыв владельцем: будущие предложения ждут accept, принятая выдача живёт', async () => {
+    const src = await makeRoom('own-src3');
+    const dst = await makeRoom('own-dst3');
+    await pushByToken(src.rwToken, null, { K: 'v', K2: 'v2' });
+    const d = await createPolicy(owner, {
+      targetProjectId: dst.projectId,
+      sourceProjectId: src.projectId,
+      sourceKey: 'K',
+    });
+    if (!d.ok) throw new Error('create failed');
+    await propose(src, 'own-dst3', 'K');
+    expect(await revokePolicy(owner, d.id)).toBe(true);
+    // Ключ уже действует после отзыва политики — повторный propose того же
+    // ключа корректно отрезается существующей выдачей (409), а НОВЫЙ ключ
+    // без политики ждёт ручного accept.
+    const p = await propose(src, 'own-dst3', 'K2');
+    expect(p).toEqual({ ok: true, id: expect.any(Number), autoAccepted: false });
+    expect(await pullByToken(dst.rwToken, null, ['K'])).toEqual({
+      ok: true,
+      secrets: { K: 'v' },
+    });
   });
 });
 

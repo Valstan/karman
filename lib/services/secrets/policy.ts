@@ -4,8 +4,9 @@ import { alias } from 'drizzle-orm/pg-core';
 import { db } from '@/lib/db/client';
 import { secretsGrantPolicy, secretsProject, secretsToken } from '@/lib/db/schema';
 import { isUniqueViolation } from '@/lib/db/pg-error';
-import { actorRoom } from '@/lib/secrets/actor';
-import { isoNow, logAudit } from './internal';
+import { ownership, type SessionUser } from '@/lib/auth/rbac';
+import { actorOwner, actorRoom } from '@/lib/secrets/actor';
+import { isoNow, logAudit, ownedProjectId } from './internal';
 import { resolveApiToken } from './token';
 
 /**
@@ -17,9 +18,17 @@ import { resolveApiToken } from './token';
  * источника принимается автоматически (auto-accept — хук в
  * `proposeGrantByToken` главного модуля, здесь только политики).
  *
- * Полномочие — у пишущего токена САМОЙ комнаты-получателя:
- * политика выражает согласие получателя (#272), поэтому
- * объявлять и отзывать может только он, а не источник.
+ * Два равноправных пути, ОДНО ядро (инварианты, вставки, аудит
+ * идентичны — отличается только принципал):
+ *   - машинный: токен САМОЙ комнаты-получателя с правом записи
+ *     (`declarePolicyByToken`, `revokePolicyByToken`);
+ *   - GUI владельца: сессия под гейтом 2FA (`createPolicy`,
+ *     `revokePolicy`) — как у выдач, владелец полномочен над
+ *     своей комнатой.
+ *
+ * Полномочие — у получателя: политика выражает ЕГО согласие
+ * принимать чужие ключи (#272), поэтому объявляет и отзывает
+ * только он, а не источник.
  */
 
 export type SecretPolicyListItem = {
@@ -42,9 +51,22 @@ export type SecretPolicyDeclareInput = {
   note?: string;
 };
 
+/** GUI-путь владельца: комнаты по id (зеркало `secretGrantCreateSchema`). */
+export type SecretPolicyCreateInput = {
+  targetProjectId: number;
+  sourceProjectId: number;
+  sourceKey: string;
+  aliasKey?: string;
+  note?: string;
+};
+
 export type PolicyApiResult =
   | { ok: true; id: number; autoAccept: boolean }
   | { ok: false; status: 400 | 401 | 403 | 404 | 409; error: string };
+
+export type PolicyOwnerResult = { ok: true; id: number } | { ok: false; error: string };
+
+type RoomRef = { id: number; slug: string };
 
 /** Список политик комнаты (живые и отозванные — обе в аудите). */
 export async function listPolicies(targetProjectId: number): Promise<SecretPolicyListItem[]> {
@@ -65,6 +87,36 @@ export async function listPolicies(targetProjectId: number): Promise<SecretPolic
     .where(eq(secretsGrantPolicy.targetProjectId, targetProjectId))
     .orderBy(desc(secretsGrantPolicy.id));
   return rows;
+}
+
+/** Свои политики по токену комнаты (машинный GET; read-only токен подходит). */
+export async function listPoliciesByToken(
+  rawToken: string,
+  ip: string | null,
+): Promise<
+  { ok: true; slug: string; policies: SecretPolicyListItem[] } | { ok: false; status: 401; error: string }
+> {
+  const resolved = await resolveApiToken(rawToken);
+  if (!resolved.ok) {
+    await logAudit(resolved.projectId, resolved.tokenId, 'policy_denied', resolved.reason, ip);
+    return { ok: false, status: 401, error: 'Недействительный токен' };
+  }
+  const [room] = await db
+    .select({ slug: secretsProject.slug })
+    .from(secretsProject)
+    .where(eq(secretsProject.id, resolved.token.projectId))
+    .limit(1);
+  if (!room) return { ok: false, status: 401, error: 'Недействительный токен' };
+  return { ok: true, slug: room.slug, policies: await listPolicies(resolved.token.projectId) };
+}
+
+/** Свои политики комнаты под сессией владельца (GUI); null — нет доступа. */
+export async function listPoliciesForUser(
+  user: SessionUser,
+  projectId: number,
+): Promise<SecretPolicyListItem[] | null> {
+  if ((await ownedProjectId(user, projectId)) === null) return null;
+  return listPolicies(projectId);
 }
 
 /**
@@ -93,16 +145,13 @@ export async function matchGrantPolicy(
 
 type PolicyRoom = {
   tokenId: number;
-  tokenPrefix: string;
-  room: { id: number; slug: string };
+  room: RoomRef;
   actor: string;
-  presented: string;
 };
 
 /**
- * Разбор токена для операций с политиками. Право объявлять
- * политику — у токена с правом ЗАПИСИ: политика — выражение
- * согласия комнаты принимать чужие ключи, операция класса записи.
+ * Разбор токена для ОПЕРАЦИЙ с политиками: только токен с правом ЗАПИСИ —
+ * политика есть согласие принимать чужие ключи, операция класса записи.
  * Отказы — в аудит.
  */
 async function resolvePolicyRoom(
@@ -126,12 +175,11 @@ async function resolvePolicyRoom(
     .limit(1);
   if (!room) return { ok: false, status: 401, error: 'Недействительный токен' };
 
-  const presented = tok.identityLabel ? `паспорт ${tok.identityLabel}` : `токен ${tok.tokenPrefix}`;
-  return { tokenId: tok.id, tokenPrefix: tok.tokenPrefix, room, actor: actorRoom(room.slug), presented };
+  return { tokenId: tok.id, room, actor: actorRoom(room.slug) };
 }
 
-/** Комната-источник по slug. */
-async function roomBySlug(slug: string): Promise<{ id: number; slug: string } | null> {
+/** Комната по slug. */
+async function roomBySlug(slug: string): Promise<RoomRef | null> {
   const [row] = await db
     .select({ id: secretsProject.id, slug: secretsProject.slug })
     .from(secretsProject)
@@ -146,82 +194,57 @@ async function touchToken(tokenId: number): Promise<void> {
 }
 
 /**
- * Объявляет политику приёма: «принимаю source_key от source_slug
- * как alias». Комната объявляет СВОЮ политику своим пишущим
- * токеном — согласие даёт получатель, не источник (#272).
- *
- * Инварианты:
- *   - источник ≠ получатель (себе выдавать нечего — 409);
- *   - одна живая политика на (получатель, источник, ключ) — дубль 409
- *     (частичный уникальный индекс 0023);
- *   - авто-приём включается сразу: следующее предложение по этой
- *     тройке принимается автоматически.
+ * Ядро объявления (общее для машинного и GUI-пути): вставка, дубль — 409
+ * (частичный уникальный индекс 0023), аудит `policy_declared` у получателя.
+ * Возвращает id политики или null — дубль живой политики.
  */
-export async function declarePolicyByToken(
-  rawToken: string,
+async function insertPolicyRow(
+  target: RoomRef,
+  source: RoomRef,
+  sourceKey: string,
+  aliasKey: string,
+  note: string | null,
   ip: string | null,
-  input: SecretPolicyDeclareInput,
-): Promise<PolicyApiResult> {
-  const r = await resolvePolicyRoom(rawToken, ip);
-  if ('ok' in r) return r; // отказ: неисправный/read-only токен
-
-  const source = await roomBySlug(input.source_slug);
-  if (!source) return { ok: false, status: 404, error: 'Комната-источник не найдена' };
-  if (source.id === r.room.id) {
-    return { ok: false, status: 409, error: 'Комната-источник и комната-получатель совпадают' };
-  }
-
-  const aliasKey = input.alias?.trim() || input.source_key;
+  actor: string,
+): Promise<number | null> {
   let id: number;
   try {
     const [created] = await db
       .insert(secretsGrantPolicy)
       .values({
-        targetProjectId: r.room.id,
+        targetProjectId: target.id,
         sourceProjectId: source.id,
-        sourceKey: input.source_key,
+        sourceKey,
         aliasKey,
-        note: input.note ?? null,
+        note,
       })
       .returning({ id: secretsGrantPolicy.id });
     id = created!.id;
   } catch (e) {
-    // Дубль живой политики (частичный уникальный индекс 0023).
-    if (isUniqueViolation(e)) {
-      return {
-        ok: false,
-        status: 409,
-        error: `Политика приёма «${input.source_key} от ${input.source_slug}» уже объявлена`,
-      };
-    }
+    if (isUniqueViolation(e)) return null;
     throw e;
   }
-
   await logAudit(
-    r.room.id,
+    target.id,
     null,
     'policy_declared',
-    `принимаю ${input.source_key} от комнаты «${source.slug}» как ${aliasKey}; авто-приём включён${input.note ? `; основание: ${input.note}` : ''}`,
+    `принимаю ${sourceKey} от комнаты «${source.slug}» как ${aliasKey}; авто-приём включён${note ? `; основание: ${note}` : ''}`,
     ip,
-    r.actor,
+    actor,
   );
-  await touchToken(r.tokenId);
-  return { ok: true, id, autoAccept: true };
+  return id;
 }
 
 /**
- * Отзывает политику приёма — одной строкой, вступает сразу:
- * будущие предложения ждут ручного accept. Уже принятые выдачи
- * остаются (согласие на них было дано в момент приёма).
+ * Ядро отзыва (общее для машинного и GUI-пути): строка должна принадлежать
+ * комнате-получателю `target` и быть живой; аудит `policy_revoked`.
  */
-export async function revokePolicyByToken(
-  rawToken: string,
-  ip: string | null,
+async function revokePolicyRow(
+  target: RoomRef,
   policyId: number,
-): Promise<{ ok: true; id: number } | { ok: false; status: 401 | 403 | 404 | 409; error: string }> {
-  const r = await resolvePolicyRoom(rawToken, ip);
-  if ('ok' in r) return r;
-
+  ip: string | null,
+  actor: string,
+): Promise<{ ok: true; id: number } | { ok: false; status: 404 | 409; error: string }> {
   const [policy] = await db
     .select({
       id: secretsGrantPolicy.id,
@@ -230,7 +253,7 @@ export async function revokePolicyByToken(
       revokedAt: secretsGrantPolicy.revokedAt,
     })
     .from(secretsGrantPolicy)
-    .where(and(eq(secretsGrantPolicy.id, policyId), eq(secretsGrantPolicy.targetProjectId, r.room.id)))
+    .where(and(eq(secretsGrantPolicy.id, policyId), eq(secretsGrantPolicy.targetProjectId, target.id)))
     .limit(1);
   if (!policy) return { ok: false, status: 404, error: 'Политика приёма не найдена' };
   if (policy.revokedAt) return { ok: false, status: 409, error: 'Политика приёма уже отозвана' };
@@ -248,15 +271,133 @@ export async function revokePolicyByToken(
     .where(eq(secretsProject.id, policy.sourceProjectId))
     .limit(1);
   await logAudit(
-    r.room.id,
+    target.id,
     null,
     'policy_revoked',
     `отозвана политика приёма «${policy.sourceKey} от комнаты «${source?.slug ?? policy.sourceProjectId}»; авто-приём выключен, предложения ждут ручного accept`,
     ip,
-    r.actor,
+    actor,
   );
-  await touchToken(r.tokenId);
   return { ok: true, id: policy.id };
+}
+
+/**
+ * Машинный путь: объявляет политику приёма токеном САМОЙ комнаты-получателя.
+ *
+ * Инварианты:
+ *   - источник ≠ получатель (себе выдавать нечего — 409);
+ *   - одна живая политика на (получатель, источник, ключ) — дубль 409;
+ *   - авто-приём включается сразу: следующее предложение по тройке
+ *     принимается автоматически; имя приёма фиксирует политика.
+ */
+export async function declarePolicyByToken(
+  rawToken: string,
+  ip: string | null,
+  input: SecretPolicyDeclareInput,
+): Promise<PolicyApiResult> {
+  const r = await resolvePolicyRoom(rawToken, ip);
+  if ('ok' in r) return r; // отказ: неисправный/read-only токен
+
+  const source = await roomBySlug(input.source_slug);
+  if (!source) return { ok: false, status: 404, error: 'Комната-источник не найдена' };
+  if (source.id === r.room.id) {
+    return { ok: false, status: 409, error: 'Комната-источник и комната-получатель совпадают' };
+  }
+
+  const aliasKey = input.alias?.trim() || input.source_key;
+  const id = await insertPolicyRow(r.room, source, input.source_key, aliasKey, input.note ?? null, ip, r.actor);
+  if (id === null) {
+    return {
+      ok: false,
+      status: 409,
+      error: `Политика приёма «${input.source_key} от ${input.source_slug}» уже объявлена`,
+    };
+  }
+  await touchToken(r.tokenId);
+  return { ok: true, id, autoAccept: true };
+}
+
+/**
+ * Машинный путь: отзывает политику токеном комнаты-получателя — одной
+ * строкой, вступает сразу: будущие предложения ждут ручного accept,
+ * уже принятые выдачи остаются (согласие дано в момент приёма).
+ */
+export async function revokePolicyByToken(
+  rawToken: string,
+  ip: string | null,
+  policyId: number,
+): Promise<{ ok: true; id: number } | { ok: false; status: 401 | 403 | 404 | 409; error: string }> {
+  const r = await resolvePolicyRoom(rawToken, ip);
+  if ('ok' in r) return r;
+  const result = await revokePolicyRow(r.room, policyId, ip, r.actor);
+  if (!result.ok) return result;
+  await touchToken(r.tokenId);
+  return result;
+}
+
+/**
+ * GUI-путь владельца: объявляет политику приёма своей комнате (зеркало
+ * `createGrant` у выдач: владелец полномочен над своей комнатой; источник —
+ * любая комната по id). Принципал в аудите — `owner:<id>`.
+ */
+export async function createPolicy(
+  user: SessionUser,
+  input: SecretPolicyCreateInput,
+): Promise<PolicyOwnerResult> {
+  const [target] = await db
+    .select({ id: secretsProject.id, slug: secretsProject.slug })
+    .from(secretsProject)
+    .where(and(eq(secretsProject.id, input.targetProjectId), ownership(user, secretsProject.userId)))
+    .limit(1);
+  if (!target) return { ok: false, error: 'Комната-получатель не найдена' };
+
+  const [source] = await db
+    .select({ id: secretsProject.id, slug: secretsProject.slug })
+    .from(secretsProject)
+    .where(eq(secretsProject.id, input.sourceProjectId))
+    .limit(1);
+  if (!source) return { ok: false, error: 'Комната-источник не найдена' };
+  if (source.id === target.id) {
+    return { ok: false, error: 'Комната-источник и комната-получатель совпадают' };
+  }
+
+  const aliasKey = input.aliasKey?.trim() || input.sourceKey;
+  const id = await insertPolicyRow(
+    target,
+    source,
+    input.sourceKey,
+    aliasKey,
+    input.note ?? null,
+    null,
+    actorOwner(user.id),
+  );
+  if (id === null) {
+    return {
+      ok: false,
+      error: `Политика приёма «${input.sourceKey} от комнаты «${source.slug}» уже объявлена`,
+    };
+  }
+  return { ok: true, id };
+}
+
+/** GUI-путь владельца: отзывает политику своей комнаты. false — не найдена. */
+export async function revokePolicy(user: SessionUser, policyId: number): Promise<boolean> {
+  // Цель — комната политики: строка без гейта не видна наружу, но владение
+  // проверяется на её комнате-получателе, как у выдач (чужая — 404/false).
+  const [policy] = await db
+    .select({ targetProjectId: secretsGrantPolicy.targetProjectId })
+    .from(secretsGrantPolicy)
+    .where(eq(secretsGrantPolicy.id, policyId))
+    .limit(1);
+  if (!policy) return false;
+  const [target] = await db
+    .select({ id: secretsProject.id, slug: secretsProject.slug })
+    .from(secretsProject)
+    .where(and(eq(secretsProject.id, policy.targetProjectId), ownership(user, secretsProject.userId)))
+    .limit(1);
+  if (!target) return false;
+  const result = await revokePolicyRow(target, policyId, null, actorOwner(user.id));
+  return result.ok;
 }
 
 /** Число живых политик комнаты (для диагностики/инвентаря). */
