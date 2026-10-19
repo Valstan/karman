@@ -16,6 +16,10 @@ Gemini CLI и будущих агентов (ADR-0011 мозга). Инстру�
   осознанно остаются в repo-vars (`DEPLOY_SSH_PORT` / `DEPLOY_APP_PORT`). Различие не
   косметическое: `vars` раскрываются в логе прогона, а логи публичного репозитория публичны —
   маскируются только `secrets` (письмо brain 08-29). У владельца доступ по ssh-алиасу `karman`.
+- **Локальный Postgres для разработки и смоука** (машина владельца, 17.5; директива brain
+  12.10): `postgresql://karman:<пароль>@127.0.0.1:5432/karman`, пароль — в
+  `%USERPROFILE%\pg-local-credentials.json` (вне git), подробности —
+  `brain_matrica/docs/machines/COMPUTER.md`. Это не прод и не замена прод-БД.
 - Нитка последней сессии — `docs/SESSION_HANDOFF.md`; отложенное — `docs/PENDING_FOLLOWUPS.md`;
   архитектура и операции — `docs/`.
 - **Дата, названная в письме Мозгу/от Мозга или в PENDING, в тот же ход ложится в
