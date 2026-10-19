@@ -49,6 +49,17 @@
 
 ## Чужой ход (наша работа закончена, ждём не нас)
 
+- **Канон комнаты: сниппет «`canWrite` из списка ключей» — чужой ход (Мозг).** ПОЗВОНИ
+  19.10 поймали молчащий шаблон: `GET /api/secrets` отдаёт ровно `{"secrets":{…}}`, право
+  видно в ответе обмена (claim/session) и в `GET /api/secrets/self` (`identity`: `null` у
+  статического токена, метка у паспортного). Наши доки верны
+  (`docs/passport-server.md`, `docs/secrets-client-guide.md`); правка — в `KARMAN_ROOM.md`
+  (сниппет жив на строке 70: `curl … /api/secrets | jq '.canWrite'`) и гайдах соседей,
+  Мозгу сказано 19.10 письмом `2026-10-19-d102-portmap-closed.md`.
+  Признак: `grep -n "jq '.canWrite'" ../brain_matrica/docs/KARMAN_ROOM.md` — если строка
+  на месте, шаблон всё ещё учит неверному.
+  `until:` сниппет исправлен (прогон grep'а).
+  `added: 2026-10-19` `last-touch: 2026-10-19`
 - **Первый `accept` от `room:setka` на выдачу Казанской — чужой ход.** Казанская предлагает
   `INGEST_GATEWAY_KEY → setka` как `KAZANSKAYA_INGEST_KEY`, Сарафан принимает по allowlist
   (мандаты brain обоим ушли 03.09). Признак: `select at, action, actor, detail from
