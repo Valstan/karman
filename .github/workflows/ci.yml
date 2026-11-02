@@ -20,7 +20,11 @@ jobs:
       DATABASE_URL: postgres://ci:ci@127.0.0.1:5432/ci_dummy
       SESSION_SECRET: ci-dummy-secret-not-used-in-prod
     steps:
-      - uses: actions/checkout@v5
+      # Экшены запинены по SHA коммита, а НЕ по тегу (C3, аудит #057): тег
+      # `v5` — mutable-ссылка, и whoever может двинуть тег в actions/checkout
+      # получает выполнение своего кода в нашем CI с нашими правами. Комментарий
+      # с тегом оставлен рядом — по нему видно, чему соответствует SHA.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           # Сканеру секретов нужна ИСТОРИЯ, а не один коммит: без этого гейт
           # зелен ровно в том сценарии, ради которого ставится.
@@ -31,7 +35,7 @@ jobs:
           # приёмки краснит и посторонние PR, пока ветка жива на remote.
           # Вывод: ветку приёмки удалять сразу после красного прогона.
           fetch-depth: 0
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: npm
@@ -72,10 +76,24 @@ jobs:
       # дефолт НЕ видит VK-токен вовсе и пропускает Telegram-токен внутри URL
       # (замерено Сарафаном, оба класса в портфеле реально утекали), а наши
       # собственные skm_/skb_ и SECRETS_MASTER_KEY не знает никто, кроме нас.
+      #
+      # C3, аудит #057: бинарь скачивается с ПРОВЕРКОЙ sha256. Раньше он тянулся
+      # по HTTPS и распаковывался сразу — подмена бинаря на этапе загрузки (или
+      # MITM там, где TLS дырявый) давала бы исполнение чужого кода в публичном
+      # CI. Контрольная сумма зашита в репозиторий: её видно в PR, и она меняется
+      # только вместе с обновлением версии.
       - name: Secret scan (gitleaks)
+        env:
+          GITLEAKS_VER: 8.30.1
+          # sha256 файла `gitleaks_8.30.1_linux_x64.tar.gz` из официального
+          # gitleaks_8.30.1_checksums.txt (сверен локальным пересчётом файла).
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
         run: |
           set -euo pipefail
-          VER=8.30.1
-          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" | tar -xz gitleaks
+          TARBALL="gitleaks_${GITLEAKS_VER}_linux_x64.tar.gz"
+          curl -sSfL -o "$TARBALL" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VER}/${TARBALL}"
+          echo "${GITLEAKS_SHA256}  ${TARBALL}" | sha256sum -c -
+          tar -xzf "$TARBALL" gitleaks
           ./gitleaks version
           ./gitleaks git . --config .gitleaks.toml --redact --exit-code 1 --no-banner --verbose
