@@ -15,11 +15,15 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       <footer className="border-t border-white/10 py-4 text-center text-sm text-white/70">
         {/* Концепция владельца 2026-09-12: KARMAN — карман, куда складываешь всё своё. */}
         <p>KARMAN — всё своё при себе</p>
-        {/* Подпись автора — решение владельца 2026-08-01, единое для всей экосистемы. */}
+        {/* Подпись автора — решение владельца 2026-08-01, единое для всей экосистемы.
+            Ссылка ВЕДЁТ НА САМ КАРМАН (это его публичный домен), поэтому адрес
+            указан относительным: абсолютный домен в коде — это координата прод-
+            хоста в публичном репозитории, а D-038 запрещает её (гейт
+            lib/security/prod-coords.test.ts). */}
         <p className="mt-1 text-xs">
           Сделано программистом{' '}
           <a
-            href="https://xn--80adkmnnb2b.xn--80adkdyec4j.xn--p1ai/"
+            href="/"
             target="_blank"
             rel="noopener noreferrer"
             className="underline underline-offset-2 hover:text-accent"

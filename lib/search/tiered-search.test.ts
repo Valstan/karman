@@ -106,7 +106,7 @@ describe('rankMatches — ранжирование и раскладка', () =>
     { id: 1, name: 'Ипотека', bank: 'Сбербанк' },
     { id: 2, name: 'Автокредит', bank: 'ВТБ' },
     { id: 3, name: 'Кредит на ипотеку вторички', bank: 'Альфа' },
-    { id: 4, name: 'Ипатека', bank: 'Дом.РФ' }, // опечатка в данных — ловится fuzzy
+    { id: 4, name: 'Ипатека', bank: 'Дом.Пример' }, // опечатка в данных — ловится fuzzy
   ];
   const fields = (i: (typeof items)[number]) => [i.name, i.bank];
 

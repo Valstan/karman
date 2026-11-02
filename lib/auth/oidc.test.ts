@@ -150,7 +150,9 @@ describe('buildAuthorizeUrl', () => {
 
   it('redirect_uri передаётся байт-в-байт, включая punycode', () => {
     const req = newAuthRequest();
-    const redirect = 'https://xn--80aa2ajgp.xn--80adkdyec4j.xn--p1ai/api/auth/oidc/callback';
+    // Домен — НЕ наш боевой (тот написан кириллицей и в punycode выглядел бы
+    // как координата прод-хоста, D-038): здесь пример «пример.рф» в punycode.
+    const redirect = 'https://xn--e1afmkfd.xn--p1ai/api/auth/oidc/callback';
     const url = new URL(buildAuthorizeUrl(endpoints, cfg, req, redirect));
     // Провайдер сверяет со списком точным сравнением: любая нормализация здесь
     // означает отказ «invalid redirect_uri» без внятного объяснения.

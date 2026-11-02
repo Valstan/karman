@@ -132,9 +132,9 @@ Telegram владельцу **только при смене состояния*
 
 ```bash
 # прогнать вручную
-set -a; . /etc/karman/karman.env; set +a; bash /home/valstan/karman/scripts/health_watch.sh
+set -a; . /etc/karman/karman.env; set +a; bash "$HOME/karman/scripts/health_watch.sh"
 # журнал сторожа
-tail -n 50 /home/valstan/backups/health-watch.log
+tail -n 50 "$HOME/backups/health-watch.log"
 # состояние и кэш получателя
 cat ~/.karman-health/last-state; ls -l ~/.karman-health/chat-id
 ```

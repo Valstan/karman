@@ -3,14 +3,13 @@
 > Sticky-note для непрерывности между сессиями KARMAN. Перезаписывается через
 > `/close_session` — историю смотри через `git log --follow -- docs/SESSION_HANDOFF.md`.
 
-**Status:** В работе — аудит #057 (срок 24.10, просрочка 9 дней). Сессия 02.11:
-PR #233 (удаление пишет аудит) смержен; #234 (мёртвый код #036) открыт; закрыты
-S1 (значение `SESSION_SECRET`), S4 (детектор дампа), S5 (пароль роли больше не
-в argv) — идут CI-гигиена (C1/C3/C4) и гейт координат (C5).
+**Status:** В работе — аудит #057 (срок 24.10, просрочка 9 дней). Сессия 02.11 закрыла
+четыре класса аудита: удаление пишет аудит (PR #233), мёртвый код #036 (PR #234),
+секреты — S1/S4/S5 (PR #235) и CI-гигиена с гейтом координат — C1/C3/C4/C5 (PR #236).
 Три письма brain от 22.10 ждут ответа, отзыв токена 211 — слово владельца запрошено.
-**Updated:** 2026-11-02 (аудит #057: S1/S4/S5 закрыты, #036 deadcode снят;
-ре-триаж PENDING по прогнанным признакам; замеры прода)
-**Branch:** `fix/audit-057-secrets` (ветка сессии; `main` = `e8135bd` — PR #233 смержен;
+**Updated:** 2026-11-02 (аудит #057: S1/S4/S5 + CI-гигиена + гейт координат; #036
+deadcode; ре-триаж PENDING по прогнанным признакам; замеры прода)
+**Branch:** `fix/audit-057-ci` (ветка сессии; `main` = `48ff04e` — PR #234 смержен;
 авто-мерж на GitHub выключен, мержа руками после зелёного CI)
 **Прод:** код 12.10 (`5de29ad`, PR #223). После него в `main` только docs/mailbox (#224 и
 далее), так что расхождения кода между `main` и продом нет. Юниты `karman` и
@@ -64,27 +63,27 @@ IDLE — владелец нитку не выбрал (вопрос снят, �
 - **Связанные коммиты сессии:** PR #233 ( смержен, `main` = `e8135bd`) — удаление секрета,
   карточки и поля карточки пишет строку аудита (`item_deleted`, `card_deleted`,
   `card_field_deleted`); тест «удаление оставляет след в аудите» (3 кейса).
-  Ветка `chore/deadcode-036` (PR #234) — #036: сняты 4 кандидата knip
+  Ветка `chore/deadcode-036` — #036: сняты 4 кандидата knip
   (`reorderFamilyPeopleAction` + его сервис, `readSessionUid`, `countLivePolicies`,
   тип `HotlinePost`), из `knip.jsonc` убран ненужный `ignoreDependencies: server-only`
   (knip теперь молчит целиком), пересчитаны числа в `docs/write-paths.md` и в гейте
   `lib/security/write-paths.test.ts` (70 → 69 действий).
-  Ветка `fix/audit-057-secrets` — аудит #057, класс «секреты»:
-  **S1** — `SESSION_SECRET` проверяется по ЗНАЧЕНИЮ (не короче 32 символов и не
-  плейсхолдер): `lib/auth/session-secret.ts` + вызовы из `instrumentation.ts` и
-  `lib/auth/jwt.ts`, тест `lib/auth/session-secret.test.ts` (6 кейсов);
-  **S5** — пароль роли БД больше не попадает в argv: новый `scripts/pg-connect.sh`
-  раскладывает его в `.pgpass` (600) и отдаёт URI без пароля; `backup_vault.sh`
-  (и `pg_dump`, и MKCOL через netrc вместо `--user`), `health_watch.sh` (`psql`);
-  **S4** — детектор дампа по ФОРМЕ выгрузки (`COPY public.<таблица>` /
-  `INSERT INTO public.<таблица>`): правила `karman-pgdump-copy-vault` и
-  `karman-pgdump-insert-vault` в `.gitleaks.toml`, тот же шаблон в
-  `lib/security/dump-detect.ts` + гейт `lib/security/dump-detect.test.ts`,
-  `.gitignore` закрывает `vault.sql`/`*.dump`/`*.tar`, док восстановления велит
-  распаковывать вне рабочей копии git. Плюс регресс-гейт
-  `lib/security/secrets-in-argv.test.ts` (DSN/учётка не возвращаются в argv), и
-  гейт `backup-tables.test.ts` больше не зашит на имя переменной с DSN.
-- **Открытые PR:** #234 (`chore/deadcode-036`).
+  PR #235 — аудит #057, класс «секреты»: **S1** — `SESSION_SECRET` проверяется по
+  ЗНАЧЕНИЮ (не короче 32 символов и не плейсхолдер): `lib/auth/session-secret.ts` +
+  вызовы из `instrumentation.ts` и `lib/auth/jwt.ts`; **S5** — пароль роли БД больше
+  не в argv: новый `scripts/pg-connect.sh` раскладывает его в `.pgpass` (600) и отдаёт
+  URI без пароля (`backup_vault.sh`, `health_watch.sh`; заодно убран `--user` в MKCOL),
+  плюс регресс-гейт `lib/security/secrets-in-argv.test.ts`; **S4** — детектор дампа по
+  ФОРМЕ выгрузки (`COPY public.<таблица>` / `INSERT INTO public.<таблица>`): правила
+  `karman-pgdump-*` в `.gitleaks.toml`, тот же шаблон в `lib/security/dump-detect.ts` +
+  гейт, `.gitignore` закрывает `vault.sql`/`*.dump`/`*.tar`, док восстановления велит
+  распаковывать вне рабочей копии git.
+  PR #236 — аудит #057, класс «цепочка поставки» и D-038: **C1** — деплой только из
+  `main`; **C3** — экшены запинены по SHA, бинарь gitleaks качается со сверкой sha256;
+  **C4** — артефакт едет в `mktemp -d` и сверяется по sha256 до распаковки; **C5** —
+  гейт `lib/security/prod-coords.test.ts` (IDN-домен, логин в пути, публичный IPv4) и
+  вычистка найденного в живом коде и документации.
+- **Открытые PR:** #235 (`fix/audit-057-secrets`), #236 (`fix/audit-057-ci`).
 - **Открытые вопросы для пользователя:** (1) какая нитка берётся; (2) подтверждение отзыва
   токена 211 в том же ходе, где команда выполняется.
 - **Прод-факты для следующей сессии:** 14 комнат (`karman-hotline` id 19, `pozvoni` id 20),

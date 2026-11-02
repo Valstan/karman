@@ -23,8 +23,10 @@
 # Запуск на боксе (env из /etc/karman/karman.env):
 #   set -a; . /etc/karman/karman.env; set +a; bash scripts/health_watch.sh
 #
-# Cron (каждые 10 минут):
-#   */10 * * * * set -a; . /etc/karman/karman.env; set +a; bash /home/valstan/karman/scripts/health_watch.sh >> /home/valstan/backups/health-watch.log 2>&1
+# Cron (каждые 10 минут). Пути — через $HOME: конкретный логин машины в
+# отслеживаемом файле — это координата прод-хоста (D-038, гейт
+# lib/security/prod-coords.test.ts).
+#   */10 * * * * set -a; . /etc/karman/karman.env; set +a; bash $HOME/karman/scripts/health_watch.sh >> $HOME/backups/health-watch.log 2>&1
 #
 # Требуемые env: DATABASE_URL, TELEGRAM_BOT_TOKEN (штатные, уже есть).
 # Необязательные: TELEGRAM_API_BASE (реле; см. G307 — прямой api.telegram.org

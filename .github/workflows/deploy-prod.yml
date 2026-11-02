@@ -51,7 +51,25 @@ jobs:
         shell: bash
 
     steps:
-      - uses: actions/checkout@v5
+      # C1, аудит #057: workflow_dispatch запускался с ЛЮБОЙ ветки — то есть на
+      # прод мог уехать feature-ветка, потому что кнопка «Run workflow» в UI
+      # предлагает выбрать ветку. Теперь деплой разрешён только из main.
+      # Отказ здесь громкий (красный шаг с текстом), а не молчаливый skip: тихий
+      # skip выглядел бы как «деплой прошёл», а прошёл не деплой.
+      - name: Deploy ref guard
+        run: |
+          set -e
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Деплой на прод разрешён только из main (сейчас $GITHUB_REF)."
+            echo "Ветку сначала вейт и мёржь в main — тогда деплой пойдёт сам."
+            exit 1
+          fi
+          echo "ref=$GITHUB_REF — деплой разрешён"
+
+      # Экшены запинены по SHA коммита, а не по тегу (C3, аудит #057): тег `v5` —
+      # mutable-ссылка, и двинувший его получает выполнение своего кода в нашем
+      # CI с доступом к прод-ключам. Комментарий с тегом оставлен рядом.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 2
 
@@ -71,7 +89,7 @@ jobs:
           fi
           echo "Новых миграций в коммите нет — деплой продолжается."
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: npm
@@ -172,21 +190,54 @@ jobs:
           # словами — при первом обрыве связи координаты бокса уехали бы в публичный лог.
           # Код 255 — «ssh не соединился»; всё остальное — код удалённого скрипта, а его
           # диагностика идёт в stdout (`exec 2>&1` первой строкой), и она НЕ гасится.
+          #
+          # C4, аудит #057: артефакт едет в НЕПРЕДСКАЗУЕМЫЙ каталог (mktemp -d на
+          # боксе) и сверяется по sha256 ДО распаковки. Раньше он лежал в
+          # предсказуемом /tmp/karman-app.tgz без сверки: подмена файла по дороге
+          # (или подсадка в /tmp другим пользователем машины) означала бы, что на
+          # прод едет не то, что собрал CI.
           set +e
-          scp -q karman-app.tgz karman:/tmp/karman-app.tgz 2>/dev/null
+          TMPD="$(ssh karman 'mktemp -d' 2>/dev/null)"
           rc=$?
           set -e
-          if [ "$rc" != "0" ]; then echo "::error::scp завершился с кодом $rc; детали не печатаем"; exit "$rc"; fi
+          if [ "$rc" != "0" ] || [ -z "$TMPD" ]; then
+            echo "::error::Не удалось создать временный каталог на боксе (код $rc); детали не печатаем"
+            exit 1
+          fi
+          SHA256="$(sha256sum karman-app.tgz | cut -d' ' -f1)"
+          echo "artifact sha256: $SHA256"
           set +e
-          ssh karman 'bash -s' "${{ github.sha }}" "$DEPLOY_BASE" 2>/dev/null <<'REMOTE'
+          scp -q karman-app.tgz "karman:$TMPD/karman-app.tgz" 2>/dev/null
+          rc=$?
+          set -e
+          if [ "$rc" != "0" ]; then
+            echo "::error::scp завершился с кодом $rc; детали не печатаем"
+            ssh karman "rm -rf '$TMPD'" 2>/dev/null || true
+            exit "$rc"
+          fi
+          set +e
+          ssh karman 'bash -s' "${{ github.sha }}" "$DEPLOY_BASE" "$SHA256" "$TMPD" 2>/dev/null <<'REMOTE'
           exec 2>&1
           set -e
           SHA="$1"
           BASE="$2"
+          SHA256="$3"
+          TMPD="$4"
           REL="$BASE/releases/$SHA"
+          if [ -z "$TMPD" ] || [ ! -f "$TMPD/karman-app.tgz" ]; then
+            echo "::error::Артефакт не найден во временном каталоге — деплой остановлен"
+            exit 1
+          fi
+          ACTUAL="$(sha256sum "$TMPD/karman-app.tgz" | cut -d' ' -f1)"
+          if [ "$ACTUAL" != "$SHA256" ]; then
+            echo "::error::sha256 артефакта не совпал: ожидали $SHA256, получили $ACTUAL"
+            rm -rf "$TMPD"
+            exit 1
+          fi
+          echo "sha256 артефакта сходится — распаковываем"
           rm -rf "$REL"; mkdir -p "$REL"
-          tar xzf /tmp/karman-app.tgz -C "$REL"
-          rm -f /tmp/karman-app.tgz
+          tar xzf "$TMPD/karman-app.tgz" -C "$REL"
+          rm -rf "$TMPD"
           ln -sfn "$REL" "$BASE/current"
           # Синхронизация операционных скриптов (их запускает cron, а не приложение,
           # поэтому они живут вне релиз-каталога). Только копирование, без удаления:

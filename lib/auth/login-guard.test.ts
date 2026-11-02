@@ -5,9 +5,14 @@ const MIN = 60_000;
 
 describe('login-guard', () => {
   it('ключ нормализует логин, различает IP', () => {
-    expect(loginGuardKey(' Admin ', '1.2.3.4')).toBe('admin|1.2.3.4');
+    // Адреса — из документационного диапазона RFC 5737 (203.0.113.0/24,
+    // 198.51.100.0/24): это правильные адреса для примеров, и гейт
+    // lib/security/prod-coords.test.ts не считает их координатами.
+    expect(loginGuardKey(' Admin ', '203.0.113.7')).toBe('admin|203.0.113.7');
     expect(loginGuardKey('admin', null)).toBe('admin|-');
-    expect(loginGuardKey('admin', '1.2.3.4')).not.toBe(loginGuardKey('admin', '5.6.7.8'));
+    expect(loginGuardKey('admin', '203.0.113.7')).not.toBe(
+      loginGuardKey('admin', '198.51.100.9'),
+    );
   });
 
   it('10 неудач в окне → lockout; до этого вход разрешён', () => {
