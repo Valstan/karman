@@ -26,6 +26,11 @@
 
 set -euo pipefail
 
+# DSN с паролем роли в argv не кладём (S5, аудит #057): пароль уходит в .pgpass
+# (chmod 600), в argv остаётся URI без пароля. Подробности — в pg-connect.sh.
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
+. "$SCRIPT_DIR/pg-connect.sh"
+
 MEDIA_ROOT="${BACKUP_MEDIA_ROOT:?BACKUP_MEDIA_ROOT не задан (каталог сканов; значение — MEDIA_ROOT из systemd-юнита)}"
 WEBDAV_DIR="${BACKUP_WEBDAV_DIR:-/KARMAN-backups}"
 KEEP="${BACKUP_KEEP:-14}"
@@ -47,6 +52,10 @@ gpg --list-keys "$BACKUP_GPG_RECIPIENT" >/dev/null 2>&1 \
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 chmod 700 "$WORK"
+
+# Пароль роли — в .pgpass внутри WORK (тот же приём, что netrc у Яндекс.Диска):
+# argv остаётся чистым, а /proc/<pid>/cmdline не показывает пароль соседям.
+pg_setup_pgpass "$WORK"
 
 # curl к WebDAV Яндекса. -f — падать на HTTP-ошибке.
 # Учётка идёт файлом, а НЕ через --user: аргументы командной строки видны в `ps`
@@ -102,7 +111,7 @@ BACKUP_EXCLUDES=(
   "reminder_action|нажатия кнопок — то же, что журнал: лог, не состояние"
 )
 
-pg_dump "$DATABASE_URL" --no-owner --no-privileges \
+pg_dump "$PG_DSN_NOPASS" --no-owner --no-privileges \
   -t secrets_project -t secrets_item -t secrets_token -t secrets_audit \
   -t secrets_card -t secrets_card_field -t secrets_grant -t secrets_grant_policy \
   -t secrets_bootstrap \
@@ -160,8 +169,9 @@ gpg --batch --yes --trust-model always \
 
 # --- 5. Выгрузка на Яндекс.Диск (WebDAV) -----------------------------------
 # MKCOL создаёт папку (405 = уже есть — не ошибка, поэтому без -f здесь).
-curl -sS --user "${YANDEX_WEBDAV_USER}:${YANDEX_WEBDAV_PASSWORD}" \
-  -X MKCOL "${WEBDAV_HOST}${WEBDAV_DIR}/" -o /dev/null || true
+# Учётка — из netrc-файла (как у всех остальных выгрузок ниже), а НЕ через
+# --user: пароль в argv виден в `ps` любому пользователю машины (S5).
+wd -X MKCOL "${WEBDAV_HOST}${WEBDAV_DIR}/" -o /dev/null || true
 echo "backup_vault: выгрузка ${NAME}.tar.gpg на Яндекс.Диск…"
 wd -T "$WORK/${NAME}.tar.gpg" "${WEBDAV_HOST}${WEBDAV_DIR}/${NAME}.tar.gpg"
 

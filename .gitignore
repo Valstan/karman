@@ -59,6 +59,16 @@ Thumbs.db
 *.tar.gz
 *.sql.gz
 
+# Дампы и бэкапы vault (S4, аудит #057). Коммит такого файла = необратимая
+# утечка ПДн в публичный репозиторий, поэтому файлы не просто исключены из
+# индекса, а ещё и ловятся детектором дампа (lib/security/dump-detect.ts).
+# Шаблон «*.sql» НЕ используем намеренно: миграции (lib/db/migrations/*.sql)
+# и scripts/bootstrap.sql — отслеживаемые файлы, и общий игнор тихо убрал бы
+# новую миграцию из коммита.
+vault.sql
+*.dump
+*.tar
+
 # hotline (pilot brain 03.10): presence.json is gitignored,
 # outbox tape is committed with the normal flow and is visible
 # to the peer via GitHub (the degraded second channel).

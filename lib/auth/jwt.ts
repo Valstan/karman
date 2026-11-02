@@ -1,4 +1,5 @@
 import { SignJWT, jwtVerify } from 'jose';
+import { assertSessionSecret } from './session-secret';
 
 /**
  * Подпись/проверка сессионного JWT (HS256). Чистый jose — Edge-safe,
@@ -36,16 +37,18 @@ let cachedKey: Uint8Array | null = null;
  * импортирует роуты на этапе «Collecting page data» с NODE_ENV=production,
  * и top-level throw ломал бы сборку прод-артефакта без рантайм-секрета.
  * Fail-fast в production сохраняется — первый же запрос к защищённому
- * маршруту упадёт, если SESSION_SECRET не задан (см. также instrumentation.ts,
- * который валидирует секрет на старте сервера). См. план, раздел «Безопасность».
+ * маршруту упадёт, если SESSION_SECRET не задан или это плейсхолдер
+ * (см. также instrumentation.ts, который валидирует секрет на старте сервера).
+ * Проверяется ЗНАЧЕНИЕ, а не только наличие: `change-me-in-production` — не
+ * секрет, а известный всем ключ (S1, аудит #057). См. план, раздел «Безопасность».
  */
 function getSecretKey(): Uint8Array {
   if (cachedKey) {
     return cachedKey;
   }
   const secret = process.env.SESSION_SECRET;
-  if (!secret && process.env.NODE_ENV === 'production') {
-    throw new Error('SESSION_SECRET must be set in production');
+  if (process.env.NODE_ENV === 'production') {
+    assertSessionSecret(secret);
   }
   cachedKey = new TextEncoder().encode(secret || DEV_FALLBACK_SECRET);
   return cachedKey;

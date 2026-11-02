@@ -32,9 +32,14 @@ function schemaTables(): string[] {
  * Таблицы в `-t` аргументах pg_dump. Их несколько на строке, поэтому без `m`.
  * Разбираем ТОЛЬКО сам вызов pg_dump: в скрипте есть и другие `-t` (`mapfile -t
  * REMOTE` в ретенции), и они к дампу отношения не имеют.
+ *
+ * Имя переменной с DSN здесь НЕ зашито: 02.11 DSN перестал быть `DATABASE_URL`
+ * (пароль роли ушёл из argv в .pgpass, S5), и гейт, зашитый на прежнее имя,
+ * ронялся не из-за расхождения таблиц, а из-за своего же шаблона. Привязка —
+ * к результату вызова (`> "$WORK/vault.sql"`), а не к способу подключения.
  */
 function dumpedTables(): Set<string> {
-  const call = SCRIPT.match(/pg_dump "\$DATABASE_URL"[\s\S]*?> "\$WORK\/vault\.sql"/);
+  const call = SCRIPT.match(/pg_dump "[^"]+"[\s\S]*?> "\$WORK\/vault\.sql"/);
   if (!call) throw new Error('в backup_vault.sh не найден вызов pg_dump (vault.sql)');
   return new Set([...call[0].matchAll(/(?:^|\s)-t (\w+)/g)].map((m) => m[1]!));
 }
