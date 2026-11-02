@@ -38,6 +38,15 @@ WEBDAV_HOST="https://webdav.yandex.ru"
 
 die() { echo "backup_vault: ОШИБКА: $*" >&2; exit 1; }
 
+# Логика выгрузки (повтор + сверка размера, которая не теряется) — отдельным
+# файлом, потому что её можно прогнать без бокса и без Диска (гейт
+# lib/security/backup-upload.test.ts). Отсутствие помощника — СТОП, а не
+# «работаем без сверки»: тихо выгрузить без проверки — ровно тот отказ, который
+# стоил 23 ночи.
+[ -r "$SCRIPT_DIR/backup_upload.sh" ] \
+  || die "помощник выгрузки не найден: $SCRIPT_DIR/backup_upload.sh"
+. "$SCRIPT_DIR/backup_upload.sh"
+
 # --- Предусловия ------------------------------------------------------------
 : "${DATABASE_URL:?DATABASE_URL не задан (источи /etc/karman/karman.env)}"
 : "${BACKUP_GPG_RECIPIENT:?BACKUP_GPG_RECIPIENT не задан (публичный gpg-ключ владельца)}"
@@ -50,8 +59,48 @@ gpg --list-keys "$BACKUP_GPG_RECIPIENT" >/dev/null 2>&1 \
   || die "gpg-ключ '$BACKUP_GPG_RECIPIENT' не найден в keyring (gpg --import owner.asc)"
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
 chmod 700 "$WORK"
+
+# --- Отметки о ходе бэкапа ---------------------------------------------------
+# Сторож (health_watch.sh) больше не считает «бэкап был» по свежести лога:
+# лог писался каждую ночь даже тогда, когда архива на Диске не было
+# (09.10 — 31.10 — 23 ночи при зелёном стороже). Признак «бэкап был» =
+# подтверждённая выгрузка, то есть совпавший размер.
+#
+#   backup-run-YYYYMMDD — запуск начался; файл обновляется (пульс) на каждом
+#                         этапе, пока идёт выгрузка;
+#   backup-ok-YYYYMMDD  — выгрузка подтверждена размером.
+#
+# Сторож сравнивает пульс с подтверждением: пульс свежий → запуск идёт, тревогу
+# не поднимаем; пульс протух, а подтверждения нет → выгрузка не состоялась
+# (ровно тот сигнал, которого не было 23 ночи).
+OK_DIR="${BACKUP_OK_DIR:-$HOME/.karman-health}"
+RUN_DATE="$(date -u +%Y%m%d)"
+RUN_MARKER="$OK_DIR/backup-run-$RUN_DATE"
+mkdir -p "$OK_DIR"
+touch "$RUN_MARKER" 2>/dev/null \
+  || echo "backup_vault: ВНИМАНИЕ — отметку запуска создать не удалось ($RUN_MARKER)" >&2
+
+# Пульс во время длинной выгрузки: PUT 105 МБ идёт ~1 ч 45 мин, и без пульса
+# сторож счёл бы запуск умершим (а он идёт).
+HEARTBEAT_PID=''
+heartbeat_start() {
+  # `kill -0 $$` — страховка от «вечного» пульса: если скрипт убьют SIGKILL,
+  # фоновый цикл должен умереть сам, иначе сторож будет вечно видеть живой
+  # запуск и не поднимет тревогу.
+  ( while kill -0 "$$" 2>/dev/null; do sleep 60; touch "$RUN_MARKER" 2>/dev/null || true; done ) &
+  HEARTBEAT_PID=$!
+}
+heartbeat_stop() {
+  [ -n "$HEARTBEAT_PID" ] && kill "$HEARTBEAT_PID" 2>/dev/null || true
+}
+trap 'heartbeat_stop; rm -rf "$WORK"' EXIT
+heartbeat_start
+
+# Каталог для локальных копий архива, когда выгрузка не подтвердилась: без него
+# архив удаляется вместе с WORK, и обрыв на середине уничтожает единственный
+# экземпляр файла.
+BACKUP_KEEP_DIR="${BACKUP_KEEP_DIR:-$HOME/backups/pending}"
 
 # Пароль роли — в .pgpass внутри WORK (тот же приём, что netrc у Яндекс.Диска):
 # argv остаётся чистым, а /proc/<pid>/cmdline не показывает пароль соседям.
@@ -173,21 +222,15 @@ gpg --batch --yes --trust-model always \
 # --user: пароль в argv виден в `ps` любому пользователю машины (S5).
 wd -X MKCOL "${WEBDAV_HOST}${WEBDAV_DIR}/" -o /dev/null || true
 echo "backup_vault: выгрузка ${NAME}.tar.gpg на Яндекс.Диск…"
-wd -T "$WORK/${NAME}.tar.gpg" "${WEBDAV_HOST}${WEBDAV_DIR}/${NAME}.tar.gpg"
-
-# Сверка размера ПОСЛЕ выгрузки: успешный PUT означает «сервер принял запрос»,
-# а не «на Диске лежит целый файл». Обрыв на середине даёт ровно тот бэкап,
-# который выглядит существующим ровно до дня восстановления.
-LOCAL_BYTES=$(stat -c %s "$WORK/${NAME}.tar.gpg")
-REMOTE_BYTES=$(wd -I "${WEBDAV_HOST}${WEBDAV_DIR}/${NAME}.tar.gpg" 2>/dev/null \
-  | tr -d '\r' | awk 'tolower($1) == "content-length:" { print $2 }' | tail -1)
-if [ -z "$REMOTE_BYTES" ]; then
-  echo "backup_vault: ВНИМАНИЕ — размер выгруженного файла проверить не удалось (сервер не отдал Content-Length)" >&2
-elif [ "$REMOTE_BYTES" != "$LOCAL_BYTES" ]; then
-  die "выгрузка неполная: локально ${LOCAL_BYTES} Б, на Диске ${REMOTE_BYTES} Б"
-else
-  echo "backup_vault: выгрузка сверена — ${LOCAL_BYTES} Б"
+if ! backup_upload_archive "$WORK/${NAME}.tar.gpg" "${WEBDAV_HOST}${WEBDAV_DIR}/${NAME}.tar.gpg" wd "$BACKUP_KEEP_DIR"; then
+  die "выгрузка не подтверждена размером (две попытки); локальная копия — ${BACKUP_KEEP_DIR}/${NAME}.tar.gpg"
 fi
+
+# Отметка подтверждённой выгрузки — её читает сторож. Дата — по НАЧАЛУ запуска
+# (RUN_DATE), а не по моменту записи: запуск в ночь на 1-е — это ночь
+# последнего числа, и пульс с подтверждением должны говорить об одном и том же.
+printf '%s %s\n' "$STAMP" "$NAME" > "$OK_DIR/backup-ok-$RUN_DATE" \
+  || echo "backup_vault: ВНИМАНИЕ — отметку подтверждения записать не удалось" >&2
 
 # --- 6. Ретенция: хранить последние $KEEP ----------------------------------
 # PROPFIND глубиной 1 → имена karman-vault-*.tar.gpg; сортируем (в имени
@@ -198,12 +241,26 @@ mapfile -t REMOTE < <(
     | grep -oE 'karman-vault-[0-9]{8}-[0-9]{6}\.tar\.gpg' | sort -u
 )
 COUNT=${#REMOTE[@]}
-if (( COUNT > KEEP )); then
+if [ "$COUNT" -eq 0 ]; then
+  # PROPFIND не отдал ни одного имени — ретенция вслепую, и её провал не виден.
+  # На Диске лежал 41 архив при KEEP=14: молчание стоило места.
+  echo "backup_vault: ВНИМАНИЕ — PROPFIND не вернул ни одного архива: ретенция ничего не удалит (проверь доступ к папке)" >&2
+elif (( COUNT > KEEP )); then
   DELETE=$(( COUNT - KEEP ))
   for old in "${REMOTE[@]:0:$DELETE}"; do
     echo "backup_vault: удаляю старый бэкап ${old}"
-    wd -X DELETE "${WEBDAV_HOST}${WEBDAV_DIR}/${old}" -o /dev/null || true
+    # Ошибку удаления НЕ глотаем: `|| true` превращал неудачную ретенцию в
+    # «всё прошло», и облако копило архивы молча.
+    if ! wd -X DELETE "${WEBDAV_HOST}${WEBDAV_DIR}/${old}" -o /dev/null; then
+      echo "backup_vault: ВНИМАНИЕ — старый бэкап ${old} НЕ удалён (см. код curl)" >&2
+    fi
   done
 fi
 
-echo "backup_vault: ГОТОВО — ${NAME}.tar.gpg (всего на Диске: ${COUNT})"
+# --- 7. Уборка старых отметок ------------------------------------------------
+# Отметки по дате (2 файла в сутки); без уборки каталог растёт вечно. Стираем
+# всё старше 60 дней — с запасом на разбор инцидента постфактум.
+find "$OK_DIR" -maxdepth 1 -name 'backup-run-*' -mtime +60 -delete 2>/dev/null || true
+find "$OK_DIR" -maxdepth 1 -name 'backup-ok-*' -mtime +60 -delete 2>/dev/null || true
+
+echo "backup_vault: ГОТОВО — ${NAME}.tar.gpg (всего на Диске: ${COUNT}); выгрузка подтверждена размером"
