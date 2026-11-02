@@ -3,9 +3,18 @@
 # backup_vault.sh — шифрованный offsite-бэкап vault + media/ (vault Ф4,
 # план docs/secrets-vault-plan.md, runbook docs/secrets-vault-backup.md).
 #
-# Что делает: pg_dump vault-таблиц (секреты/2FA/аудит) + tar media/ →
-# один архив → gpg-шифрование на ПУБЛИЧНЫЙ ключ владельца → выгрузка на
-# Яндекс.Диск по WebDAV → ретенция (хранить последние N).
+# Что делает: pg_dump vault-таблиц (секреты/2FA/аудит) → gpg-шифрование на
+# ПУБЛИЧНЫЙ ключ владельца → выгрузка на Яндекс.Диск по WebDAV → ретенция.
+#
+# ДВА ВИДА АРХИВОВ (решение владельца, 02.11 — «vault каждый день, media/ раз в
+# неделю, не проверяя»):
+#   karman-vault-YYYYMMDD-HHMMSS.tar.gpg  — ежедневно, только дамп vault
+#     (килобайты, секунды): свежесть БД гарантирована каждую ночь;
+#   karman-media-YYYYMMDD-HHMMSS.tar.gpg  — раз в BACKUP_MEDIA_INTERVAL_DAYS
+#     (7), vault + media/ (снимок сканов, ~105 МБ): медиа меняются редко, а
+#     выгрузка 105 МБ по каналу ~17 КБ/с съедает ночное окно целиком.
+# Решение о снимке принимается по ПОДТВЕРЖДЁННОМУ снимку: не удался — отметка не
+# обновилась, следующая ночь повторит сама.
 #
 # ВАЖНО: SECRETS_MASTER_KEY в бэкап НЕ входит (корень доверия, pool #008) —
 # дамп содержит только ШИФРОТЕКСТ секретов; gpg — второй слой. Восстановление
@@ -115,7 +124,6 @@ NETRC="$WORK/netrc"
   echo "machine webdav.yandex.ru login $YANDEX_WEBDAV_USER password $YANDEX_WEBDAV_PASSWORD" > "$NETRC" )
 wd() { curl -fsS --netrc-file "$NETRC" "$@"; }
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
-NAME="karman-vault-${STAMP}"
 
 # --- 1. Дамп невосстановимых таблиц (не вся БД) ------------------------------
 # Явный список — чтобы бэкап был предсказуем и не тащил кредиты (их восстановит
@@ -174,93 +182,179 @@ pg_dump "$PG_DSN_NOPASS" --no-owner --no-privileges \
   -t hotline_message -t hotline_presence \
   > "$WORK/vault.sql"
 
-# --- 2. media/ (сканы документов) ------------------------------------------
-# Считаем файлы ДО упаковки: «ГОТОВО» без числа — это отчёт о том, что скрипт
-# отработал, а не о том, что что-то забэкаплено. Пустой каталог при живых
-# документах = молчаливая потеря, и увидеть её можно только по счётчику.
+# --- 2. Частота: снимок media/ — раз в неделю --------------------------------
+# Медиа меняются редко (владелец, 02.11: «раз в неделю бывает, не чаще»), а
+# снимок media/ — это ~105 МБ и ~1 ч 45 мин выгрузки по каналу ~17 КБ/с: он
+# съедает ночное окно почти целиком. Поэтому КАЖДУЮ ночь уходит дамп vault
+# (килобайты, секунды), а снимок media/ — раз в BACKUP_MEDIA_INTERVAL_DAYS (7).
+#
+# Решение принимается по ПОДТВЕРЖДЁННОМУ снимку (backup-media-ok-*): если
+# снимок не удался, отметка не обновится — и следующей ночью попытка
+# повторится сама (без рук и без «хвоста», который надо помнить).
+MEDIA_INTERVAL_DAYS="${BACKUP_MEDIA_INTERVAL_DAYS:-7}"
 MEDIA_FILES=0
 if [ -d "$MEDIA_ROOT" ]; then
   MEDIA_FILES=$(find "$MEDIA_ROOT" -type f | wc -l)
-  echo "backup_vault: tar media/ (файлов: ${MEDIA_FILES})…"
-  tar -czf "$WORK/media.tar.gz" -C "$(dirname "$MEDIA_ROOT")" "$(basename "$MEDIA_ROOT")"
-  if [ "$MEDIA_FILES" -eq 0 ]; then
-    echo "backup_vault: ВНИМАНИЕ — в '$MEDIA_ROOT' ноль файлов. Это норма, только если сканов нет в БД; иначе приложение пишет их в другой каталог (сверь MEDIA_ROOT в systemd-юните)." >&2
-  fi
+fi
+if backup_media_due "$OK_DIR" "$MEDIA_INTERVAL_DAYS"; then
+  TAKE_MEDIA=1
+  echo "backup_vault: снимок media/ ПОРА (интервал ${MEDIA_INTERVAL_DAYS} дн, последний подтверждённый: ${BACKUP_MEDIA_LAST:-не было})"
 else
-  echo "backup_vault: ВНИМАНИЕ — media-каталог '$MEDIA_ROOT' отсутствует, бэкап сканов ПУСТ" >&2
-  : > "$WORK/media.tar.gz"
+  TAKE_MEDIA=0
+  echo "backup_vault: снимок media/ не пора (интервал ${MEDIA_INTERVAL_DAYS} дн, последний подтверждённый: ${BACKUP_MEDIA_LAST:-не было}) — грузим только дамп vault"
 fi
 
-# --- 3. Манифест + сборка бандла -------------------------------------------
+# --- 3. media/ (сканы документов) — только в недельном снимке ---------------
+# Считаем файлы ДО упаковки: «ГОТОВО» без числа — это отчёт о том, что скрипт
+# отработал, а не о том, что что-то забэкаплено. Пустой каталог при живых
+# документах = молчаливая потеря, и увидеть её можно только по счётчику.
+if [ "$TAKE_MEDIA" -eq 1 ]; then
+  echo "backup_vault: tar media/ (файлов: ${MEDIA_FILES})…"
+  if [ -d "$MEDIA_ROOT" ]; then
+    tar -czf "$WORK/media.tar.gz" -C "$(dirname "$MEDIA_ROOT")" "$(basename "$MEDIA_ROOT")"
+    if [ "$MEDIA_FILES" -eq 0 ]; then
+      echo "backup_vault: ВНИМАНИЕ — в '$MEDIA_ROOT' ноль файлов. Это норма, только если сканов нет в БД; иначе приложение пишет их в другой каталог (сверь MEDIA_ROOT в systemd-юните)." >&2
+    fi
+  else
+    echo "backup_vault: ВНИМАНИЕ — media-каталог '$MEDIA_ROOT' отсутствует, снимок сканов ПУСТ" >&2
+    : > "$WORK/media.tar.gz"
+  fi
+fi
+
+# --- 4. Манифест -------------------------------------------------------------
 # Манифест несёт ОЖИДАЕМЫЕ величины: при восстановлении сразу видно, совпало ли
 # распакованное с тем, что паковали, — без сверки со сторонним источником.
-cat > "$WORK/MANIFEST.txt" <<EOF
+# У ежедневного бандла media_included=no: он честно говорит, что сканов в нём
+# нет, и называет дату последнего подтверждённого снимка (восстановление берёт
+# снимок оттуда).
+write_manifest() {
+  local kind="$1" media_included="$2" media_bytes="$3" last_confirmed="$4"
+  cat > "$WORK/MANIFEST.txt" <<EOF
 KARMAN vault backup
 created_utc: ${STAMP}
+kind: ${kind}
 includes: vault.sql (secrets_*/passport_*/auth_oidc_identity/auth_totp/auth_recovery_code/auth_audit/person_profile/documents_*/document_field/document_file/circle*/family_*/hotline_*), media.tar.gz
 excludes: credits_* (кредиты и платежи — восстановимы из выписок банка)
 excludes: SECRETS_MASTER_KEY (корень доверия — хранится у владельца отдельно, pool #008)
 excludes: passport_jwks_cache (кеш чужих публичных ключей — восстанавливается фетчем)
 media_root: ${MEDIA_ROOT}
-media_files: ${MEDIA_FILES}
-media_bytes: $(stat -c %s "$WORK/media.tar.gz" 2>/dev/null || echo 0)
+media_files_on_disk: ${MEDIA_FILES}
+media_included: ${media_included}
+media_bytes: ${media_bytes}
+media_last_confirmed: ${last_confirmed}
 vault_sql_bytes: $(stat -c %s "$WORK/vault.sql" 2>/dev/null || echo 0)
 note: значения секретов в дампе ЗАШИФРОВАНЫ мастер-ключом; этот архив gpg — второй слой.
 note: восстановление проверяется учебным прогоном (docs/secrets-vault-backup.md, «Учебное восстановление»).
 EOF
-tar -cf "$WORK/${NAME}.tar" -C "$WORK" MANIFEST.txt vault.sql media.tar.gz
+}
 
-# --- 4. gpg-шифрование на публичный ключ владельца --------------------------
+# --- 5. Ежедневный бандл: только vault ---------------------------------------
+# Килобайты и секунды — этот архив уходит КАЖДУЮ ночь и гарантирует свежесть
+# дампа, даже если недельный снимок media/ не доедет.
+DAILY_NAME="karman-vault-${STAMP}"
+write_manifest "vault (ежедневно)" "no" 0 "${BACKUP_MEDIA_LAST:-нет подтверждённых снимков}"
+tar -cf "$WORK/${DAILY_NAME}.tar" -C "$WORK" MANIFEST.txt vault.sql
 echo "backup_vault: gpg-шифрование на ${BACKUP_GPG_RECIPIENT}…"
 gpg --batch --yes --trust-model always \
   --encrypt --recipient "$BACKUP_GPG_RECIPIENT" \
-  --output "$WORK/${NAME}.tar.gpg" "$WORK/${NAME}.tar"
+  --output "$WORK/${DAILY_NAME}.tar.gpg" "$WORK/${DAILY_NAME}.tar"
 
-# --- 5. Выгрузка на Яндекс.Диск (WebDAV) -----------------------------------
+# --- 6. Выгрузка на Яндекс.Диск (WebDAV) -----------------------------------
 # MKCOL создаёт папку (405 = уже есть — не ошибка, поэтому без -f здесь).
 # Учётка — из netrc-файла (как у всех остальных выгрузок ниже), а НЕ через
 # --user: пароль в argv виден в `ps` любому пользователю машины (S5).
 wd -X MKCOL "${WEBDAV_HOST}${WEBDAV_DIR}/" -o /dev/null || true
-echo "backup_vault: выгрузка ${NAME}.tar.gpg на Яндекс.Диск…"
-if ! backup_upload_archive "$WORK/${NAME}.tar.gpg" "${WEBDAV_HOST}${WEBDAV_DIR}/${NAME}.tar.gpg" wd "$BACKUP_KEEP_DIR"; then
-  die "выгрузка не подтверждена размером (две попытки); локальная копия — ${BACKUP_KEEP_DIR}/${NAME}.tar.gpg"
+echo "backup_vault: выгрузка ${DAILY_NAME}.tar.gpg на Яндекс.Диск…"
+if ! backup_upload_archive "$WORK/${DAILY_NAME}.tar.gpg" "${WEBDAV_HOST}${WEBDAV_DIR}/${DAILY_NAME}.tar.gpg" wd "$BACKUP_KEEP_DIR"; then
+  die "выгрузка не подтверждена размером (две попытки); локальная копия — ${BACKUP_KEEP_DIR}/${DAILY_NAME}.tar.gpg"
 fi
 
 # Отметка подтверждённой выгрузки — её читает сторож. Дата — по НАЧАЛУ запуска
 # (RUN_DATE), а не по моменту записи: запуск в ночь на 1-е — это ночь
 # последнего числа, и пульс с подтверждением должны говорить об одном и том же.
-printf '%s %s\n' "$STAMP" "$NAME" > "$OK_DIR/backup-ok-$RUN_DATE" \
+printf '%s %s\n' "$STAMP" "$DAILY_NAME" > "$OK_DIR/backup-ok-$RUN_DATE" \
   || echo "backup_vault: ВНИМАНИЕ — отметку подтверждения записать не удалось" >&2
 
-# --- 6. Ретенция: хранить последние $KEEP ----------------------------------
-# PROPFIND глубиной 1 → имена karman-vault-*.tar.gpg; сортируем (в имени
-# timestamp), удаляем всё сверх $KEEP старейших.
-echo "backup_vault: ретенция (хранить $KEEP)…"
-mapfile -t REMOTE < <(
-  wd -X PROPFIND -H 'Depth: 1' "${WEBDAV_HOST}${WEBDAV_DIR}/" 2>/dev/null \
-    | grep -oE 'karman-vault-[0-9]{8}-[0-9]{6}\.tar\.gpg' | sort -u
-)
-COUNT=${#REMOTE[@]}
-if [ "$COUNT" -eq 0 ]; then
-  # PROPFIND не отдал ни одного имени — ретенция вслепую, и её провал не виден.
-  # На Диске лежал 41 архив при KEEP=14: молчание стоило места.
-  echo "backup_vault: ВНИМАНИЕ — PROPFIND не вернул ни одного архива: ретенция ничего не удалит (проверь доступ к папке)" >&2
-elif (( COUNT > KEEP )); then
-  DELETE=$(( COUNT - KEEP ))
-  for old in "${REMOTE[@]:0:$DELETE}"; do
-    echo "backup_vault: удаляю старый бэкап ${old}"
-    # Ошибку удаления НЕ глотаем: `|| true` превращал неудачную ретенцию в
-    # «всё прошло», и облако копило архивы молча.
-    if ! wd -X DELETE "${WEBDAV_HOST}${WEBDAV_DIR}/${old}" -o /dev/null; then
-      echo "backup_vault: ВНИМАНИЕ — старый бэкап ${old} НЕ удалён (см. код curl)" >&2
-    fi
-  done
+# --- 7. Недельный снимок: vault + media -------------------------------------
+# Идёт ПОСЛЕ ежедневного: если эта выгрузка упадёт (она идёт ~1 ч 45 мин), свежесть
+# дампа за эту ночь уже обеспечена предыдущим шагом. Отметка попытки пишется ДО
+# выгрузки — сторож увидит «снимок начат, но не подтверждён» и поднимет тревогу
+# сразу, а не через неделю.
+if [ "$TAKE_MEDIA" -eq 1 ]; then
+  MEDIA_NAME="karman-media-${STAMP}"
+  write_manifest "vault + media (недельный снимок)" "yes" "$(stat -c %s "$WORK/media.tar.gz" 2>/dev/null || echo 0)" "этот архив (подтвердится после выгрузки)"
+  tar -cf "$WORK/${MEDIA_NAME}.tar" -C "$WORK" MANIFEST.txt vault.sql media.tar.gz
+  echo "backup_vault: gpg-шифрование на ${BACKUP_GPG_RECIPIENT}…"
+  gpg --batch --yes --trust-model always \
+    --encrypt --recipient "$BACKUP_GPG_RECIPIENT" \
+    --output "$WORK/${MEDIA_NAME}.tar.gpg" "$WORK/${MEDIA_NAME}.tar"
+  printf '%s %s\n' "$STAMP" "$MEDIA_NAME" > "$OK_DIR/backup-media-run-$RUN_DATE" \
+    || echo "backup_vault: ВНИМАНИЕ — отметку попытки снимка записать не удалось" >&2
+  echo "backup_vault: выгрузка ${MEDIA_NAME}.tar.gpg на Яндекс.Диск…"
+  if ! backup_upload_archive "$WORK/${MEDIA_NAME}.tar.gpg" "${WEBDAV_HOST}${WEBDAV_DIR}/${MEDIA_NAME}.tar.gpg" wd "$BACKUP_KEEP_DIR"; then
+    die "снимок media/ не подтверждён размером (две попытки); локальная копия — ${BACKUP_KEEP_DIR}/${MEDIA_NAME}.tar.gpg"
+  fi
+  printf '%s %s\n' "$STAMP" "$MEDIA_NAME" > "$OK_DIR/backup-media-ok-$RUN_DATE" \
+    || echo "backup_vault: ВНИМАНИЕ — отметку подтверждения снимка записать не удалось" >&2
 fi
 
-# --- 7. Уборка старых отметок ------------------------------------------------
-# Отметки по дате (2 файла в сутки); без уборки каталог растёт вечно. Стираем
-# всё старше 60 дней — с запасом на разбор инцидента постфактум.
+# --- 8. Ретенция: vault — последние $KEEP, media — последние $MEDIA_KEEP ----
+# PROPFIND глубиной 1 → имена karman-vault-*.tar.gpg и karman-media-*.tar.gpg.
+# Два вида архивов считаются ОТДЕЛЬНО: иначе ежедневные (килобайты) вытеснили бы
+# недельные (105 МБ), и медиа-снимки перестали бы копиться вовсе.
+# Шаблоны непересекающиеся: после «karman-vault-» у ежедневных сразу цифры
+# даты, у media — слово «media».
+MEDIA_KEEP="${BACKUP_MEDIA_KEEP:-4}"
+echo "backup_vault: ретенция (vault: $KEEP, media: $MEDIA_KEEP)…"
+PROPFIND_OUT="$(wd -X PROPFIND -H 'Depth: 1' "${WEBDAV_HOST}${WEBDAV_DIR}/" 2>/dev/null || true)"
+mapfile -t REMOTE_VAULT < <(
+  printf '%s' "$PROPFIND_OUT" | grep -oE 'karman-vault-[0-9]{8}-[0-9]{6}\.tar\.gpg' | sort -u
+)
+mapfile -t REMOTE_MEDIA < <(
+  printf '%s' "$PROPFIND_OUT" | grep -oE 'karman-media-[0-9]{8}-[0-9]{6}\.tar\.gpg' | sort -u
+)
+COUNT=${#REMOTE_VAULT[@]}
+MEDIA_COUNT=${#REMOTE_MEDIA[@]}
+retention_pass() {
+  local keep="$1" label="$2"; shift 2
+  local count=$# old
+  if [ "$count" -eq 0 ]; then
+    echo "backup_vault: ${label}: архивов не найдено — ретенция ничего не удалит (проверь доступ к папке)" >&2
+    return 0
+  fi
+  if (( count > keep )); then
+    local delete=$(( count - keep ))
+    for old in "$@"; do
+      echo "backup_vault: удаляю старый ${label} ${old}"
+      # Ошибку удаления НЕ глотаем: `|| true` превращал неудачную ретенцию в
+      # «всё прошло», и облако копило архивы молча.
+      if ! wd -X DELETE "${WEBDAV_HOST}${WEBDAV_DIR}/${old}" -o /dev/null; then
+        echo "backup_vault: ВНИМАНИЕ — старый ${label} ${old} НЕ удалён (см. код curl)" >&2
+      fi
+    done
+  fi
+}
+if [ "${#REMOTE_VAULT[@]}" -gt 0 ]; then
+  retention_pass "$KEEP" "бэкап vault" "${REMOTE_VAULT[@]}"
+else
+  echo "backup_vault: бэкап vault: архивов не найдено — ретенция ничего не удалит (проверь доступ к папке)" >&2
+fi
+if [ "${#REMOTE_MEDIA[@]}" -gt 0 ]; then
+  retention_pass "$MEDIA_KEEP" "снимок media" "${REMOTE_MEDIA[@]}"
+else
+  echo "backup_vault: снимок media: архивов не найдено — ретенция ничего не удалит (проверь доступ к папке)" >&2
+fi
+
+# --- 9. Уборка старых отметок ------------------------------------------------
+# Отметки по дате (несколько файлов в сутки); без уборки каталог растёт вечно.
+# Стираем всё старше 60 дней — с запасом на разбор инцидента постфактум.
 find "$OK_DIR" -maxdepth 1 -name 'backup-run-*' -mtime +60 -delete 2>/dev/null || true
 find "$OK_DIR" -maxdepth 1 -name 'backup-ok-*' -mtime +60 -delete 2>/dev/null || true
+find "$OK_DIR" -maxdepth 1 -name 'backup-media-run-*' -mtime +60 -delete 2>/dev/null || true
+find "$OK_DIR" -maxdepth 1 -name 'backup-media-ok-*' -mtime +60 -delete 2>/dev/null || true
 
-echo "backup_vault: ГОТОВО — ${NAME}.tar.gpg (всего на Диске: ${COUNT}); выгрузка подтверждена размером"
+if [ "$TAKE_MEDIA" -eq 1 ]; then
+  echo "backup_vault: ГОТОВО — ${DAILY_NAME}.tar.gpg (vault на Диске: ${COUNT}) + ${MEDIA_NAME}.tar.gpg (снимков media: ${MEDIA_COUNT}); выгрузка подтверждена размером"
+else
+  echo "backup_vault: ГОТОВО — ${DAILY_NAME}.tar.gpg (vault на Диске: ${COUNT}; снимок media не пора — следующий по расписанию); выгрузка подтверждена размером"
+fi

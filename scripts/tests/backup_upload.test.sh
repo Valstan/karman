@@ -161,6 +161,65 @@ else
   fail "partial_forever: локальной копии нет — архив пропадёт вместе с WORK"
 fi
 
+# --- 5. Политика частоты: снимок media/ раз в неделю -------------------------
+# Решение владельца (02.11): «vault каждый день, media/ раз в неделю, не
+# проверяя». Политика решает по ПОДТВЕРЖДЁННОМУ снимку: снимков не было → пора;
+# последний подтверждён свежее интервала → не пора; старше интервала → пора
+# (и повторится сама, если прошлый снимок не доехал).
+POLICY_DIR="$TMP/policy"
+mkdir -p "$POLICY_DIR"
+NOW=1000000000
+DAY=86400
+
+# 5a. Снимков ещё не было → пора.
+if backup_media_due "$POLICY_DIR" 7 "$NOW"; then
+  pass "политика: снимков не было — пора снимать"
+else
+  fail "политика: снимков не было, но снимок НЕ пора"
+fi
+if [ -z "$BACKUP_MEDIA_LAST" ]; then
+  pass "политика: без снимков BACKUP_MEDIA_LAST пуст"
+else
+  fail "политика: без снимков BACKUP_MEDIA_LAST='$BACKUP_MEDIA_LAST'"
+fi
+
+# 5b. Последний снимок 3 дня назад при интервале 7 → не пора.
+touch -d "@$(( NOW - 3 * DAY ))" "$POLICY_DIR/backup-media-ok-20260102"
+if backup_media_due "$POLICY_DIR" 7 "$NOW"; then
+  fail "политика: снимок 3 дня назад (интервал 7) — пора, а должен ждать"
+else
+  pass "политика: снимок 3 дня назад — не пора"
+fi
+if [ "$BACKUP_MEDIA_LAST" = "20260102" ]; then
+  pass "политика: BACKUP_MEDIA_LAST = дата последнего снимка"
+else
+  fail "политика: BACKUP_MEDIA_LAST='$BACKUP_MEDIA_LAST' вместо 20260102"
+fi
+
+# 5c. Снимок ровно 7 дней назад при интервале 7 → пора (граница включена).
+touch -d "@$(( NOW - 7 * DAY ))" "$POLICY_DIR/backup-media-ok-20260102"
+if backup_media_due "$POLICY_DIR" 7 "$NOW"; then
+  pass "политика: снимок 7 дней назад (интервал 7) — пора"
+else
+  fail "политика: снимок 7 дней назад (интервал 7) — не пора, а должна"
+fi
+
+# 5d. Снимок 8 дней назад → пора.
+touch -d "@$(( NOW - 8 * DAY ))" "$POLICY_DIR/backup-media-ok-20260102"
+if backup_media_due "$POLICY_DIR" 7 "$NOW"; then
+  pass "политика: снимок 8 дней назад — пора"
+else
+  fail "политика: снимок 8 дней назад — не пора, а должна"
+fi
+
+# 5e. Более длинный интервал — реже (настраивается владельцем).
+touch -d "@$(( NOW - 8 * DAY ))" "$POLICY_DIR/backup-media-ok-20260102"
+if backup_media_due "$POLICY_DIR" 30 "$NOW"; then
+  fail "политика: интервал 30 дней, снимок 8 дней назад — пора, а не должен"
+else
+  pass "политика: интервал 30 дней — снимок 8 дней назад ждёт"
+fi
+
 if [ "$FAILED" != "0" ]; then
   echo "backup_upload.test.sh: ПРОВАЛ"
   exit 1
