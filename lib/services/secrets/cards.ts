@@ -98,19 +98,22 @@ export async function createCard(user: SessionUser, input: SecretCardCreateInput
   });
 }
 
-/** id карточки, если её комната принадлежит пользователю; иначе null. */
-async function ownedCardId(user: SessionUser, cardId: number): Promise<number | null> {
+/** Карточка (id + её комната), если комната принадлежит пользователю; иначе null. */
+async function ownedCard(
+  user: SessionUser,
+  cardId: number,
+): Promise<{ id: number; projectId: number } | null> {
   const [row] = await db
-    .select({ id: secretsCard.id })
+    .select({ id: secretsCard.id, projectId: secretsCard.projectId })
     .from(secretsCard)
     .innerJoin(secretsProject, eq(secretsCard.projectId, secretsProject.id))
     .where(and(eq(secretsCard.id, cardId), ownership(user, secretsProject.userId)))
     .limit(1);
-  return row?.id ?? null;
+  return row ?? null;
 }
 
 export async function updateCard(user: SessionUser, input: SecretCardUpdateInput): Promise<boolean> {
-  if ((await ownedCardId(user, input.id)) === null) return false;
+  if ((await ownedCard(user, input.id)) === null) return false;
   const enc = encryptSecret(input.title, cardTitleAad(input.id));
   await db
     .update(secretsCard)
@@ -126,14 +129,18 @@ export async function updateCard(user: SessionUser, input: SecretCardUpdateInput
 }
 
 export async function deleteCard(user: SessionUser, cardId: number): Promise<boolean> {
-  if ((await ownedCardId(user, cardId)) === null) return false;
+  const card = await ownedCard(user, cardId);
+  if (card === null) return false;
   await db.delete(secretsCard).where(eq(secretsCard.id, cardId));
+  // Удаление карточки — та же операция по весу, что удаление секрета: без строки
+  // аудита «кто удалил» недоказуемо (см. `deleteItem` в `secrets.ts`).
+  await logAudit(card.projectId, null, 'card_deleted', `card=${cardId}`, null, actorOwner(user.id));
   return true;
 }
 
 /** Создаёт/обновляет поле карточки (по уникальному (card_id, name)). */
 export async function upsertCardField(user: SessionUser, input: SecretCardFieldUpsertInput): Promise<boolean> {
-  if ((await ownedCardId(user, input.cardId)) === null) return false;
+  if ((await ownedCard(user, input.cardId)) === null) return false;
   const enc = encryptSecret(input.value, cardFieldAad(input.cardId, input.name));
   const [posRow] = await db
     .select({ maxPos: sql<number>`coalesce(max(position), 0)::int` })
@@ -161,12 +168,23 @@ export async function upsertCardField(user: SessionUser, input: SecretCardFieldU
 
 export async function deleteCardField(user: SessionUser, fieldId: number): Promise<boolean> {
   const [field] = await db
-    .select({ id: secretsCardField.id, cardId: secretsCardField.cardId })
+    .select({ id: secretsCardField.id, cardId: secretsCardField.cardId, name: secretsCardField.name })
     .from(secretsCardField)
     .where(eq(secretsCardField.id, fieldId))
     .limit(1);
-  if (!field || (await ownedCardId(user, field.cardId)) === null) return false;
+  if (!field) return false;
+  const card = await ownedCard(user, field.cardId);
+  if (card === null) return false;
   await db.delete(secretsCardField).where(eq(secretsCardField.id, fieldId));
+  // Поле карточки удаляется так же молча, если не писать строку аудита (см. `deleteItem`).
+  await logAudit(
+    card.projectId,
+    null,
+    'card_field_deleted',
+    `card=${field.cardId} field=${field.name}`,
+    null,
+    actorOwner(user.id),
+  );
   return true;
 }
 
@@ -183,7 +201,7 @@ export async function revealCardField(user: SessionUser, fieldId: number): Promi
     .from(secretsCardField)
     .where(eq(secretsCardField.id, fieldId))
     .limit(1);
-  if (!field || (await ownedCardId(user, field.cardId)) === null) return null;
+  if (!field || (await ownedCard(user, field.cardId)) === null) return null;
   const value = decryptSecret(field, cardFieldAad(field.cardId, field.name));
   const [card] = await db
     .select({ projectId: secretsCard.projectId })

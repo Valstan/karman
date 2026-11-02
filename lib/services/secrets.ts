@@ -340,12 +340,16 @@ export async function upsertItem(user: SessionUser, input: SecretItemUpsertInput
 export async function deleteItem(user: SessionUser, itemId: number): Promise<boolean> {
   // Удаляем только если родительский проект принадлежит пользователю.
   const [item] = await db
-    .select({ id: secretsItem.id, projectId: secretsItem.projectId })
+    .select({ id: secretsItem.id, projectId: secretsItem.projectId, key: secretsItem.key })
     .from(secretsItem)
     .where(eq(secretsItem.id, itemId))
     .limit(1);
   if (!item || (await ownedProjectId(user, item.projectId)) === null) return false;
   await db.delete(secretsItem).where(eq(secretsItem.id, itemId));
+  // Удаление секрета — операция того же веса, что раскрытие, и до 02.11 оно не
+  // оставляло в аудите ни строки: «кто удалил» было недоказуемо (инцидент 12.10 —
+  // HOTLINE_RELAY_SECRET исчез из комнаты молча, выручил только env-фолбэк).
+  await logAudit(item.projectId, null, 'item_deleted', `key=${item.key}`, null, actorOwner(user.id));
   return true;
 }
 

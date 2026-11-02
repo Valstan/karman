@@ -7,6 +7,9 @@ import {
   passportIdentity,
   passportIssuer,
   secretsAudit,
+  secretsCard,
+  secretsCardField,
+  secretsItem,
   secretsProject,
   secretsToken,
 } from '@/lib/db/schema';
@@ -14,6 +17,9 @@ import {
   acceptGrantByToken,
   createPolicy,
   declarePolicyByToken,
+  deleteCard,
+  deleteCardField,
+  deleteItem,
   deleteProject,
   listPolicies,
   listPoliciesForUser,
@@ -783,5 +789,121 @@ describe('инвентарь токенов', () => {
 
   it('пустой vault — пустой инвентарь', async () => {
     expect(await listTokenInventory()).toEqual([]);
+  });
+});
+
+/**
+ * Удаление без строки аудита (инцидент 12.10: HOTLINE_RELAY_SECRET исчез из
+ * комнаты между 06:50 и 07:24 без единой audit-строки — «кто удалил»
+ * недоказуемо, выручил только env-фолбэк). Проверка не «функция зовётся»,
+ * а «после удаления в аудите есть строка с владельцем и предметом».
+ */
+describe('удаление оставляет след в аудите', () => {
+  const owner = {
+    id: 1,
+    username: 'admin',
+    email: '',
+    firstName: '',
+    lastName: '',
+    isSuperuser: true,
+  };
+
+  async function makeForeignRoom(): Promise<number> {
+    const db = refs.current!;
+    const [u] = await db
+      .insert(authUser)
+      .values({ username: 'user2', password: 'x', email: '' })
+      .returning({ id: authUser.id });
+    const [p] = await db
+      .insert(secretsProject)
+      .values({ userId: u!.id, name: 'foreign', slug: 'foreign' })
+      .returning({ id: secretsProject.id });
+    return p!.id;
+  }
+
+  it('удаление секрета пишет item_deleted с ключом и владельцем', async () => {
+    const room = await makeRoom('audit-item');
+    const db = refs.current!;
+    const [item] = await db
+      .insert(secretsItem)
+      .values({
+        projectId: room.projectId,
+        key: 'API_KEY',
+        ciphertext: 'ct',
+        iv: 'iv',
+        authTag: 'tag',
+      })
+      .returning({ id: secretsItem.id });
+
+    expect(await deleteItem(owner, item!.id)).toBe(true);
+
+    const rows = await db
+      .select({
+        projectId: secretsAudit.projectId,
+        actor: secretsAudit.actor,
+        detail: secretsAudit.detail,
+      })
+      .from(secretsAudit)
+      .where(eq(secretsAudit.action, 'item_deleted'));
+    expect(rows.length).toBe(1);
+    expect(rows[0]).toMatchObject({ projectId: room.projectId, actor: 'owner:1' });
+    expect(rows[0]!.detail).toContain('API_KEY');
+    const left = await db.select().from(secretsItem).where(eq(secretsItem.id, item!.id));
+    expect(left.length).toBe(0);
+  });
+
+  it('удаление карточки и её поля тоже оставляют строки', async () => {
+    const room = await makeRoom('audit-card');
+    const db = refs.current!;
+    const [card] = await db
+      .insert(secretsCard)
+      .values({ projectId: room.projectId, titleCt: 'ct', titleIv: 'iv', titleTag: 'tag' })
+      .returning({ id: secretsCard.id });
+    const [field] = await db
+      .insert(secretsCardField)
+      .values({
+        cardId: card!.id,
+        name: 'login',
+        ciphertext: 'ct',
+        iv: 'iv',
+        authTag: 'tag',
+      })
+      .returning({ id: secretsCardField.id });
+
+    expect(await deleteCardField(owner, field!.id)).toBe(true);
+    expect(await deleteCard(owner, card!.id)).toBe(true);
+
+    const rows = await db
+      .select({ action: secretsAudit.action, detail: secretsAudit.detail })
+      .from(secretsAudit);
+    const actions = rows.map((r) => r.action);
+    expect(actions).toContain('card_field_deleted');
+    expect(actions).toContain('card_deleted');
+    expect(rows.find((r) => r.action === 'card_field_deleted')!.detail).toContain('login');
+  });
+
+  it('чужой секрет удалить нельзя — и в аудите не появляется строки', async () => {
+    const foreignRoomId = await makeForeignRoom();
+    const db = refs.current!;
+    const [item] = await db
+      .insert(secretsItem)
+      .values({
+        projectId: foreignRoomId,
+        key: 'THEIRS',
+        ciphertext: 'ct',
+        iv: 'iv',
+        authTag: 'tag',
+      })
+      .returning({ id: secretsItem.id });
+
+    expect(await deleteItem(owner, item!.id)).toBe(false);
+
+    const left = await db.select().from(secretsItem).where(eq(secretsItem.id, item!.id));
+    expect(left.length).toBe(1);
+    const rows = await db
+      .select({ action: secretsAudit.action })
+      .from(secretsAudit)
+      .where(eq(secretsAudit.action, 'item_deleted'));
+    expect(rows.length).toBe(0);
   });
 });
