@@ -118,6 +118,10 @@ curl -fsS --user "<логин>:<пароль-приложения>"   -o last.ta
 gpg --decrypt last.tar.gpg > bundle.tar
 
 # 3. Распаковать и сверить с манифестом
+#    Распаковывать ВНЕ рабочей копии git: vault.sql — это выгрузка vault-таблиц,
+#    и в индексе репозитория ему не место (S4, аудит #057). Каталог — отдельный,
+#    не внутри репозитория.
+mkdir -p ~/karman-restore && cd ~/karman-restore
 tar -xf bundle.tar                      # → MANIFEST.txt, vault.sql, media.tar.gz
 cat MANIFEST.txt                        # ожидаемые media_files / *_bytes
 tar -tzf media.tar.gz | grep -c .       # должно совпасть с media_files (+1 на сам каталог)
@@ -141,6 +145,9 @@ grep -c "^INSERT\|^COPY" vault.sql     # дамп не пустой
 
 ```bash
 # скачать нужный архив с Яндекс.Диска, затем:
+# РАСПАКОВЫВАТЬ ВНЕ рабочей копии git — vault.sql не должен оказаться в индексе
+# репозитория (S4, аудит #057: цена такого коммита — необратимая утечка ПДн).
+mkdir -p ~/karman-restore && cd ~/karman-restore
 gpg --decrypt karman-vault-YYYYMMDD-HHMMSS.tar.gpg > bundle.tar   # приватным ключом владельца
 tar -xf bundle.tar                # → MANIFEST.txt, vault.sql, media.tar.gz
 # секреты: восстановить таблицы в БД (осторожно на живом проде — #025):

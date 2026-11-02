@@ -1,3 +1,5 @@
+import { assertSessionSecret } from './lib/auth/session-secret';
+
 /**
  * Next.js instrumentation: однократно при старте серверного инстанса.
  * Используется для fail-fast валидации обязательного окружения в production —
@@ -6,13 +8,17 @@
  * Важно: пропускаем фазу сборки (`next build` → NEXT_PHASE='phase-production-build'),
  * иначе проверка ломала бы сборку прод-артефакта, у которого ещё нет рантайм-секрета.
  * Сам ключ резолвится лениво в lib/auth/jwt.ts — здесь только ранний громкий отказ.
+ *
+ * Проверяется не только НАЛИЧИЕ секрета, но и его ЗНАЧЕНИЕ: плейсхолдер
+ * `change-me-in-production` — это не секрет, а известный всем ключ (S1,
+ * аудит #057). Правило одно и то же, что и в lib/auth/jwt.ts.
  */
 export async function register(): Promise<void> {
   if (process.env.NEXT_PHASE === 'phase-production-build') {
     return;
   }
-  if (process.env.NODE_ENV === 'production' && !process.env.SESSION_SECRET) {
-    throw new Error('SESSION_SECRET must be set in production');
+  if (process.env.NODE_ENV === 'production') {
+    assertSessionSecret(process.env.SESSION_SECRET);
   }
   // Мягкое предупреждение (не throw — ядро приложения не зависит от напоминаний):
   // без секрета эндпоинты /api/telegram/ingest и /api/reminders/dispatch отдают 401.

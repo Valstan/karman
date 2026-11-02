@@ -37,6 +37,15 @@
 # бы как «всё хорошо». Ошибки ловятся явно, каждой проверкой отдельно.
 set -uo pipefail
 
+# DSN с паролем роли в argv не кладём (S5, аудит #057): пароль уходит в .pgpass
+# (chmod 600, каталог на 700), в argv остаётся URI без пароля.
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
+. "$SCRIPT_DIR/pg-connect.sh"
+PG_TMP="$(mktemp -d)"
+chmod 700 "$PG_TMP"
+trap 'rm -rf "$PG_TMP"' EXIT
+pg_setup_pgpass "$PG_TMP" || true
+
 STATE_DIR="${HEALTH_STATE_DIR:-$HOME/.karman-health}"
 STATE_FILE="$STATE_DIR/last-state"
 CHAT_CACHE="$STATE_DIR/chat-id"
@@ -63,8 +72,8 @@ PORT="${PORT:-3002}"
 # первым же успешным прогоном.
 resolve_chat() {
   local id=''
-  if [ -n "${DATABASE_URL:-}" ] && command -v psql >/dev/null 2>&1; then
-    id="$(psql "$DATABASE_URL" -tAc \
+  if [ -n "${PG_DSN_NOPASS:-}" ] && command -v psql >/dev/null 2>&1; then
+    id="$(psql "$PG_DSN_NOPASS" -tAc \
       "SELECT l.chat_id FROM telegram_link l JOIN auth_user u ON u.id = l.user_id
         WHERE l.chat_id IS NOT NULL AND l.is_active AND u.is_superuser
         ORDER BY l.user_id LIMIT 1" 2>/dev/null | tr -d '[:space:]')"

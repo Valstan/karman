@@ -240,6 +240,54 @@ useDefault = true
   [rules.allowlist]
     regexes = ['''…''', '''\.\.\.''', '''^\$''', '''^<''', '''^\{''']
 
+# ── 17. Дамп vault-таблиц: ловим ФОРМУ выгрузки, а не значения полей (S4) ─────
+# Прежние правила (13) искали значения (`token_hash = …`, JSON-конверт GCM), а
+# настоящий `pg_dump` отдаёт их в другой форме: COPY-строки разделены
+# табуляцией, `--column-inserts` — значения в одинарных кавычках. Поэтому
+# правила молчали на настоящем дампе, а цена находки — необратимый коммит ПДн
+# в публичный репозиторий. Детектор ловит САМ ФАКТ выгрузки таблицы.
+#
+# `public.` обязателен: `pg_dump` всегда пишет схему, а миграции
+# (lib/db/migrations/*.sql) и scripts/bootstrap.sql — таблицы без схемы. Без
+# `public.` правило ловило бы собственные миграции и роняло гейт.
+#
+# Те же шаблоны живут в lib/security/dump-detect.ts, а гейт
+# (lib/security/dump-detect.test.ts) сверяет их с этими: иначе было бы правило
+# в конфиге сканера и другое — в гейте, и расхождение снова прошло бы незамеченным.
+[[rules]]
+  id = "karman-pgdump-copy-vault"
+  description = "KARMAN: выгрузка vault-таблицы в COPY-форме pg_dump"
+  regex = '''COPY\s+public\.(secrets_project|secrets_item|secrets_token|secrets_audit|secrets_card_field|secrets_card|secrets_grant_policy|secrets_grant|secrets_bootstrap|passport_issuer|passport_identity|passport_assertion|auth_totp|auth_recovery_code|auth_audit|auth_oidc_identity|person_profile|documents_documentcategory|documents_document|document_field|document_file|circle_member|circle|family_person|family_relation|hotline_message|hotline_presence)\s*\('''
+  secretGroup = 1
+  keywords = ["COPY public."]
+
+[[rules]]
+  id = "karman-pgdump-insert-vault"
+  description = "KARMAN: выгрузка vault-таблицы в --column-inserts-форме pg_dump"
+  regex = '''INSERT\s+INTO\s+public\.(secrets_project|secrets_item|secrets_token|secrets_audit|secrets_card_field|secrets_card|secrets_grant_policy|secrets_grant|secrets_bootstrap|passport_issuer|passport_identity|passport_assertion|auth_totp|auth_recovery_code|auth_audit|auth_oidc_identity|person_profile|documents_documentcategory|documents_document|document_field|document_file|circle_member|circle|family_person|family_relation|hotline_message|hotline_presence)\s*\('''
+  secretGroup = 1
+  keywords = ["INSERT INTO public."]
+
+# ── Точечное исключение для ПРАВИЛ ДЕТЕКТОРА ДАМПА ───────────────────────────
+# Файл детектора и его тест по замыслу содержат образцы выгрузки (`COPY
+# public.<таблица> (`, `INSERT INTO public.<таблица> (`) — иначе им нечем
+# проверять правило. Это тот же случай, что и позитивный контроль у
+# lib/validation/secret.test.ts и hotline.lint.test.ts: исключение по ПУТИ и
+# РОВНО для своих двух правил, а не ослабление регекса.
+#
+# Без этого исключения гейт краснел на САМОМ ДЕТЕКТОРЕ — и это была первая
+# проверка правила: на живом дампе с прода оно ловит 27 таблиц из 27.
+#
+# Точка в пути вместо слэша — намеренно: gitleaks сверяет allowlist с путём как
+# его видит ОС, на Windows это обратные слэши, а `.` матчит оба варианта.
+[[allowlists]]
+  description = "образцы выгрузки в самом детекторе дампа (позитивный контроль S4)"
+  targetRules = ["karman-pgdump-copy-vault", "karman-pgdump-insert-vault"]
+  paths = [
+    '''lib/security/dump-detect\.ts$''',
+    '''lib/security/dump-detect\.test\.ts$''',
+  ]
+
 # ── Точечное исключение для ДЕФОЛТНОГО правила private-key ────────────────────
 # Тест D-035 (lib/validation/secret.test.ts) намеренно держит PEM-образную фикстуру:
 # он доказывает, что многострочное значение проходит схему байт-в-байт. Исключение
