@@ -1,0 +1,174 @@
+name: Manual vault backup (production)
+
+# Ручной прогон ночного бэкапа vault на проде.
+#
+# ЗАЧЕМ ОТДЕЛЬНЫЙ ВОРКФЛОУ. Бэкап живёт на боевой машине, а доступ к ней у
+# рабочей машины агента есть не всегда: ключ деплоя живёт ТОЛЬКО в секретах
+# Actions, и на машине владельца он настроен как ssh-алиас. «Прогнать бэкап
+# вручную» из агентской сессии без этого воркфлоу было невозможно — а после
+# инцидента 09.10 — 31.10 (23 ночи без архива при зелёном стороже) такая
+# проверка нужна каждый раз, когда правят выгрузку.
+#
+# ЧТО ЭТО НЕ ДАЁТ. Команда ЗАШИТА в воркфлоу: произвольную строку на прод
+# выполнить нельзя — иначе это был бы удалённый шелл в публичном репозитории
+# (после аудита #057 цепочка поставки закрыта именно на этот класс).
+#
+# ЧТО ПРОИСХОДИТ ПОД капотом:
+#   1. тот же SSH-ключ и тот же запиненный known_hosts, что и в deploy-prod.yml;
+#   2. скрипт бэкапа берётся ИЗ CRON — это ровно тот файл, который отработает
+#      ночью (краш в cron виден сразу: cron не найдёт скрипт);
+#   3. env-файл сервиса — из systemd, ключи бэкапа читаются оттуда же;
+#   4. сам бэкап идёт ~2 часа (105 МБ по медленной связи), поэтому у джоба
+#      другой таймаут, чем у деплоя;
+#   5. после прогона печатаются отметки подтверждения — их читает сторож
+#      (scripts/health_watch.sh).
+#
+# Требуемые секреты/переменные — те же, что у деплоя:
+#   secrets.SSH_PRIVATE_KEY, secrets.DEPLOY_SSH_HOST, secrets.DEPLOY_SSH_USER,
+#   secrets.DEPLOY_SSH_KNOWN_HOSTS; vars.DEPLOY_SSH_PORT.
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Зачем прогон (пишется в лог запуска; на прод не передаётся)'
+        type: string
+        default: ''
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    # Бэкап идёт ~2 часа; деплой укладывается в 20 минут, поэтому отдельный джоб.
+    timeout-minutes: 180
+    defaults:
+      run:
+        # G322: без явного shell раннер идёт под `bash -e {0}` БЕЗ pipefail —
+        # `ssh … | …` был бы зелёным при любом исходе ssh.
+        shell: bash
+    env:
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+      DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+      DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+      DEPLOY_SSH_PORT: ${{ vars.DEPLOY_SSH_PORT }}
+    steps:
+      # Setup SSH — копия шага из deploy-prod.yml. Копия, а не вынос в общий
+      # composite-action: деплой — самый критичный путь в репозитории, и
+      # трогать его ради второго потребителя нельзя. При правке шага здесь —
+      # повторить правку и там.
+      - name: Setup SSH
+        run: |
+          set -e
+          MISSING=""
+          [ -z "$SSH_PRIVATE_KEY" ] && MISSING="$MISSING secrets.SSH_PRIVATE_KEY"
+          [ -z "$DEPLOY_SSH_HOST" ] && MISSING="$MISSING secrets.DEPLOY_SSH_HOST"
+          [ -z "$DEPLOY_SSH_PORT" ] && MISSING="$MISSING vars.DEPLOY_SSH_PORT"
+          [ -z "$DEPLOY_SSH_USER" ] && MISSING="$MISSING secrets.DEPLOY_SSH_USER"
+          [ -z "$DEPLOY_SSH_KNOWN_HOSTS" ] && MISSING="$MISSING secrets.DEPLOY_SSH_KNOWN_HOSTS"
+          if [ -n "$MISSING" ]; then
+            echo "::error::Не заданы:$MISSING"
+            exit 1
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519_karman_ci
+          chmod 600 ~/.ssh/id_ed25519_karman_ci
+          # Ключ хоста ПИНУЕТСЯ, а не добывается ssh-keyscan'ом на месте: accept-new
+          # принял бы ЛЮБОЙ предъявленный ключ — окно MITM на канале, по
+          # которому идёт выгрузка бэкапа в облако владельца.
+          echo "$DEPLOY_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<CFG
+          Host karman
+            HostName $DEPLOY_SSH_HOST
+            Port $DEPLOY_SSH_PORT
+            User $DEPLOY_SSH_USER
+            IdentityFile ~/.ssh/id_ed25519_karman_ci
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            ServerAliveInterval 30
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Бэкап vault — ручной прогон на проде
+        env:
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -e
+          echo "причина прогона: ${REASON:-не указана}"
+          # stderr самого ssh НЕ печатаем: при обрыве связи ssh печатает хост и
+          # порт отдельными словами, а это координаты боевой машины (D-038).
+          # Диагностика удалённого скрипта идёт в stdout — `exec 2>&1` первой
+          # строкой внутри.
+          set +e
+          ssh karman 'bash -s' 2>/dev/null <<'REMOTE'
+          set -euo pipefail
+          exec 2>&1
+
+          echo "=== ручной прогон бэкапа vault ==="
+
+          # Скрипт берём из cron: это ровно тот файл, который отработает ночью.
+          # В cron строка может лежать с нераскрытым $HOME — тогда путь не
+          # читается как файл, и мы берём следующий кандидат.
+          CRON_SCRIPT="$(crontab -l 2>/dev/null | grep -oE '[^ ]*backup_vault\.sh' | head -1 || true)"
+          SCRIPT=""
+          for cand in "$CRON_SCRIPT" "$HOME/karman/scripts/backup_vault.sh"; do
+            if [ -n "$cand" ] && [ -r "$cand" ]; then SCRIPT="$cand"; break; fi
+          done
+          if [ -z "$SCRIPT" ]; then
+            echo "ОШИБКА: скрипт бэкапа не найден или не читается (cron: ${CRON_SCRIPT:-пусто})"
+            exit 1
+          fi
+          # Только имя файла: полный путь несёт системный логин прод-машины, а
+          # лог воркфлоу публичен (D-038). Наличие файла подтверждает `-r` выше.
+          echo "скрипт: $(basename "$SCRIPT")"
+
+          # env-файл сервиса — из systemd (путь в git не лежит: он несёт логин).
+          ENV_FILE="$(systemctl show karman -p EnvironmentFiles --value 2>/dev/null \
+            | tr ' ' '\n' | grep -v '^(' | head -1 | sed 's/^-//' || true)"
+          if [ -z "$ENV_FILE" ] || [ ! -r "$ENV_FILE" ]; then
+            echo "ОШИБКА: env-файл сервиса не найден (systemd karman)"
+            exit 1
+          fi
+          set -a; . "$ENV_FILE"; set +a
+          echo "глубина хранения (BACKUP_KEEP): ${BACKUP_KEEP:-не задан → дефолт 14}"
+
+          mkdir -p "$HOME/backups"
+          cd "$(dirname "$SCRIPT")"
+          # pipefail: код возврата бэкапа не должен потеряться за tee.
+          # set +e вокруг пайпа: под `set -e` неудачный бэкап убил бы скрипт
+          # ДО того, как мы записали бы его код возврата.
+          set +e
+          bash "$SCRIPT" 2>&1 | tee -a "$HOME/backups/vault-backup.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "=== код возврата бэкапа: $rc ==="
+
+          echo "=== отметки (их читает сторож) ==="
+          # `ls -1`, а не `ls -l`: полный путь выдал бы логин прод-машины в
+          # публичный лог воркфлоу (D-038). Имена — всё, что нужно.
+          ls -1 "$HOME/.karman-health/" 2>/dev/null | tail -6 || true
+          NEWEST="$(ls -t "$HOME/.karman-health"/backup-run-* 2>/dev/null | head -1 || true)"
+          if [ -n "$NEWEST" ]; then
+            D="${NEWEST##*-}"
+            if [ -r "$HOME/.karman-health/backup-ok-$D" ]; then
+              echo "ПОДТВЕРЖДЕНИЕ за $D: ЕСТЬ — архив за эту дату подтверждён размером, сторож увидит «бэкап БЫЛ»"
+              echo "(это признак «за эту дату архив есть»; про сам прогон говорит код возврата выше)"
+            else
+              echo "ПОДТВЕРЖДЕНИЯ за $D НЕТ — сторож поднимет тревогу"
+            fi
+          else
+            echo "отметок запуска нет — прогон, похоже, не начался"
+          fi
+          exit $rc
+          REMOTE
+          rc=$?
+          set -e
+          echo "ssh/бэкап: код $rc"
+          exit $rc
+
+      - name: Диагностика прода при неудаче
+        if: failure()
+        run: |
+          echo "прогон не удался — смотрим журналы"
+          ssh karman "sudo journalctl -u karman -n 40 --no-pager -o cat" 2>/dev/null || true
+          ssh karman "tail -40 $HOME/backups/vault-backup.log" 2>/dev/null || true
