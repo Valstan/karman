@@ -57,5 +57,4 @@ export const hotlinePresenceSchema = z.object({
 
 export type HotlineLineState = z.infer<typeof hotlinePresenceSchema>['line_state'];
 
-export type HotlinePost = z.infer<typeof hotlinePostSchema>;
 export type HotlineKind = z.infer<typeof hotlineKind>;

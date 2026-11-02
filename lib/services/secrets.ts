@@ -101,7 +101,6 @@ export {
   revokePolicyByToken,
   createPolicy,
   revokePolicy,
-  countLivePolicies,
   type SecretPolicyListItem,
   type SecretPolicyDeclareInput,
   type SecretPolicyCreateInput,

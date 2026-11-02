@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, count, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, isNull } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { db } from '@/lib/db/client';
 import { secretsGrantPolicy, secretsProject, secretsToken } from '@/lib/db/schema';
@@ -398,18 +398,4 @@ export async function revokePolicy(user: SessionUser, policyId: number): Promise
   if (!target) return false;
   const result = await revokePolicyRow(target, policyId, null, actorOwner(user.id));
   return result.ok;
-}
-
-/** Число живых политик комнаты (для диагностики/инвентаря). */
-export async function countLivePolicies(targetProjectId: number): Promise<number> {
-  const [row] = await db
-    .select({ n: count() })
-    .from(secretsGrantPolicy)
-    .where(
-      and(
-        eq(secretsGrantPolicy.targetProjectId, targetProjectId),
-        isNull(secretsGrantPolicy.revokedAt),
-      ),
-    );
-  return row?.n ?? 0;
 }

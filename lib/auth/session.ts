@@ -19,7 +19,6 @@ import {
   signSession,
   signTotpPending,
   verifyOidcState,
-  verifySession,
   verifySessionPayload,
   verifyTotpPending,
   type OidcStatePayload,
@@ -89,10 +88,6 @@ export async function clearSessionCookie(): Promise<void> {
 async function readSessionToken(): Promise<string | undefined> {
   const cookieStore = await cookies();
   return cookieStore.get(SESSION_COOKIE)?.value;
-}
-
-export async function readSessionUid(): Promise<number | null> {
-  return verifySession(await readSessionToken());
 }
 
 /** Полный payload сессии (uid + mfa + epoch) — для гейта /secrets и отзыва. */

@@ -155,23 +155,6 @@ export async function deleteFamilyPerson(user: SessionUser, id: number): Promise
   return rows.length > 0;
 }
 
-/**
- * Порядок людей (для порядка братьев в ряду). Список id целиком — как и поля
- * документа: частичное обновление порядка — это догадка о том, где остальные.
- */
-export async function reorderFamilyPeople(user: SessionUser, ids: number[]): Promise<boolean> {
-  if (!(await ownsAll(user, ids))) return false;
-  await db.transaction(async (tx) => {
-    for (let i = 0; i < ids.length; i++) {
-      await tx
-        .update(familyPerson)
-        .set({ sortOrder: i + 1 })
-        .where(and(eq(familyPerson.id, ids[i]!), eq(familyPerson.userId, user.id)));
-    }
-  });
-  return true;
-}
-
 export async function addFamilyRelation(user: SessionUser, r: FamilyRelationInput): Promise<'ok' | 'not-found' | 'self' | 'exists'> {
   if (r.fromId === r.toId) return 'self';
   if (!(await ownsAll(user, [r.fromId, r.toId]))) return 'not-found';
