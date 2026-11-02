@@ -13,10 +13,8 @@
   "ignoreExportsUsedInFile": true,
 
   // Ложные «неиспользуемые зависимости»:
-  //  server-only — рантайм-страж server/client-границы, поставляется самим Next
-  //                (импорт резолвится транзитивно, в package.json его нет намеренно).
-  //  depcheck    — CLI второго сканера, вызывается из scripts/deadcode.mjs, не импортируется.
-  "ignoreDependencies": ["server-only", "depcheck"],
+  //  depcheck — CLI второго сканера, вызывается из scripts/deadcode.mjs, не импортируется.
+  "ignoreDependencies": ["depcheck"],
 
   // components/ui/** — вендоренная библиотека shadcn/ui (копии компонентов под
   // `npx shadcn add`), не наш рукописный код: неиспользуемое там — библиотечная

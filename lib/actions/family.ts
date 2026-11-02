@@ -11,7 +11,6 @@ import {
   createFamilyPerson,
   deleteFamilyPerson,
   deleteFamilyRelation,
-  reorderFamilyPeople,
   updateFamilyPerson,
 } from '@/lib/services/family';
 import { currentUserOrNull, revalidateAll, type ActionResult } from './_internal';
@@ -48,18 +47,6 @@ export async function deleteFamilyPersonAction(values: unknown): Promise<ActionR
   if (!parsed.success) return { ok: false, error: BAD };
   const ok = await deleteFamilyPerson(user, parsed.data.id);
   if (!ok) return { ok: false, error: 'Человек не найден' };
-  revalidateAll();
-  return { ok: true };
-}
-
-export async function reorderFamilyPeopleAction(ids: unknown): Promise<ActionResult> {
-  const user = await currentUserOrNull();
-  if (!user) return { ok: false, error: AUTH };
-  if (!Array.isArray(ids) || !ids.every((i) => Number.isInteger(i) && i > 0) || ids.length > 1000) {
-    return { ok: false, error: BAD };
-  }
-  const ok = await reorderFamilyPeople(user, ids as number[]);
-  if (!ok) return { ok: false, error: 'Список содержит чужие или несуществующие записи' };
   revalidateAll();
   return { ok: true };
 }
