@@ -110,4 +110,32 @@ describe('выгрузка бэкапа: сверка размера не тер
     expect(src).toContain('backup-run-');
     expect(src).toContain('backup-ok-');
   });
+
+  it('два вида архивов: ежедневный vault и недельный снимок media', () => {
+    const src = readFileSync(join(SCRIPTS_DIR, 'backup_vault.sh'), 'utf8');
+    // Решение владельца (02.11): vault — каждый день, media/ — раз в неделю.
+    // Два разных имени архива: иначе ежедневные (килобайты) вытеснили бы
+    // недельные (105 МБ) в ретенции.
+    expect(src).toContain('karman-vault-${STAMP}');
+    expect(src).toContain('karman-media-${STAMP}');
+    // Ежедневный архив — только дамп vault; снимок media/ — отдельным шагом.
+    expect(src).toContain('write_manifest "vault (ежедневно)" "no" 0');
+    expect(src).toContain('write_manifest "vault + media (недельный снимок)" "yes"');
+    // Политика частоты — через помощник (покрыта харнессом), а не «календарь».
+    expect(src).toContain('backup_media_due');
+    expect(src).toContain('BACKUP_MEDIA_INTERVAL_DAYS');
+    // Ретенция считается по двум видам ОТДЕЛЬНО.
+    expect(src).toContain('BACKUP_MEDIA_KEEP');
+    expect(src).toContain('REMOTE_MEDIA');
+    // Отметки снимка: попытка (до выгрузки) и подтверждение (после).
+    expect(src).toContain('backup-media-run-');
+    expect(src).toContain('backup-media-ok-');
+  });
+
+  it('сторож проверяет и снимок media, а не только ежедневный vault', () => {
+    const src = readFileSync(join(SCRIPTS_DIR, 'health_watch.sh'), 'utf8');
+    expect(src).toContain('backup-media-run-');
+    expect(src).toContain('backup-media-ok-');
+    expect(src).toContain('HEALTH_BACKUP_MEDIA_MAX_AGE_DAYS');
+  });
 });

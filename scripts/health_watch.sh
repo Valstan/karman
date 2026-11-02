@@ -203,6 +203,34 @@ else
   log "бэкап vault: отметок запуска нет — ориентируюсь на свежесть лога"
 fi
 
+# --- Признак «снимок media/ есть» -------------------------------------------
+# Снимок сканов делается РАЗ В НЕДЕЛЮ (решение владельца, 02.11): медиа
+# меняются редко, а 105 МБ по каналу ~17 КБ/с съедают ночное окно целиком. Поэтому
+# этот признак проверяется МЯГЧЕ: снимок старше 9 дней — тревога; попытка без
+# подтверждения — тревога сразу (видно, что снимок пошёл, но не доехал).
+BACKUP_MEDIA_MAX_AGE_DAYS="${HEALTH_BACKUP_MEDIA_MAX_AGE_DAYS:-9}"
+newest_media_run="$(ls -t "$BACKUP_OK_DIR"/backup-media-run-* 2>/dev/null | head -1 || true)"
+newest_media_ok="$(ls -t "$BACKUP_OK_DIR"/backup-media-ok-* 2>/dev/null | head -1 || true)"
+if [ -n "$newest_media_run" ]; then
+  media_run_date="${newest_media_run##*-}"
+  if [ ! -r "$BACKUP_OK_DIR/backup-media-ok-$media_run_date" ]; then
+    # Попытка была, подтверждения нет. Если запуск ещё идёт (пульс свежий) —
+    # не тревожимся: снимок идёт ~1 ч 45 мин.
+    pulse_age_min=$(( ( $(date +%s) - $(date -r "$newest_run_marker" +%s 2>/dev/null || echo 0) ) / 60 ))
+    if [ "$pulse_age_min" -ge "$BACKUP_PULSE_MAX_AGE_MIN" ]; then
+      add "снимок media/ за ${media_run_date} НЕ подтверждён размером (в логе бэкапа — причина; локальная копия — в ~/backups/pending)"
+    else
+      log "снимок media/ за ${media_run_date} ещё идёт (пульс ${pulse_age_min} мин назад) — тревогу не поднимаю"
+    fi
+  fi
+fi
+if [ -n "$newest_media_ok" ]; then
+  media_age_days=$(( ( $(date +%s) - $(date -r "$newest_media_ok" +%s 2>/dev/null || echo 0) ) / 86400 ))
+  if [ "$media_age_days" -gt "$BACKUP_MEDIA_MAX_AGE_DAYS" ]; then
+    add "снимок media/ старый: последний подтверждён ${media_age_days} дн назад (порог $BACKUP_MEDIA_MAX_AGE_DAYS дн)"
+  fi
+fi
+
 # --- Сравнение с прошлым состоянием ----------------------------------------
 if [ -n "$problems" ]; then now='bad'; else now='ok'; fi
 was='ok'
