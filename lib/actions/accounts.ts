@@ -13,11 +13,14 @@ import {
   createProject,
   deleteAccount,
   deleteProject,
+  importAccounts,
   listAccounts,
   listProjects,
   projectUsage,
+  projectUsageByDay,
   updateAccount,
 } from '@/lib/services/accounts';
+import { parseAccountImport } from '@/lib/accounts/import';
 import { isUniqueViolation } from '@/lib/db/pg-error';
 import { currentUserOrNull, revalidateAll, requireSecretsAccess, type ActionResult } from './_internal';
 
@@ -30,17 +33,23 @@ import { currentUserOrNull, revalidateAll, requireSecretsAccess, type ActionResu
  */
 
 export async function listAccountsAction(): Promise<
-  ActionResult<{ accounts: Awaited<ReturnType<typeof listAccounts>>; projects: Awaited<ReturnType<typeof listProjects>>; usage: Awaited<ReturnType<typeof projectUsage>> }>
+  ActionResult<{
+    accounts: Awaited<ReturnType<typeof listAccounts>>;
+    projects: Awaited<ReturnType<typeof listProjects>>;
+    usage: Awaited<ReturnType<typeof projectUsage>>;
+    usageByDay: Awaited<ReturnType<typeof projectUsageByDay>>;
+  }>
 > {
   const user = await currentUserOrNull();
   if (!user) return { ok: false, error: 'Требуется авторизация' };
   if (!user.isSuperuser) return { ok: false, error: 'Раздел доступен только владельцу' };
-  const [accounts, projects, usage] = await Promise.all([
+  const [accounts, projects, usage, usageByDay] = await Promise.all([
     listAccounts(user),
     listProjects(user),
     projectUsage(user),
+    projectUsageByDay(user),
   ]);
-  return { ok: true, data: { accounts, projects, usage } };
+  return { ok: true, data: { accounts, projects, usage, usageByDay } };
 }
 
 export async function createAccountAction(values: unknown): Promise<ActionResult<{ id: number }>> {
@@ -125,8 +134,35 @@ export async function revealAccountPasswordAction(id: number): Promise<ActionRes
   return { ok: true, data: { password } };
 }
 
-export async function createProjectAction(values: unknown): Promise<ActionResult<{ id: number }>> {
+/**
+ * Массовый импорт аккаунтов: список строк «почта|пароль|название».
+ *
+ * Пароли приходят из браузера владельца и шифруются на сервере мастер-ключом;
+ * в репозиторий они не попадают НИКОГДА (репозиторий публичный — там им не
+ * место). Повторный импорт того же списка безопасен: уже существующие почты
+ * пропускаются и перечисляются в ответе.
+ */
+export async function importAccountsAction(
+  text: string,
+): Promise<
+  ActionResult<{ created: number; skipped: string[]; failed: string[]; errors: string[] }>
+> {
   const user = await currentUserOrNull();
+  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  if (!user.isSuperuser) return { ok: false, error: 'Раздел доступен только владельцу' };
+  if (typeof text !== 'string' || text.trim().length === 0) {
+    return { ok: false, error: 'Список пуст' };
+  }
+  const { items, errors } = parseAccountImport(text);
+  if (items.length === 0) {
+    return { ok: false, error: errors[0] ?? 'Не разобрано ни одной строки' };
+  }
+  const result = await importAccounts(user, items);
+  revalidateAll();
+  return { ok: true, data: { ...result, errors } };
+}
+
+export async function createProjectAction(values: unknown): Promise<ActionResult<{ id: number }>> {  const user = await currentUserOrNull();
   if (!user) return { ok: false, error: 'Требуется авторизация' };
   if (!user.isSuperuser) return { ok: false, error: 'Раздел доступен только владельцу' };
   const parsed = projectCreateSchema.safeParse(values);

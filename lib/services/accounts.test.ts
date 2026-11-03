@@ -9,6 +9,7 @@ import {
   createAccount,
   createProject,
   deleteAccount,
+  importAccounts,
   listAccounts,
   listProjects,
   projectUsage,
@@ -157,8 +158,47 @@ describe('мультиаккаунт: активация и тушение', () 
   });
 });
 
-describe('мультиаккаунт: проекты и статистика', () => {
-  it('проекты видны только владельцу', async () => {
+describe('мультиаккаунт: массовый импорт', () => {
+  it('импортирует список, название по умолчанию — имя ящика', async () => {
+    const result = await importAccounts(owner, [
+      { email: 'valstan@valstan.ru', password: 'p1' },
+      { email: '1@id45d.myjino.ru', password: 'p2', title: 'Матрица РМЗ' },
+    ]);
+    expect(result.created).toBe(2);
+    expect(result.skipped).toEqual([]);
+    expect(result.failed).toEqual([]);
+
+    const list = await listAccounts(owner);
+    const titles = list.map((row) => row.title).sort();
+    // Название по умолчанию — имя ящика: «valstan@valstan.ru» → «valstan».
+    // Порядок после sort(): латиница раньше кириллицы.
+    expect(titles).toEqual(['valstan', 'Матрица РМЗ']);
+  });
+
+  it('повторный импорт того же списка ничего не ломает (идемпотентно)', async () => {
+    const items = [{ email: 'a@example.test', password: 'p' }];
+    expect((await importAccounts(owner, items)).created).toBe(1);
+    const second = await importAccounts(owner, items);
+    expect(second.created).toBe(0);
+    expect(second.skipped).toEqual(['a@example.test']);
+    expect((await listAccounts(owner)).length).toBe(1);
+  });
+
+  it('почта нормализуется в нижний регистр', async () => {
+    await importAccounts(owner, [{ email: 'Mixed@Example.TEST', password: 'p' }]);
+    const list = await listAccounts(owner);
+    expect(list[0]!.email).toBe('mixed@example.test');
+  });
+
+  it('чужой список не импортируется', async () => {
+    const result = await importAccounts(stranger, [{ email: 'x@example.test', password: 'p' }]);
+    expect(result.created).toBe(1);
+    expect((await listAccounts(owner)).length).toBe(0);
+    expect((await listAccounts(stranger)).length).toBe(1);
+  });
+});
+
+describe('мультиаккаунт: проекты и статистика', () => {  it('проекты видны только владельцу', async () => {
     await createProject(owner, { name: 'Казанская' });
     expect((await listProjects(owner)).map((p) => p.name)).toEqual(['Казанская']);
     expect((await listProjects(stranger)).length).toBe(0);
