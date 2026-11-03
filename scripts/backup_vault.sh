@@ -323,15 +323,19 @@ retention_pass() {
     return 0
   fi
   if (( count > keep )); then
-    local delete=$(( count - keep ))
-    for old in "$@"; do
+    # Удаляем ТОЛЬКО срез «сверх keep, самые старые первыми» (backup_retention_delete_list).
+    # Цикл по всему списку удалял ВСЁ, включая только что залитый архив: бэкап
+    # отчитывался «ГОТОВО» и тут же исчезал с Диска (боевой прогон 03.11,
+    # run 41525150902).
+    while IFS= read -r old; do
+      [ -z "$old" ] && continue
       echo "backup_vault: удаляю старый ${label} ${old}"
       # Ошибку удаления НЕ глотаем: `|| true` превращал неудачную ретенцию в
       # «всё прошло», и облако копило архивы молча.
       if ! wd -X DELETE "${WEBDAV_HOST}${WEBDAV_DIR}/${old}" -o /dev/null; then
         echo "backup_vault: ВНИМАНИЕ — старый ${label} ${old} НЕ удалён (см. код curl)" >&2
       fi
-    done
+    done < <(backup_retention_delete_list "$keep" "$@")
   fi
 }
 if [ "${#REMOTE_VAULT[@]}" -gt 0 ]; then
