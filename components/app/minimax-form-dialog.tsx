@@ -25,7 +25,7 @@ type Values = { title: string; email: string; password: string };
  * Пароль обязателен при СОЗДАНИИ (его потом копируют в сервис, куда владелец
  * входит). При правке пароль можно не трогать — тогда он остаётся прежним.
  */
-export function AccountFormDialog({
+export function MinimaxFormDialog({
   account,
   trigger,
 }: {
