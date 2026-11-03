@@ -1,0 +1,145 @@
+name: Apply migration (production)
+
+# Ручное применение SQL-миграции к боевой БД.
+#
+# ЗАЧЕМ ОТДЕЛЬНЫЙ ВОРКФЛОУ. Миграции в KARMAN рукописные (drizzle-kit не
+# гоняем), и migration-guard в deploy-prod.yml блокирует авто-деплой, если
+# коммит вносит новую миграцию: по замыслу её применяет человек с доступом к
+# боевой БД. Ключ от боевой машины лежит в секретах Actions, поэтому из
+# агентской сессии «применить миграцию» было НЕЧЕМ — шаг оставался на
+# владельце. Решение владельца (03.11, задача «мультиаккаунт»): применять
+# миграции агент, с явного добра владельца.
+#
+# ЧТО ЭТО НЕ ЕСТЬ. Не удалённый шелл: выполняется ТОЛЬКО файл из
+# lib/db/migrations/, имя которого оператор вводит руками. Произвольных команд
+# нет, произвольных веток нет (только main), деплоя тут нет — деплой
+# отдельным шагом (workflow_dispatch deploy-prod.yml).
+#
+# ОГРАНИЧЕНИЯ:
+#   - имя миграции: ^[0-9]{4}_[a-z0-9_]+\.sql$ и файл обязан существовать в main;
+#   - применяется psql с ON_ERROR_STOP=1, сама миграция — в транзакции
+#     (BEGIN/COMMIT), то есть падение откатывает её целиком;
+#   - пароль роли НЕ попадает в argv: тот же приём, что в scripts/pg-connect.sh
+#     (.pgpass + URI без пароля) — иначе соседи бокса видели бы его в /proc;
+#   - воркфлоу только применяет миграцию и ничего не деплоит.
+
+on:
+  workflow_dispatch:
+    inputs:
+      migration:
+        description: 'Файл миграции из lib/db/migrations/ (например 0024_accounts.sql)'
+        type: string
+        required: true
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+      DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+      DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+      DEPLOY_SSH_PORT: ${{ vars.DEPLOY_SSH_PORT }}
+    steps:
+      # Экшены запинены по SHA коммита, а не по тегу (C3, аудит #057).
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Ref guard
+        run: |
+          set -e
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Миграция применяется только из main (сейчас $GITHUB_REF)."
+            exit 1
+          fi
+          MIG="${{ inputs.migration }}"
+          if ! printf '%s' "$MIG" | grep -qE '^[0-9]{4}_[a-z0-9_]+\.sql$'; then
+            echo "::error::Имя миграции должно быть вида 0024_accounts.sql"
+            exit 1
+          fi
+          if [ ! -f "lib/db/migrations/$MIG" ]; then
+            echo "::error::Нет файла lib/db/migrations/$MIG в main"
+            exit 1
+          fi
+          echo "применяем: lib/db/migrations/$MIG"
+
+      # Setup SSH — копия шага из deploy-prod.yml: тот же ключ и тот же запиненный
+      # known_hosts. Правку сюда повторить и там.
+      - name: Setup SSH
+        run: |
+          set -e
+          MISSING=""
+          [ -z "$SSH_PRIVATE_KEY" ] && MISSING="$MISSING secrets.SSH_PRIVATE_KEY"
+          [ -z "$DEPLOY_SSH_HOST" ] && MISSING="$MISSING secrets.DEPLOY_SSH_HOST"
+          [ -z "$DEPLOY_SSH_PORT" ] && MISSING="$MISSING vars.DEPLOY_SSH_PORT"
+          [ -z "$DEPLOY_SSH_USER" ] && MISSING="$MISSING secrets.DEPLOY_SSH_USER"
+          [ -z "$DEPLOY_SSH_KNOWN_HOSTS" ] && MISSING="$MISSING secrets.DEPLOY_SSH_KNOWN_HOSTS"
+          if [ -n "$MISSING" ]; then
+            echo "::error::Не заданы:$MISSING"
+            exit 1
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519_karman_ci
+          chmod 600 ~/.ssh/id_ed25519_karman_ci
+          # Ключ хоста ПИНУЕТСЯ, а не добывается ssh-keyscan'ом на месте:
+          # accept-new принял бы ЛЮБОЙ предъявленный ключ.
+          echo "$DEPLOY_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<CFG
+          Host karman
+            HostName $DEPLOY_SSH_HOST
+            Port $DEPLOY_SSH_PORT
+            User $DEPLOY_SSH_USER
+            IdentityFile ~/.ssh/id_ed25519_karman_ci
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            ServerAliveInterval 30
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Применить миграцию на проде
+        run: |
+          set -e
+          scp -q "lib/db/migrations/${{ inputs.migration }}" karman:/tmp/karman-migration.sql
+          # stderr самого ssh НЕ печатаем: при обрыве связи ssh печатает хост и
+          # порт отдельными словами, а это координаты боевой машины (D-038).
+          ssh karman 'bash -s' 2>/dev/null <<'REMOTE'
+          set -euo pipefail
+          exec 2>&1
+
+          ENV_FILE="$(systemctl show karman -p EnvironmentFiles --value 2>/dev/null \
+            | tr ' ' '\n' | grep -v '^(' | head -1 | sed 's/^-//' || true)"
+          if [ -z "$ENV_FILE" ] || [ ! -r "$ENV_FILE" ]; then
+            echo "::error::env-файл сервиса не найден (systemd karman)"
+            exit 1
+          fi
+          set -a; . "$ENV_FILE"; set +a
+
+          # Каталог скриптов берём из cron (там боевой путь), с запасным вариантом.
+          SCRIPTS_DIR=""
+          CRON_SCRIPT="$(crontab -l 2>/dev/null | grep -oE '[^ ]*backup_vault\.sh' | head -1 || true)"
+          if [ -n "$CRON_SCRIPT" ] && [ -r "$CRON_SCRIPT" ]; then
+            SCRIPTS_DIR="$(dirname "$CRON_SCRIPT")"
+          fi
+          if [ -z "$SCRIPTS_DIR" ] || [ ! -r "$SCRIPTS_DIR/pg-connect.sh" ]; then
+            SCRIPTS_DIR="$HOME/karman/scripts"
+          fi
+          if [ ! -r "$SCRIPTS_DIR/pg-connect.sh" ]; then
+            echo "::error::Не найден pg-connect.sh ($SCRIPTS_DIR) — пароль ушёл бы в argv"
+            exit 1
+          fi
+
+          WORK="$(mktemp -d)"
+          trap 'rm -rf "$WORK"' EXIT
+          # . "$SCRIPTS_DIR/pg-connect.sh" — тот же приём, что в backup_vault.sh:
+          # пароль роли уходит в .pgpass (600), в argv остаётся URI без пароля.
+          . "$SCRIPTS_DIR/pg-connect.sh"
+          pg_setup_pgpass "$WORK"
+
+          psql "$PG_DSN_NOPASS" -v ON_ERROR_STOP=1 -f /tmp/karman-migration.sql
+          rm -f /tmp/karman-migration.sql
+          echo "миграция применена"
+          REMOTE
