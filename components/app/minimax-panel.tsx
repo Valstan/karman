@@ -29,7 +29,7 @@ import {
   deleteProjectAction,
   revealAccountPasswordAction,
 } from '@/lib/actions/accounts';
-import { AccountFormDialog } from './account-form-dialog';
+import { MinimaxFormDialog } from './minimax-form-dialog';
 import { ConfirmDialog } from './confirm-dialog';
 import { utcToMoscowLocal } from '@/lib/reminders/time';
 import type { AccountListItem, ProjectListItem } from '@/lib/services/accounts';
@@ -47,7 +47,7 @@ const NONE = '__none__';
  * Порядок в списке: сначала доступные (сверху — тот, что использовался давнее
  * всех или ещё ни разу), ниже — израсходованные сегодня.
  */
-export function AccountsPanel({
+export function MinimaxPanel({
   accounts,
   projects,
   usage,
@@ -68,7 +68,7 @@ export function AccountsPanel({
     // Выбор проекта живёт в URL (как активная вкладка «Карты»): ссылку можно
     // прислать владельцу, и состояние переживает перезагрузку без localStorage
     // (в проекте localStorage не используется — состояние живёт на сервере).
-    router.push(value === NONE ? '/accounts' : `/accounts?project=${value}`);
+    router.push(value === NONE ? '/minimax' : `/minimax?project=${value}`);
   }
 
   const currentProject = currentProjectId;
@@ -285,7 +285,7 @@ export function AccountsPanel({
                   >
                     <KeyRound className="mr-1 h-4 w-4" /> Пароль
                   </Button>
-                  <AccountFormDialog
+                  <MinimaxFormDialog
                     account={account}
                     trigger={
                       <Button variant="ghost" size="sm">

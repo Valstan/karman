@@ -871,7 +871,7 @@ export type HotlinePresenceRow = typeof hotlinePresence.$inferSelect;
 // аккаунта), почта — идентификатор входа и лежит в открытом виде.
 // `usedOn` — московская дата последней активации: аккаунт «тушится» до
 // завтра, доступность считается при чтении (ночной задачи нет).
-// См. docs/accounts.md, миграция 0024.
+// См. docs/minimax.md, миграция 0024.
 
 /** Проект, на который тратятся токены («Матрица РМЗ», «Сабантуй», …). */
 export const accountsProject = pgTable('accounts_project', {
