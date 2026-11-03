@@ -1,0 +1,190 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { PGlite } from '@electric-sql/pglite';
+import { eq } from 'drizzle-orm';
+import { createTestDb, type TestDb } from '@/lib/db/test-db';
+import { accountsAccount, accountsUsage, authUser } from '@/lib/db/schema';
+import {
+  accountPassword,
+  activateAccount,
+  createAccount,
+  createProject,
+  deleteAccount,
+  listAccounts,
+  listProjects,
+  projectUsage,
+} from '@/lib/services/accounts';
+import type { SessionUser } from '@/lib/auth/rbac';
+
+/**
+ * Мультиаккаунт: инварианты, ради которых раздел и делался.
+ *
+ * 1. Копирование = активация: аккаунт гаснет до конца московских суток.
+ * 2. Одна активация на сутки: копирование почты и копирование пароля — одна и
+ *    та же активация (иначе статистика по проектам удваивалась бы).
+ * 3. Токены не затираются вторым копированием.
+ * 4. Пароль в БД — только шифротекст; AAD привязывает его к строке.
+ * 5. Чужой аккаунт/проект — не виден и не активируется.
+ */
+const refs = vi.hoisted(() => ({ current: undefined as TestDb | undefined }));
+vi.mock('@/lib/db/client', () => ({
+  get db() {
+    return refs.current;
+  },
+}));
+
+// Фикстура мастер-ключа: crypto читает env при каждом вызове.
+process.env.SECRETS_MASTER_KEY = Buffer.alloc(32, 9).toString('base64');
+
+let pg: PGlite | undefined;
+
+const owner: SessionUser = {
+  id: 1,
+  username: 'admin',
+  email: '',
+  firstName: '',
+  lastName: '',
+  isSuperuser: true,
+};
+
+const stranger: SessionUser = {
+  id: 2,
+  username: 'guest',
+  email: '',
+  firstName: '',
+  lastName: '',
+  isSuperuser: false,
+};
+
+beforeEach(async () => {
+  const t = await createTestDb();
+  pg = t.pg;
+  refs.current = t.db;
+  // Владелец (admin, id=1) уже засеян bootstrap'ом; добавляем второго
+  // пользователя — «чужого», чтобы проверять изоляцию по user_id.
+  await refs.current!
+    .insert(authUser)
+    .values({ id: 2, password: 'x', username: 'guest' } as never);
+});
+
+afterEach(async () => {
+  refs.current = undefined;
+  await pg?.close();
+});
+
+const TODAY = '2026-11-03';
+const YESTERDAY = '2026-11-02';
+
+describe('мультиаккаунт: создание и пароль', () => {
+  it('пароль в БД — только шифротекст, и он расшифровывается обратно', async () => {
+    const id = await createAccount(owner, { title: 'Матрица', email: 'a@example.test', password: 'пароль-1' });
+    const [row] = await refs.current!
+      .select()
+      .from(accountsAccount)
+      .where(eq(accountsAccount.id, id));
+    expect(row!.passwordCt).not.toContain('пароль-1');
+    expect(row!.email).toBe('a@example.test');
+    expect(await accountPassword(owner, id)).toBe('пароль-1');
+  });
+
+  it('чужой пользователь не читает пароль', async () => {
+    const id = await createAccount(owner, { title: '', email: 'b@example.test', password: 'пароль-2' });
+    expect(await accountPassword(stranger, id)).toBeNull();
+  });
+
+  it('удаление аккаунта убирает его из списка', async () => {
+    const id = await createAccount(owner, { title: '', email: 'c@example.test', password: 'p' });
+    expect(await deleteAccount(owner, id)).toBe(true);
+    expect(await deleteAccount(owner, id)).toBe(false);
+    expect((await listAccounts(owner)).length).toBe(0);
+  });
+});
+
+describe('мультиаккаунт: активация и тушение', () => {
+  it('активация гасит аккаунт до завтра: он уходит вниз списка', async () => {
+    const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+    const b = await createAccount(owner, { title: 'B', email: 'b@example.test', password: 'p' });
+    await activateAccount(owner, { id: a, projectId: null, tokens: 100 }, TODAY);
+
+    const list = await listAccounts(owner, TODAY);
+    expect(list.map((row) => row.id)).toEqual([b, a]);
+    expect(list[1]!.spentToday).toBe(true);
+    expect(list[0]!.spentToday).toBe(false);
+  });
+
+  it('вчерашний аккаунт сегодня снова свободен', async () => {
+    const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+    await activateAccount(owner, { id: a, projectId: null, tokens: 0 }, YESTERDAY);
+    const list = await listAccounts(owner, TODAY);
+    expect(list[0]!.spentToday).toBe(false);
+  });
+
+  it('копирование почты и копирование пароля — одна активация, а не две', async () => {
+    const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+    await activateAccount(owner, { id: a, projectId: null, tokens: 500 }, TODAY);
+    await activateAccount(owner, { id: a, projectId: null, tokens: undefined }, TODAY);
+
+    const rows = await refs.current!.select().from(accountsUsage);
+    expect(rows.length).toBe(1);
+    // Токены не затираются вторым копированием.
+    expect(rows[0]!.tokens).toBe(500);
+  });
+
+  it('активация с проеклем записывает проект в строку и в журнал', async () => {
+    const projectId = await createProject(owner, { name: 'Сабантуй' });
+    const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+    await activateAccount(owner, { id: a, projectId, tokens: 42 }, TODAY);
+
+    const [row] = await refs.current!
+      .select()
+      .from(accountsAccount)
+      .where(eq(accountsAccount.id, a));
+    expect(row!.usedProjectId).toBe(projectId);
+    expect(row!.lastTokens).toBe(42);
+    expect(row!.usedOn).toBe(TODAY);
+  });
+
+  it('чужой проект не принимается: активация не проходит', async () => {
+    const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+    const foreignProject = await createProject(stranger, { name: 'Чужой' });
+    expect(await activateAccount(owner, { id: a, projectId: foreignProject, tokens: 1 }, TODAY)).toBe(
+      false,
+    );
+  });
+
+  it('чужой аккаунт не активируется', async () => {
+    const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+    expect(await activateAccount(stranger, { id: a, projectId: null, tokens: 1 }, TODAY)).toBe(false);
+  });
+});
+
+describe('мультиаккаунт: проекты и статистика', () => {
+  it('проекты видны только владельцу', async () => {
+    await createProject(owner, { name: 'Казанская' });
+    expect((await listProjects(owner)).map((p) => p.name)).toEqual(['Казанская']);
+    expect((await listProjects(stranger)).length).toBe(0);
+  });
+
+  it('статистика копит токены по проектам', async () => {
+    const p1 = await createProject(owner, { name: 'Матрица РМЗ' });
+    const p2 = await createProject(owner, { name: 'Сабантуй' });
+    const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+    const b = await createAccount(owner, { title: 'B', email: 'b@example.test', password: 'p' });
+    await activateAccount(owner, { id: a, projectId: p1, tokens: 100 }, TODAY);
+    await activateAccount(owner, { id: b, projectId: p2, tokens: 700 }, TODAY);
+    await activateAccount(owner, { id: a, projectId: p1, tokens: 250 }, YESTERDAY);
+
+    const usage = await projectUsage(owner);
+    expect(usage[0]).toEqual({
+      projectId: p2,
+      projectName: 'Сабантуй',
+      activations: 1,
+      tokens: 700,
+    });
+    expect(usage[1]).toEqual({
+      projectId: p1,
+      projectName: 'Матрица РМЗ',
+      activations: 2,
+      tokens: 350,
+    });
+  });
+});

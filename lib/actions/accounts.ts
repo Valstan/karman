@@ -1,0 +1,156 @@
+'use server';
+
+import {
+  accountActivateSchema,
+  accountCreateSchema,
+  accountUpdateSchema,
+  projectCreateSchema,
+} from '@/lib/validation/account';
+import {
+  accountPassword,
+  activateAccount,
+  createAccount,
+  createProject,
+  deleteAccount,
+  deleteProject,
+  listAccounts,
+  listProjects,
+  projectUsage,
+  updateAccount,
+} from '@/lib/services/accounts';
+import { isUniqueViolation } from '@/lib/db/pg-error';
+import { currentUserOrNull, revalidateAll, requireSecretsAccess, type ActionResult } from './_internal';
+
+/**
+ * Мультиаккаунт (задача владельца 2026-11-03).
+ *
+ * Раздел доступен ТОЛЬКО владельцу: там лежат пароли от внешних сервисов.
+ * Показ пароля — по образцу vault: суперпользователь + step-up 2FA
+ * (`requireSecretsAccess`), потому что пароль уходит в буфер обмена.
+ */
+
+export async function listAccountsAction(): Promise<
+  ActionResult<{ accounts: Awaited<ReturnType<typeof listAccounts>>; projects: Awaited<ReturnType<typeof listProjects>>; usage: Awaited<ReturnType<typeof projectUsage>> }>
+> {
+  const user = await currentUserOrNull();
+  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  if (!user.isSuperuser) return { ok: false, error: 'Раздел доступен только владельцу' };
+  const [accounts, projects, usage] = await Promise.all([
+    listAccounts(user),
+    listProjects(user),
+    projectUsage(user),
+  ]);
+  return { ok: true, data: { accounts, projects, usage } };
+}
+
+export async function createAccountAction(values: unknown): Promise<ActionResult<{ id: number }>> {
+  const user = await currentUserOrNull();
+  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  if (!user.isSuperuser) return { ok: false, error: 'Раздел доступен только владельцу' };
+  const parsed = accountCreateSchema.safeParse(values);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? 'Некорректные данные' };
+  }
+  try {
+    const id = await createAccount(user, parsed.data);
+    revalidateAll();
+    return { ok: true, data: { id } };
+  } catch (e) {
+    if (isUniqueViolation(e)) {
+      return { ok: false, error: 'Такой аккаунт уже есть' };
+    }
+    throw e;
+  }
+}
+
+export async function updateAccountAction(values: unknown): Promise<ActionResult> {
+  const user = await currentUserOrNull();
+  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  if (!user.isSuperuser) return { ok: false, error: 'Раздел доступен только владельцу' };
+  const parsed = accountUpdateSchema.safeParse(values);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? 'Некорректные данные' };
+  }
+  try {
+    const updated = await updateAccount(user, parsed.data);
+    if (!updated) return { ok: false, error: 'Аккаунт не найден' };
+    revalidateAll();
+    return { ok: true };
+  } catch (e) {
+    if (isUniqueViolation(e)) {
+      return { ok: false, error: 'Такой аккаунт уже есть' };
+    }
+    throw e;
+  }
+}
+
+export async function deleteAccountAction(id: number): Promise<ActionResult> {
+  const user = await currentUserOrNull();
+  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  if (!user.isSuperuser) return { ok: false, error: 'Раздел доступен только владельцу' };
+  const deleted = await deleteAccount(user, id);
+  if (!deleted) return { ok: false, error: 'Аккаунт не найден' };
+  revalidateAll();
+  return { ok: true };
+}
+
+/**
+ * Активация аккаунта: гасит его до завтра, запоминает проект и расход токенов.
+ * Вызывается и по кнопке «копировать почту», и по «копировать пароль» —
+ * по правилу владельца копирование = активация.
+ */
+export async function activateAccountAction(values: unknown): Promise<ActionResult> {
+  const user = await currentUserOrNull();
+  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  if (!user.isSuperuser) return { ok: false, error: 'Раздел доступен только владельцу' };
+  const parsed = accountActivateSchema.safeParse(values);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? 'Некорректные данные' };
+  }
+  const activated = await activateAccount(user, parsed.data);
+  if (!activated) return { ok: false, error: 'Аккаунт не найден' };
+  revalidateAll();
+  return { ok: true };
+}
+
+/**
+ * Отдаёт пароль для копирования. Step-up 2FA обязателен (как в vault): пароль
+ * внешнего сервиса уходит в буфер обмена.
+ */
+export async function revealAccountPasswordAction(id: number): Promise<ActionResult<{ password: string }>> {
+  const { user, error } = await requireSecretsAccess();
+  if (!user) return { ok: false, error: error ?? 'Нет доступа' };
+  const password = await accountPassword(user, id);
+  if (password === null) return { ok: false, error: 'Аккаунт не найден' };
+  return { ok: true, data: { password } };
+}
+
+export async function createProjectAction(values: unknown): Promise<ActionResult<{ id: number }>> {
+  const user = await currentUserOrNull();
+  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  if (!user.isSuperuser) return { ok: false, error: 'Раздел доступен только владельцу' };
+  const parsed = projectCreateSchema.safeParse(values);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? 'Некорректные данные' };
+  }
+  try {
+    const id = await createProject(user, parsed.data);
+    revalidateAll();
+    return { ok: true, data: { id } };
+  } catch (e) {
+    if (isUniqueViolation(e)) {
+      return { ok: false, error: 'Такой проект уже есть' };
+    }
+    throw e;
+  }
+}
+
+export async function deleteProjectAction(id: number): Promise<ActionResult> {
+  const user = await currentUserOrNull();
+  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  if (!user.isSuperuser) return { ok: false, error: 'Раздел доступен только владельцу' };
+  const deleted = await deleteProject(user, id);
+  if (!deleted) return { ok: false, error: 'Проект не найден' };
+  revalidateAll();
+  return { ok: true };
+}

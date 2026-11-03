@@ -864,3 +864,65 @@ export const hotlinePresence = pgTable('hotline_presence', {
 
 export type HotlineMessageRow = typeof hotlineMessage.$inferSelect;
 export type HotlinePresenceRow = typeof hotlinePresence.$inferSelect;
+
+// --- Мультиаккаунт (задача владельца 2026-11-03) -----------------------------
+// Аккаунты внешних сервисов, которыми владелец переключается, пока
+// программирует. Пароль — шифротекст AES-256-GCM (AAD привязан к id
+// аккаунта), почта — идентификатор входа и лежит в открытом виде.
+// `usedOn` — московская дата последней активации: аккаунт «тушится» до
+// завтра, доступность считается при чтении (ночной задачи нет).
+// См. docs/accounts.md, миграция 0024.
+
+/** Проект, на который тратятся токены («Матрица РМЗ», «Сабантуй», …). */
+export const accountsProject = pgTable('accounts_project', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => authUser.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 200 }).notNull(),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+});
+
+/** Аккаунт внешнего сервиса. */
+export const accountsAccount = pgTable('accounts_account', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => authUser.id, { onDelete: 'cascade' }),
+  title: varchar('title', { length: 200 }).notNull().$defaultFn(() => ''),
+  email: varchar('email', { length: 320 }).notNull(),
+  passwordCt: text('password_ct').notNull(),
+  passwordIv: text('password_iv').notNull(),
+  passwordTag: text('password_tag').notNull(),
+  /** Москва-дата последней активации ('YYYY-MM-DD') или null. */
+  usedOn: date('used_on', { mode: 'string' }),
+  usedAt: tstz('used_at'),
+  usedProjectId: bigint('used_project_id', { mode: 'number' }).references(() => accountsProject.id, {
+    onDelete: 'set null',
+  }),
+  /** Токены за последнюю активацию (вводятся владельцем). */
+  lastTokens: bigint('last_tokens', { mode: 'number' }).notNull().default(0),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+  updatedAt: tstz('updated_at').notNull().defaultNow().$onUpdate(isoNow),
+});
+
+/** Журнал активаций: на какой проект ушли токены. Основа статистики. */
+export const accountsUsage = pgTable('accounts_usage', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => authUser.id, { onDelete: 'cascade' }),
+  accountId: bigint('account_id', { mode: 'number' })
+    .notNull()
+    .references(() => accountsAccount.id, { onDelete: 'cascade' }),
+  projectId: bigint('project_id', { mode: 'number' }).references(() => accountsProject.id, {
+    onDelete: 'set null',
+  }),
+  usedOn: date('used_on', { mode: 'string' }).notNull(),
+  tokens: bigint('tokens', { mode: 'number' }).notNull().default(0),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+});
+
+export type AccountsProjectRow = typeof accountsProject.$inferSelect;
+export type AccountsAccountRow = typeof accountsAccount.$inferSelect;
+export type AccountsUsageRow = typeof accountsUsage.$inferSelect;
