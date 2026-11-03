@@ -1,9 +1,11 @@
 import 'server-only';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { accountsAccount, accountsProject, accountsUsage } from '@/lib/db/schema';
 import { ownership, type SessionUser } from '@/lib/auth/rbac';
 import { decryptSecret, encryptSecret } from '@/lib/secrets/crypto';
+import { isUniqueViolation } from '@/lib/db/pg-error';
+import { defaultAccountTitle } from '@/lib/accounts/import';
 import {
   aggregateUsage,
   moscowToday,
@@ -269,6 +271,90 @@ export async function projectUsage(user: SessionUser): Promise<ProjectUsage[]> {
     .leftJoin(accountsProject, eq(accountsUsage.projectId, accountsProject.id))
     .where(ownership(user, accountsUsage.userId));
   return aggregateUsage(rows);
+}
+
+/**
+ * Статистика по дням и проектам: «на какой проект в какой день сколько
+ * аккаунтов было активировано» (владелец, 03.11).
+ *
+ * Считается по журналу активаций, а не по текущему состоянию аккаунтов: у
+ * аккаунта хранится только ПОСЛЕДНЯЯ активация, а по дням нужно всё.
+ */
+export type ProjectUsageDay = {
+  projectId: number | null;
+  projectName: string | null;
+  /** Москва-дата активации ('YYYY-MM-DD'). */
+  usedOn: string;
+  activations: number;
+  tokens: number;
+};
+
+export async function projectUsageByDay(user: SessionUser): Promise<ProjectUsageDay[]> {
+  const rows = await db
+    .select({
+      projectId: accountsUsage.projectId,
+      projectName: accountsProject.name,
+      usedOn: accountsUsage.usedOn,
+      activations: sql<number>`count(*)::int`,
+      tokens: sql<number>`coalesce(sum(${accountsUsage.tokens}), 0)::int`,
+    })
+    .from(accountsUsage)
+    .leftJoin(accountsProject, eq(accountsUsage.projectId, accountsProject.id))
+    .where(ownership(user, accountsUsage.userId))
+    .groupBy(accountsUsage.projectId, accountsProject.name, accountsUsage.usedOn)
+    .orderBy(desc(accountsUsage.usedOn), desc(sql<number>`count(*)`));
+  return rows;
+}
+
+/**
+ * Массовый импорт аккаунтов: создаёт отсутствующие, существующие пропускает
+ * (идемпотентно — повторный импорт того же списка ничего не ломает).
+ *
+ * Название по умолчанию — имя ящика (часть до «@»): владелец просил названия
+ * аккаунтов брать из названий ящиков.
+ */
+export type AccountImportResult = {
+  created: number;
+  /** Почты, которые уже были в базе (дубли). */
+  skipped: string[];
+  /** Почты, которые не удалось создать (с причиной). */
+  failed: string[];
+};
+
+export async function importAccounts(
+  user: SessionUser,
+  items: { title?: string; email: string; password: string }[],
+): Promise<AccountImportResult> {
+  const result: AccountImportResult = { created: 0, skipped: [], failed: [] };
+
+  for (const item of items) {
+    const email = item.email.trim().toLowerCase();
+    const [existing] = await db
+      .select({ id: accountsAccount.id })
+      .from(accountsAccount)
+      .where(and(eq(accountsAccount.userId, user.id), eq(accountsAccount.email, email)))
+      .limit(1);
+    if (existing) {
+      result.skipped.push(email);
+      continue;
+    }
+    try {
+      await createAccount(user, {
+        title: item.title?.trim() || defaultAccountTitle(email),
+        email,
+        password: item.password,
+      });
+      result.created += 1;
+    } catch (e) {
+      if (isUniqueViolation(e)) {
+        result.skipped.push(email);
+      } else {
+        result.failed.push(`${email}: ${e instanceof Error ? e.message : 'неизвестная ошибка'}`);
+      }
+    }
+  }
+
+  return result;
 }
 
 /** Сколько активаций было у каждого проекта за всё время (для списка проектов). */
