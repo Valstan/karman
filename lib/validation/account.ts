@@ -31,6 +31,11 @@ export const accountUpdateSchema = z.object({
     .email('Почта выглядит неверно')
     .optional(),
   password: z.string().min(1, 'Укажите пароль').max(200, 'Слишком длинный пароль').optional(),
+  /**
+   * Проект аккаунта: можно переключить на другой или снять (null).
+   * undefined — «не меняю» (правка названия не должна затирать проект).
+   */
+  projectId: z.coerce.number().int().positive().nullable().optional(),
 });
 
 /** Активация аккаунта: копирование почты или пароля гасит его до завтра. */

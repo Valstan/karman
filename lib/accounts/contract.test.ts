@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { PGlite } from '@electric-sql/pglite';
 import { eq } from 'drizzle-orm';
 import { createTestDb, type TestDb } from '@/lib/db/test-db';
-import { accountsAccount, accountsUsage } from '@/lib/db/schema';
+import { accountsAccount, accountsUsage, authUser } from '@/lib/db/schema';
 import {
   activateAccount,
   createAccount,
@@ -123,6 +123,57 @@ describe('G54: контракт проходит все слои целиком'
     expect(row!.title).toBe('Новое');
     // Почта не затерлась: её не передавали.
     expect(row!.email).toBe('keep@example.test');
+  });
+
+  it('update: смена проекта доезжает до БД и читается обратно, undefined — «не меняю»', async () => {
+    const first = await createProject(owner, { name: 'Матрица РМЗ' });
+    const id = await createAccount(owner, {
+      title: 'A',
+      email: 'project@example.test',
+      password: 'пароль',
+    });
+
+    // undefined — проект не трогаем (правка названия не должна затирать проект).
+    const keep = accountUpdateSchema.safeParse({ id, title: 'Переименован' });
+    expect(keep.success).toBe(true);
+    if (!keep.success) return;
+    expect(keep.data.projectId).toBeUndefined();
+    expect(await updateAccount(owner, keep.data)).toBe(true);
+
+    // Число — переключаем проект.
+    const switchTo = accountUpdateSchema.safeParse({ id, projectId: first });
+    expect(switchTo.success).toBe(true);
+    if (!switchTo.success) return;
+    expect(await updateAccount(owner, switchTo.data)).toBe(true);
+    const list = await listAccounts(owner, NOW);
+    expect(list.find((r) => r.id === id)!.projectId).toBe(first);
+    expect(list.find((r) => r.id === id)!.projectName).toBe('Матрица РМЗ');
+
+    // null — проект снимаем.
+    const drop = accountUpdateSchema.safeParse({ id, projectId: null });
+    expect(drop.success).toBe(true);
+    if (!drop.success) return;
+    expect(await updateAccount(owner, drop.data)).toBe(true);
+    const after = await listAccounts(owner, NOW);
+    expect(after.find((r) => r.id === id)!.projectId).toBeNull();
+
+    // Чужой проект не принимается: аккаунт остаётся прежним.
+    const [strangerUser] = await refs.current!
+      .insert(authUser)
+      .values({ password: 'x', username: 'stranger', email: '' })
+      .returning({ id: authUser.id });
+    const stranger: SessionUser = {
+      ...owner,
+      id: strangerUser!.id,
+      isSuperuser: false,
+    };
+    const foreign = await createProject(stranger, { name: 'Чужой проект' });
+    const bad = accountUpdateSchema.safeParse({ id, projectId: foreign });
+    expect(bad.success).toBe(true);
+    if (!bad.success) return;
+    expect(await updateAccount(owner, bad.data)).toBe(false);
+    const still = await listAccounts(owner, NOW);
+    expect(still.find((r) => r.id === id)!.projectId).toBeNull();
   });
 
   it('activate: undefined / null / число для проекта различаются и не теряются', async () => {

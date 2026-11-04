@@ -55,31 +55,55 @@ export type ProjectListItem = {
   createdAt: string;
 };
 
+/** Колонки аккаунта для списка: общие для всего списка и для одного аккаунта. */
+const accountColumns = {
+  id: accountsAccount.id,
+  title: accountsAccount.title,
+  email: accountsAccount.email,
+  usedOn: accountsAccount.usedOn,
+  usedAt: accountsAccount.usedAt,
+  projectId: accountsAccount.usedProjectId,
+  projectName: accountsProject.name,
+  lastTokens: accountsAccount.lastTokens,
+};
+
+/** Строка списка: аккаунт + состояние окна простоя. */
+function toListItem(row: AccountRotationRow, now: Date): AccountListItem {
+  const free = availableAt(row.usedAt);
+  return {
+    ...row,
+    spent: isSpent(row, now),
+    availableAt: free,
+    remainingMs: free ? Math.max(0, new Date(free).getTime() - now.getTime()) : 0,
+  };
+}
+
 /** Все аккаунты пользователя в порядке «доступные сверху, израсходованные снизу». */
 export async function listAccounts(user: SessionUser, now: Date = new Date()): Promise<AccountListItem[]> {
   const rows = await db
-    .select({
-      id: accountsAccount.id,
-      title: accountsAccount.title,
-      email: accountsAccount.email,
-      usedOn: accountsAccount.usedOn,
-      usedAt: accountsAccount.usedAt,
-      projectId: accountsAccount.usedProjectId,
-      projectName: accountsProject.name,
-      lastTokens: accountsAccount.lastTokens,
-    })
+    .select(accountColumns)
     .from(accountsAccount)
     .leftJoin(accountsProject, eq(accountsAccount.usedProjectId, accountsProject.id))
     .where(ownership(user, accountsAccount.userId));
-  return sortAccounts(rows, now).map((row) => {
-    const free = availableAt(row.usedAt);
-    return {
-      ...row,
-      spent: isSpent(row, now),
-      availableAt: free,
-      remainingMs: free ? Math.max(0, new Date(free).getTime() - now.getTime()) : 0,
-    };
-  });
+  return sortAccounts(rows, now).map((row) => toListItem(row, now));
+}
+
+/**
+ * Один аккаунт по id — та же строка списка, что и в разделе (для всплывающего
+ * окна). Чужой аккаунт или несуществующий — null.
+ */
+export async function listAccount(
+  user: SessionUser,
+  accountId: number,
+  now: Date = new Date(),
+): Promise<AccountListItem | null> {
+  const [row] = await db
+    .select(accountColumns)
+    .from(accountsAccount)
+    .leftJoin(accountsProject, eq(accountsAccount.usedProjectId, accountsProject.id))
+    .where(and(eq(accountsAccount.id, accountId), ownership(user, accountsAccount.userId)))
+    .limit(1);
+  return row ? toListItem(row, now) : null;
 }
 
 /**
@@ -133,6 +157,21 @@ export async function updateAccount(user: SessionUser, input: AccountUpdateInput
     patch.passwordCt = enc.ciphertext;
     patch.passwordIv = enc.iv;
     patch.passwordTag = enc.authTag;
+  }
+  // Проект аккаунта можно переключить (04.11: «может быть, изменить проект»).
+  // Он должен принадлежать владельцу — иначе аккаунт уедет на чужой id.
+  if (input.projectId !== undefined) {
+    if (input.projectId === null) {
+      patch.usedProjectId = null;
+    } else {
+      const [project] = await db
+        .select({ id: accountsProject.id })
+        .from(accountsProject)
+        .where(and(eq(accountsProject.id, input.projectId), ownership(user, accountsProject.userId)))
+        .limit(1);
+      if (!project) return false;
+      patch.usedProjectId = project.id;
+    }
   }
   if (Object.keys(patch).length === 0) return true;
   await db.update(accountsAccount).set(patch).where(eq(accountsAccount.id, input.id));

@@ -21,17 +21,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import {
-  activateAccountAction,
-  createProjectAction,
-  revealAccountPasswordAction,
-} from '@/lib/actions/accounts';
+import { createProjectAction } from '@/lib/actions/accounts';
+import { copyAccountSecret, type ActivateKind } from './minimax-activation';
 import type { AccountListItem, ProjectListItem } from '@/lib/services/accounts';
 
 const NONE = '__none__';
-
-/** Что копируем: почту или пароль. Определяет, ну ли step-up 2FA. */
-export type ActivateKind = 'email' | 'password';
 
 /**
  * Диалог активации: владелец СПРАШИВАЕТ, по какому проекту активируется
@@ -57,12 +51,15 @@ export function MinimaxActivateDialog({
   account,
   kind,
   projects,
+  onActivated,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   account: AccountListItem | null;
   kind: ActivateKind;
   projects: ProjectListItem[];
+  /** Активация состоялась — раздел запоминает выбранный проект. */
+  onActivated?: (accountId: number, projectId: number | null) => void;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -73,6 +70,7 @@ export function MinimaxActivateDialog({
             kind={kind}
             projects={projects}
             onOpenChange={onOpenChange}
+            onActivated={onActivated}
           />
         </DialogContent>
       ) : null}
@@ -85,11 +83,13 @@ function ActivateForm({
   kind,
   projects,
   onOpenChange,
+  onActivated,
 }: {
   account: AccountListItem;
   kind: ActivateKind;
   projects: ProjectListItem[];
   onOpenChange: (open: boolean) => void;
+  onActivated?: (accountId: number, projectId: number | null) => void;
 }) {
   const router = useRouter();
   const [project, setProject] = useState<string>(
@@ -105,28 +105,9 @@ function ActivateForm({
       const projectId = project === NONE ? null : Number(project);
       const tokensValue = raw === '' ? undefined : Number(raw);
 
-      let secret: string;
-      if (kind === 'password') {
-        const revealed = await revealAccountPasswordAction(account.id);
-        if (!revealed.ok) {
-          toast.error(revealed.error);
-          return;
-        }
-        secret = revealed.data!.password;
-      } else {
-        secret = account.email;
-      }
-
-      try {
-        await navigator.clipboard.writeText(secret);
-      } catch {
-        toast.error('Не удалось скопировать в буфер обмена');
-        return;
-      }
-
-      const activated = await activateAccountAction({ id: account.id, projectId, tokens: tokensValue });
-      if (!activated.ok) {
-        toast.error(activated.error);
+      const outcome = await copyAccountSecret(account, kind, projectId, tokensValue);
+      if (!outcome.ok) {
+        toast.error(outcome.error);
         return;
       }
 
@@ -135,6 +116,7 @@ function ActivateForm({
           ? 'Почта скопирована — аккаунт погаснет на 24 часа'
           : 'Пароль скопирован — аккаунт погаснет на 24 часа',
       );
+      onActivated?.(account.id, projectId);
       onOpenChange(false);
       router.refresh();
     } finally {

@@ -12,6 +12,11 @@
  * (окно не сдвигается, в журнале одна строка), поэтому «почта, потом пароль»
  * по-прежнему работает и статистика не удваивается.
  *
+ * Порядок экрана (заказ владельца 04.11): наверху ОДИН аккаунт — тот, что
+ * дольше всех не активировался (никогда не использованный — самый первый);
+ * после его активации наверх встаёт следующий. Ниже — активированные, и чем
+ * позже активирован, тем выше (свежий сверху).
+ *
  * Никакой ночной задачи: доступность считается при чтении, поэтому аккаунт
  * сам становится свободным по истечении своего окна.
  *
@@ -25,6 +30,13 @@ export const ACTIVATION_WINDOW_HOURS = 24;
 
 /** Окно простоя в миллисекундах. */
 export const ACTIVATION_WINDOW_MS = ACTIVATION_WINDOW_HOURS * 3_600_000;
+
+/**
+ * Сколько активированных аккаунтов показывать по умолчанию (заказ владельца
+ * 04.11: «последних 10 последних активированных, пусть будет так»). Остальные
+ * открываются кнопкой «показать все аккаунты».
+ */
+export const ACTIVATED_PREVIEW_LIMIT = 10;
 
 /** Московская дата 'YYYY-MM-DD' для момента времени. */
 export function moscowToday(now: Date = new Date()): string {
@@ -80,6 +92,10 @@ export type AccountRotationRow = {
  * Внутри доступной группы — по давноте использования: никогда не использованные
  * первыми, затем те, что использовались раньше всего. Это и есть «следующий
  * свободный аккаунт» наверху списка — тот, к которому владелец и пойдёт.
+ *
+ * Внутри израсходованных — наоборот, СВЕЖИЙ СВЕРХУ (04.11: «чем позже
+ * активирован, тем выше он находится»): последний активированный аккаунт
+ * должен быть сразу под верхним слотом, а не улетать вниз списка.
  */
 export function sortAccounts<T extends AccountRotationRow>(
   accounts: T[],
@@ -90,6 +106,11 @@ export function sortAccounts<T extends AccountRotationRow>(
     const bSpent = isSpent(b, now);
     // Сначала доступные: израсходованные уходят вниз.
     if (aSpent !== bSpent) return aSpent ? 1 : -1;
+    if (aSpent) {
+      // Среди активированных свежий сверху.
+      if (a.usedAt !== b.usedAt) return a.usedAt! < b.usedAt! ? 1 : -1;
+      return a.id - b.id;
+    }
     if (a.usedAt === null && b.usedAt === null) return a.id - b.id;
     // Никогда не использованный — раньше использованных.
     if (a.usedAt === null) return -1;
@@ -97,6 +118,40 @@ export function sortAccounts<T extends AccountRotationRow>(
     if (a.usedAt !== b.usedAt) return a.usedAt < b.usedAt ? -1 : 1;
     return a.id - b.id;
   });
+}
+
+/**
+ * Разбиение списка на экране (заказ владельца 04.11).
+ *
+ * - `next` — ОДИН аккаунт наверху: тот, что дольше всех не активировался
+ *   (никогда не использованный — самый первый). После его активации наверх
+ *   встаёт следующий.
+ * - `activated` — активированные, свежий сверху; по умолчанию показываются
+ *   первые `ACTIVATED_PREVIEW_LIMIT`, остальные — по кнопке «показать все».
+ * - `queued` — остальные свободные (в очереди за следующим).
+ */
+export type AccountSplit<T> = {
+  /** Следующий свободный аккаунт — верхний слот. */
+  next: T | null;
+  /** Активированные, свежий сверху. */
+  activated: T[];
+  /** Остальные свободные — в очереди. */
+  queued: T[];
+};
+
+export function splitAccounts<T extends AccountRotationRow>(
+  accounts: T[],
+  now: Date = new Date(),
+): AccountSplit<T> {
+  const sorted = sortAccounts(accounts, now);
+  const free: T[] = [];
+  const activated: T[] = [];
+  for (const account of sorted) {
+    if (isSpent(account, now)) activated.push(account);
+    else free.push(account);
+  }
+  const [next, ...queued] = free;
+  return { next: next ?? null, activated, queued };
 }
 
 /** Строка журнала активаций. */
