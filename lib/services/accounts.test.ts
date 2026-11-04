@@ -19,8 +19,9 @@ import type { SessionUser } from '@/lib/auth/rbac';
 /**
  * Мультиаккаунт: инварианты, ради которых раздел и делался.
  *
- * 1. Копирование = активация: аккаунт гаснет до конца московских суток.
- * 2. Одна активация на сутки: копирование почты и копирование пароля — одна и
+ * 1. Копирование = активация: аккаунт гаснет на СВОИ 24 часа от момента
+ *    активации (не до полуночи по календарю).
+ * 2. Одна активация на окно: копирование почты и копирование пароля — одна и
  *    та же активация (иначе статистика по проектам удваивалась бы).
  * 3. Токены не затираются вторым копированием.
  * 4. Пароль в БД — только шифротекст; AAD привязывает его к строке.
@@ -72,8 +73,11 @@ afterEach(async () => {
   await pg?.close();
 });
 
-const TODAY = '2026-11-03';
-const YESTERDAY = '2026-11-02';
+const NOW = new Date('2026-11-03T12:00:00Z');
+/** Момент за 30 часов до NOW — аккаунт активирован, но его окно 24 ч истекло. */
+const LONG_AGO = new Date('2026-11-02T06:00:00Z');
+/** Момент за 12 часов до NOW — окно ещё открыто. */
+const RECENTLY = new Date('2026-11-03T00:00:00Z');
 
 describe('мультиаккаунт: создание и пароль', () => {
   it('пароль в БД — только шифротекст, и он расшифровывается обратно', async () => {
@@ -100,29 +104,36 @@ describe('мультиаккаунт: создание и пароль', () => {
   });
 });
 
-describe('мультиаккаунт: активация и тушение', () => {
-  it('активация гасит аккаунт до завтра: он уходит вниз списка', async () => {
+describe('мультиаккаунт: активация и тушение на 24 часа', () => {
+  it('активация гасит аккаунт: он уходит вниз списка', async () => {
     const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
     const b = await createAccount(owner, { title: 'B', email: 'b@example.test', password: 'p' });
-    await activateAccount(owner, { id: a, projectId: null, tokens: 100 }, TODAY);
+    await activateAccount(owner, { id: a, projectId: null, tokens: 100 }, NOW);
 
-    const list = await listAccounts(owner, TODAY);
+    const list = await listAccounts(owner, NOW);
     expect(list.map((row) => row.id)).toEqual([b, a]);
-    expect(list[1]!.spentToday).toBe(true);
-    expect(list[0]!.spentToday).toBe(false);
+    expect(list[1]!.spent).toBe(true);
+    expect(list[0]!.spent).toBe(false);
   });
 
-  it('вчерашний аккаунт сегодня снова свободен', async () => {
+  it('окно своё у каждого: активированный 30 часов назад снова свободен', async () => {
     const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
-    await activateAccount(owner, { id: a, projectId: null, tokens: 0 }, YESTERDAY);
-    const list = await listAccounts(owner, TODAY);
-    expect(list[0]!.spentToday).toBe(false);
+    await activateAccount(owner, { id: a, projectId: null, tokens: 0 }, LONG_AGO);
+    const list = await listAccounts(owner, NOW);
+    expect(list[0]!.spent).toBe(false);
+  });
+
+  it('активированный 12 часов назад ещё израсходован (вчерашняя дата не значит «свободен»)', async () => {
+    const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+    await activateAccount(owner, { id: a, projectId: null, tokens: 0 }, RECENTLY);
+    const list = await listAccounts(owner, NOW);
+    expect(list[0]!.spent).toBe(true);
   });
 
   it('копирование почты и копирование пароля — одна активация, а не две', async () => {
     const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
-    await activateAccount(owner, { id: a, projectId: null, tokens: 500 }, TODAY);
-    await activateAccount(owner, { id: a, projectId: null, tokens: undefined }, TODAY);
+    await activateAccount(owner, { id: a, projectId: null, tokens: 500 }, NOW);
+    await activateAccount(owner, { id: a, projectId: null, tokens: undefined }, NOW);
 
     const rows = await refs.current!.select().from(accountsUsage);
     expect(rows.length).toBe(1);
@@ -133,7 +144,7 @@ describe('мультиаккаунт: активация и тушение', () 
   it('активация с проеклем записывает проект в строку и в журнал', async () => {
     const projectId = await createProject(owner, { name: 'Сабантуй' });
     const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
-    await activateAccount(owner, { id: a, projectId, tokens: 42 }, TODAY);
+    await activateAccount(owner, { id: a, projectId, tokens: 42 }, NOW);
 
     const [row] = await refs.current!
       .select()
@@ -141,20 +152,62 @@ describe('мультиаккаунт: активация и тушение', () 
       .where(eq(accountsAccount.id, a));
     expect(row!.usedProjectId).toBe(projectId);
     expect(row!.lastTokens).toBe(42);
-    expect(row!.usedOn).toBe(TODAY);
+    expect(row!.usedOn).toBe('2026-11-03');
+  });
+
+  it('продолжение сессии не сдвигает окно: used_at остаётся моментом активации', async () => {
+    const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+    await activateAccount(owner, { id: a, projectId: null, tokens: 10 }, NOW);
+    const [first] = await refs.current!
+      .select()
+      .from(accountsAccount)
+      .where(eq(accountsAccount.id, a));
+    // Postgres отдаёт timestamptz строкой, поэтому сверяем момент, а не текст.
+    expect(new Date(first!.usedAt!).getTime()).toBe(NOW.getTime());
+
+    // Копирование пароля через час — та же сессия.
+    await activateAccount(
+      owner,
+      { id: a, projectId: null, tokens: undefined },
+      new Date(NOW.getTime() + 60 * 60 * 1000),
+    );
+    const [second] = await refs.current!
+      .select()
+      .from(accountsAccount)
+      .where(eq(accountsAccount.id, a));
+    expect(new Date(second!.usedAt!).getTime()).toBe(NOW.getTime());
+    // И в журнале по-прежнему одна строка.
+    const rows = await refs.current!.select().from(accountsUsage);
+    expect(rows.length).toBe(1);
+  });
+
+  it('после истечения окна новая активация открывает новую сессию и новую строку журнала', async () => {
+    const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+    await activateAccount(owner, { id: a, projectId: null, tokens: 10 }, LONG_AGO);
+    // Окно 24 ч от LONG_AGO истекло к NOW — это НОВАЯ сессия.
+    await activateAccount(owner, { id: a, projectId: null, tokens: 20 }, NOW);
+
+    const rows = await refs.current!.select().from(accountsUsage);
+    expect(rows.length).toBe(2);
+    const [row] = await refs.current!
+      .select()
+      .from(accountsAccount)
+      .where(eq(accountsAccount.id, a));
+    expect(new Date(row!.usedAt!).getTime()).toBe(NOW.getTime());
+    expect(row!.lastTokens).toBe(20);
   });
 
   it('чужой проект не принимается: активация не проходит', async () => {
     const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
     const foreignProject = await createProject(stranger, { name: 'Чужой' });
-    expect(await activateAccount(owner, { id: a, projectId: foreignProject, tokens: 1 }, TODAY)).toBe(
+    expect(await activateAccount(owner, { id: a, projectId: foreignProject, tokens: 1 }, NOW)).toBe(
       false,
     );
   });
 
   it('чужой аккаунт не активируется', async () => {
     const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
-    expect(await activateAccount(stranger, { id: a, projectId: null, tokens: 1 }, TODAY)).toBe(false);
+    expect(await activateAccount(stranger, { id: a, projectId: null, tokens: 1 }, NOW)).toBe(false);
   });
 });
 
@@ -209,9 +262,11 @@ describe('мультиаккаунт: проекты и статистика', (
     const p2 = await createProject(owner, { name: 'Сабантуй' });
     const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
     const b = await createAccount(owner, { title: 'B', email: 'b@example.test', password: 'p' });
-    await activateAccount(owner, { id: a, projectId: p1, tokens: 100 }, TODAY);
-    await activateAccount(owner, { id: b, projectId: p2, tokens: 700 }, TODAY);
-    await activateAccount(owner, { id: a, projectId: p1, tokens: 250 }, YESTERDAY);
+    // Первая сессия аккаунта A — за 30 часов до NOW, вторая — сейчас: между ними
+    // окно 24 ч успело истекнуть, значит это две РАЗНЫЕ активации в статистике.
+    await activateAccount(owner, { id: a, projectId: p1, tokens: 100 }, LONG_AGO);
+    await activateAccount(owner, { id: b, projectId: p2, tokens: 700 }, NOW);
+    await activateAccount(owner, { id: a, projectId: p1, tokens: 250 }, NOW);
 
     const usage = await projectUsage(owner);
     expect(usage[0]).toEqual({

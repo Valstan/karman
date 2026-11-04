@@ -1,19 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { Copy, KeyRound, Plus, Trash2 } from 'lucide-react';
+import { Copy, KeyRound, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import {
   Table,
   TableBody,
@@ -22,36 +13,35 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import {
-  activateAccountAction,
-  createProjectAction,
-  deleteAccountAction,
-  deleteProjectAction,
-  revealAccountPasswordAction,
-} from '@/lib/actions/accounts';
+import { deleteAccountAction, deleteProjectAction } from '@/lib/actions/accounts';
 import { MinimaxFormDialog } from './minimax-form-dialog';
-import { MinimaxImportDialog } from './minimax-import-dialog';
+import { MinimaxActivateDialog, type ActivateKind } from './minimax-activate-dialog';
 import { ConfirmDialog } from './confirm-dialog';
-import { utcToMoscowLocal } from '@/lib/reminders/time';
 import type { AccountListItem, ProjectListItem, ProjectUsageDay } from '@/lib/services/accounts';
 import type { ProjectUsage } from '@/lib/accounts/rotation';
 
-const NONE = '__none__';
+/** «свободен через 23 ч 12 мин» — обратный отсчёт окна активации. */
+function formatRemaining(ms: number): string {
+  const totalMinutes = Math.max(0, Math.ceil(ms / 60_000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours === 0) return `${minutes} мин`;
+  return `${hours} ч ${minutes} мин`;
+}
 
 /**
  * «Минимакс» — мультиаккаунт (задача владельца 2026-11-03).
  *
- * Правило: КОПИРОВАНИЕ почты или пароля = активация. Аккаунт гаснет до завтра
- * (московские сутки) и уходит вниз списка; наверх всплывает следующий
- * свободный. Ночной задачи нет — доступность считается при чтении.
+ * Правило: КОПИРОВАНИЕ почты или пароля = активация. Аккаунт гаснет на СВОИ
+ * 24 ЧАСА с момента активации (04.11) — не до полуночи: каждый аккаунт
+ * отсчитывает своё время. В списке израсходованные уходят вниз (красная
+ * строка), наверх всплывает следующий свободный (зелёная строка).
  *
- * Порядок в списке: сначала доступные (сверху — тот, что использовался давнее
- * всех или ещё ни разу), ниже — израсходованные сегодня.
+ * Проект спрашивается ДО гашения: кнопка «Почта»/«Пароль» открывает диалог,
+ * и только после ответа аккаунт гаснет.
  *
- * Проект выбирается ПРЯМО В СТРОКЕ аккаунта (03.11): «выбираю проект и тут же
- * копирую почту и пароль — и этот аккаунт уходит в статистику как
- * активация этого проекта». По умолчанию в строке стоит проект последней
- * активации этого аккаунта — чтобы не выбирать его заново каждый день.
+ * Порядок списка: сначала доступные (сверху — тот, что использовался давнее
+ * всех или ещё ни разу), ниже — израсходованные.
  */
 export function MinimaxPanel({
   accounts,
@@ -65,59 +55,29 @@ export function MinimaxPanel({
   usageByDay: ProjectUsageDay[];
 }) {
   const router = useRouter();
-  // Токены на активацию — по строке аккаунта (вводятся владельцем).
-  const [tokens, setTokens] = useState<Record<number, string>>({});
-  // Проект на активацию — по строке аккаунта.
-  const [rowProject, setRowProject] = useState<Record<number, string>>({});
-  const [newProject, setNewProject] = useState('');
+  // Активация: сначала диалог с проектом (владелец спрашивает ДО гашения),
+  // потом копирование, потом гашение.
+  const [activateTarget, setActivateTarget] = useState<{
+    account: AccountListItem;
+    kind: ActivateKind;
+  } | null>(null);
 
-  function projectOf(account: AccountListItem): string {
-    return rowProject[account.id] ?? (account.projectId === null ? NONE : String(account.projectId));
-  }
+  // Обратный отсчёт идёт сам: окно активации посчитано на сервере, а часы
+  // тикают здесь (раз в минуту — «свободен через 23 ч 12 мин»).
+  // До первого тика показываем серверное значение — иначе разъедутся
+  // серверный HTML и первая отрисовка на клиенте.
+  const [now, setNow] = useState<number | null>(null);
+  useEffect(() => {
+    const tick = setTimeout(() => setNow(Date.now()), 0);
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    return () => {
+      clearTimeout(tick);
+      clearInterval(timer);
+    };
+  }, []);
 
-  async function activate(account: AccountListItem) {
-    const raw = (tokens[account.id] ?? '').trim();
-    const selected = projectOf(account);
-    const result = await activateAccountAction({
-      id: account.id,
-      projectId: selected === NONE ? null : Number(selected),
-      tokens: raw === '' ? undefined : Number(raw),
-    });
-    if (!result.ok) {
-      toast.error(result.error);
-      return false;
-    }
-    router.refresh();
-    return true;
-  }
-
-  async function copyEmail(account: AccountListItem) {
-    try {
-      await navigator.clipboard.writeText(account.email);
-    } catch {
-      toast.error('Не удалось скопировать почту');
-      return;
-    }
-    // Копирование = активация: аккаунт гаснет до завтра, активация падает в
-    // статистику выбранного в этой строке проекта.
-    await activate(account);
-    toast.success('Почта скопирована — аккаунт погашен до завтра');
-  }
-
-  async function copyPassword(account: AccountListItem) {
-    const result = await revealAccountPasswordAction(account.id);
-    if (!result.ok) {
-      toast.error(result.error);
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(result.data!.password);
-    } catch {
-      toast.error('Не удалось скопировать пароль');
-      return;
-    }
-    await activate(account);
-    toast.success('Пароль скопирован — аккаунт погашен до завтра');
+  function openActivate(account: AccountListItem, kind: ActivateKind) {
+    setActivateTarget({ account, kind });
   }
 
   async function removeAccount(account: AccountListItem) {
@@ -127,19 +87,6 @@ export function MinimaxPanel({
       return;
     }
     toast.success('Аккаунт удалён');
-    router.refresh();
-  }
-
-  async function addProject() {
-    const name = newProject.trim();
-    if (!name) return;
-    const result = await createProjectAction({ name });
-    if (!result.ok) {
-      toast.error(result.error);
-      return;
-    }
-    setNewProject('');
-    toast.success(`Проект «${name}» добавлен`);
     router.refresh();
   }
 
@@ -157,7 +104,7 @@ export function MinimaxPanel({
     <div className="flex flex-col gap-6">
       {/* Статистика — ПЕРВОЙ блоком: владелец 03.11 не нашёл её под списком
           аккаунтов. «Активация» — точное имя действия (копирование = активация),
-          «погашен» — состояние аккаунта на сегодня. */}
+          «погашен» — состояние аккаунта на свои 24 часа. */}
       <div className="grid gap-4 md:grid-cols-2">
         <div className="rounded-md border">
           <div className="p-4 pb-2">
@@ -224,34 +171,8 @@ export function MinimaxPanel({
 
       {/* Проекты: справочник названий. */}
       <div className="rounded-md border p-4">
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="flex min-w-56 flex-col gap-1">
-            <span className="text-sm font-medium">Новый проект</span>
-            <div className="flex gap-2">
-              <Input
-                value={newProject}
-                placeholder="Матрица РМЗ, Сабантуй, Казанская…"
-                onChange={(e) => setNewProject(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') void addProject();
-                }}
-              />
-              <Button onClick={addProject}>
-                <Plus className="mr-1 h-4 w-4" /> Добавить
-              </Button>
-            </div>
-          </div>
-          <MinimaxImportDialog
-            trigger={
-              <Button variant="outline">
-                <Plus className="mr-1 h-4 w-4" /> Импорт списка
-              </Button>
-            }
-          />
-        </div>
-
         {projects.length > 0 ? (
-          <div className="mt-3 flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2">
             {projects.map((project) => (
               <span
                 key={project.id}
@@ -269,26 +190,29 @@ export function MinimaxPanel({
               </span>
             ))}
           </div>
-        ) : null}
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            Проектов пока нет — добавьте первый кнопкой «Добавить проект» наверху.
+          </p>
+        )}
       </div>
 
-      {/* Список аккаунтов. */}
+      {/* Список аккаунтов: компактная строка, всё по центру. */}
       <div className="rounded-md border">
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Аккаунт</TableHead>
-              <TableHead>Почта</TableHead>
-              <TableHead className="w-48">Проект</TableHead>
-              <TableHead>Последний раз</TableHead>
-              <TableHead className="w-28">Токены</TableHead>
-              <TableHead className="text-right">Действия</TableHead>
+              <TableHead className="text-center">Аккаунт</TableHead>
+              <TableHead className="w-32 text-center">Почта</TableHead>
+              <TableHead className="w-32 text-center">Пароль</TableHead>
+              <TableHead className="w-24 text-center">Правка</TableHead>
+              <TableHead className="w-16 text-center" />
             </TableRow>
           </TableHeader>
           <TableBody>
             {accounts.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center text-muted-foreground">
+                <TableCell colSpan={5} className="text-center text-muted-foreground">
                   Аккаунтов пока нет — добавьте первый или импортируйте список.
                 </TableCell>
               </TableRow>
@@ -296,78 +220,43 @@ export function MinimaxPanel({
             {accounts.map((account) => (
               <TableRow
                 key={account.id}
-                className={account.spentToday ? 'opacity-60' : undefined}
+                className={account.spent ? 'bg-destructive/10' : 'bg-emerald-500/10'}
               >
-                <TableCell className="font-medium">
-                  {account.title || '—'}
-                  {account.spentToday ? (
-                    <Badge variant="secondary" className="ml-2">
-                      погашен на сегодня
-                    </Badge>
+                <TableCell className="text-center">
+                  <div className="font-medium leading-tight">{account.title || '—'}</div>
+                  <div className="font-mono text-xs text-muted-foreground">{account.email}</div>
+                  {account.spent ? (
+                    <div className="text-xs text-muted-foreground">
+                      свободен через{' '}
+                      {formatRemaining(
+                        now === null
+                          ? account.remainingMs
+                          : Math.max(0, new Date(account.availableAt!).getTime() - now),
+                      )}
+                    </div>
                   ) : null}
                 </TableCell>
-                <TableCell className="font-mono text-xs">{account.email}</TableCell>
-                <TableCell>
-                  <Select
-                    value={projectOf(account)}
-                    onValueChange={(value) =>
-                      setRowProject((prev) => ({ ...prev, [account.id]: value }))
-                    }
-                  >
-                    <SelectTrigger className="h-8">
-                      <SelectValue placeholder="Без проекта" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={NONE}>Без проекта</SelectItem>
-                      {projects.map((project) => (
-                        <SelectItem key={project.id} value={String(project.id)}>
-                          {project.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </TableCell>
-                <TableCell className="text-sm text-muted-foreground">
-                  {account.usedAt ? (
-                    <>
-                      {utcToMoscowLocal(account.usedAt).replace('T', ' ')}
-                      {account.projectName ? ` · ${account.projectName}` : ''}
-                      {account.lastTokens ? ` · ${account.lastTokens} токенов` : ''}
-                    </>
-                  ) : (
-                    'не использовался'
-                  )}
-                </TableCell>
-                <TableCell>
-                  <Input
-                    type="number"
-                    min={0}
-                    inputMode="numeric"
-                    className="h-8 w-24"
-                    placeholder="0"
-                    value={tokens[account.id] ?? ''}
-                    onChange={(e) =>
-                      setTokens((prev) => ({ ...prev, [account.id]: e.target.value }))
-                    }
-                  />
-                </TableCell>
-                <TableCell className="space-x-1 text-right">
+                <TableCell className="text-center">
                   <Button
                     variant="outline"
                     size="sm"
-                    title="Скопировать почту (аккаунт погаснет до завтра)"
-                    onClick={() => copyEmail(account)}
+                    title="Скопировать почту (аккаунт погаснет на 24 часа)"
+                    onClick={() => openActivate(account, 'email')}
                   >
                     <Copy className="mr-1 h-4 w-4" /> Почта
                   </Button>
+                </TableCell>
+                <TableCell className="text-center">
                   <Button
                     variant="outline"
                     size="sm"
-                    title="Скопировать пароль (аккаунт погаснет до завтра)"
-                    onClick={() => copyPassword(account)}
+                    title="Скопировать пароль (аккаунт погаснет на 24 часа)"
+                    onClick={() => openActivate(account, 'password')}
                   >
                     <KeyRound className="mr-1 h-4 w-4" /> Пароль
                   </Button>
+                </TableCell>
+                <TableCell className="text-center">
                   <MinimaxFormDialog
                     account={account}
                     trigger={
@@ -376,6 +265,8 @@ export function MinimaxPanel({
                       </Button>
                     }
                   />
+                </TableCell>
+                <TableCell className="text-center">
                   <ConfirmDialog
                     title="Удалить аккаунт?"
                     description={`«${account.title || account.email}» будет удалён вместе с историей активаций.`}
@@ -392,6 +283,17 @@ export function MinimaxPanel({
           </TableBody>
         </Table>
       </div>
+
+      {/* Активация: проект спрашивается ДО гашения (04.11). */}
+      <MinimaxActivateDialog
+        open={activateTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setActivateTarget(null);
+        }}
+        account={activateTarget?.account ?? null}
+        kind={activateTarget?.kind ?? 'email'}
+        projects={projects}
+      />
     </div>
   );
 }

@@ -7,7 +7,10 @@ import { decryptSecret, encryptSecret } from '@/lib/secrets/crypto';
 import { isUniqueViolation } from '@/lib/db/pg-error';
 import { defaultAccountTitle } from '@/lib/accounts/import';
 import {
+  ACTIVATION_WINDOW_MS,
   aggregateUsage,
+  availableAt,
+  isSpent,
   moscowToday,
   sortAccounts,
   type AccountRotationRow,
@@ -21,12 +24,12 @@ import type {
 } from '@/lib/validation/account';
 
 /**
- * Мультиаккаунт: список аккаунтов, «тушение» до конца суток и учёт проектов.
+ * Мультиаккаунт: список аккаунтов, «тушение» на 24 часа и учёт проектов.
  *
- * Правило владельца (2026-11-03): аккаунт, который сегодня использован, гаснет
- * до завтра — в списке он уходит вниз, наверх всплывает следующий свободный.
- * Грань суток — московская дата; ночной задачи нет: доступность считается при
- * чтении, поэтому после полуночи аккаунт снова свободен.
+ * Правило владельца (04.11): активация гасит аккаунт на СВОИ 24 часа — от
+ * момента активации, а не до полуночи по календарю. Каждый аккаунт отсчитывает
+ * своё время, поэтому список «оживает» по мере истечения окон. Ночной задачи
+ * нет: доступность считается при чтении.
  *
  * Пароль — шифротекст AES-256-GCM с AAD от id аккаунта (нельзя переставить
  * шифротекст между строками). Ключ — тот же мастер-ключ, что у vault.
@@ -38,8 +41,12 @@ export function accountPasswordAad(accountId: number): string {
 }
 
 export type AccountListItem = AccountRotationRow & {
-  /** Израсходован сегодня (московская дата) — в UI такая строка гаснет. */
-  spentToday: boolean;
+  /** Израсходован ли аккаунт (окно 24 ч с момента активации не истекло) — строка гаснет. */
+  spent: boolean;
+  /** Когда аккаунт снова свободен (ISO) или null — если не активировался ни разу. */
+  availableAt: string | null;
+  /** Сколько осталось до освобождения (мс) — для обратного отсчёта в UI. */
+  remainingMs: number;
 };
 
 export type ProjectListItem = {
@@ -49,7 +56,7 @@ export type ProjectListItem = {
 };
 
 /** Все аккаунты пользователя в порядке «доступные сверху, израсходованные снизу». */
-export async function listAccounts(user: SessionUser, today: string = moscowToday()): Promise<AccountListItem[]> {
+export async function listAccounts(user: SessionUser, now: Date = new Date()): Promise<AccountListItem[]> {
   const rows = await db
     .select({
       id: accountsAccount.id,
@@ -64,7 +71,15 @@ export async function listAccounts(user: SessionUser, today: string = moscowToda
     .from(accountsAccount)
     .leftJoin(accountsProject, eq(accountsAccount.usedProjectId, accountsProject.id))
     .where(ownership(user, accountsAccount.userId));
-  return sortAccounts(rows, today).map((row) => ({ ...row, spentToday: row.usedOn === today }));
+  return sortAccounts(rows, now).map((row) => {
+    const free = availableAt(row.usedAt);
+    return {
+      ...row,
+      spent: isSpent(row, now),
+      availableAt: free,
+      remainingMs: free ? Math.max(0, new Date(free).getTime() - now.getTime()) : 0,
+    };
+  });
 }
 
 /**
@@ -131,12 +146,14 @@ export async function deleteAccount(user: SessionUser, accountId: number): Promi
 }
 
 /**
- * Активация аккаунта: он «гаснет» до завтра, запоминается проект и расход
- * токенов.
+ * Активация аккаунта: копирование почты или пароля = активация. Аккаунт после
+ * этого гаснет на СВОИ 24 ЧАСА — от момента активации (правило владельца
+ * 04.11); до истечения окна его не активируют заново.
  *
- * Идемпотентна по суткам: копирование почты и копирование пароля — одна и та же
- * активация (иначе статистика по проектам удваивалась бы). Повтор в тот же
- * день обновляет время и токены, но не создаёт вторую строку журнала.
+ * Сессия активации: окно открывает ПЕРВОЕ копирование, и оно же держит его
+ * открытым. Копирование пароля после копирования почты — продолжение той же
+ * сессии: окно не сдвигается, в журнале одна строка (иначе статистика по
+ * проектам удваивалась бы). Новая сессия начинается, когда окно истекло.
  *
  * Токены `undefined` — «не меняю» (кнопка «копировать пароль» не должна
  * затирать уже введённое).
@@ -144,7 +161,7 @@ export async function deleteAccount(user: SessionUser, accountId: number): Promi
 export async function activateAccount(
   user: SessionUser,
   input: AccountActivateInput,
-  today: string = moscowToday(),
+  now: Date = new Date(),
 ): Promise<boolean> {
   if ((await ownedAccount(user, input.id)) === null) return false;
 
@@ -160,17 +177,36 @@ export async function activateAccount(
     projectId = project.id;
   }
 
-  const usedAt = new Date().toISOString();
+  const usedAt = now.toISOString();
   const tokens = input.tokens;
 
   await db.transaction(async (tx) => {
+    const [account] = await tx
+      .select({
+        id: accountsAccount.id,
+        usedOn: accountsAccount.usedOn,
+        usedAt: accountsAccount.usedAt,
+      })
+      .from(accountsAccount)
+      .where(and(eq(accountsAccount.id, input.id), ownership(user, accountsAccount.userId)))
+      .limit(1);
+    if (!account) return;
+
+    // Окно ещё открыто → продолжение той же сессии: окно не сдвигается, строка
+    // журнала та же. Окно истекло (или активации не было) → новая сессия.
+    const sessionOpen =
+      account.usedAt !== null &&
+      new Date(account.usedAt).getTime() + ACTIVATION_WINDOW_MS > now.getTime();
+    const sessionUsedOn = sessionOpen ? account.usedOn! : moscowToday(now);
+    const sessionUsedAt = sessionOpen ? account.usedAt! : usedAt;
+
     const [existing] = await tx
       .select({ id: accountsUsage.id, tokens: accountsUsage.tokens })
       .from(accountsUsage)
       .where(
         and(
           eq(accountsUsage.accountId, input.id),
-          eq(accountsUsage.usedOn, today),
+          eq(accountsUsage.usedOn, sessionUsedOn),
           ownership(user, accountsUsage.userId),
         ),
       )
@@ -185,8 +221,8 @@ export async function activateAccount(
     await tx
       .update(accountsAccount)
       .set({
-        usedOn: today,
-        usedAt,
+        usedOn: sessionUsedOn,
+        usedAt: sessionUsedAt,
         lastTokens: rowTokens,
         ...(projectPatch !== undefined ? { usedProjectId: projectPatch } : {}),
         updatedAt: usedAt,
@@ -206,7 +242,7 @@ export async function activateAccount(
         userId: user.id,
         accountId: input.id,
         projectId: projectPatch ?? null,
-        usedOn: today,
+        usedOn: sessionUsedOn,
         tokens: rowTokens,
       });
     }
