@@ -68,15 +68,31 @@ export async function activateAccountOnly(
  *
  * BroadcastChannel — механизм браузера, а не сервера: он ничего не пишет в БД
  * и ничего не пересылает наружу.
+ *
+ * Канал один на модуль и живёт, пока живёт вкладка: создавать канал на каждое
+ * сообщение и сразу закрывать — лишнее (сообщение может не уйти).
  */
 const MINIMAX_CHANNEL = 'karman-minimax';
 
+let channel: BroadcastChannel | null = null;
+
+function sharedChannel(): BroadcastChannel | null {
+  if (typeof BroadcastChannel === 'undefined') return null;
+  if (!channel) {
+    try {
+      channel = new BroadcastChannel(MINIMAX_CHANNEL);
+    } catch {
+      return null;
+    }
+  }
+  return channel;
+}
+
 export function publishMinimaxActivated(accountId: number): void {
-  if (typeof BroadcastChannel === 'undefined') return;
+  const shared = sharedChannel();
+  if (!shared) return;
   try {
-    const channel = new BroadcastChannel(MINIMAX_CHANNEL);
-    channel.postMessage({ type: 'activated', accountId });
-    channel.close();
+    shared.postMessage({ type: 'activated', accountId });
   } catch {
     // Канал — удобство, а не условие работы: без него активация всё равно уйдёт.
   }
@@ -84,9 +100,9 @@ export function publishMinimaxActivated(accountId: number): void {
 
 export function subscribeMinimaxActivated(handler: (accountId: number) => void): () => void {
   if (typeof BroadcastChannel === 'undefined') return () => {};
-  let channel: BroadcastChannel;
+  let listener: BroadcastChannel;
   try {
-    channel = new BroadcastChannel(MINIMAX_CHANNEL);
+    listener = new BroadcastChannel(MINIMAX_CHANNEL);
   } catch {
     return () => {};
   }
@@ -94,9 +110,9 @@ export function subscribeMinimaxActivated(handler: (accountId: number) => void):
     const data = event.data as { type?: string; accountId?: number } | null;
     if (data?.type === 'activated' && typeof data.accountId === 'number') handler(data.accountId);
   };
-  channel.addEventListener('message', onMessage);
+  listener.addEventListener('message', onMessage);
   return () => {
-    channel.removeEventListener('message', onMessage);
-    channel.close();
+    listener.removeEventListener('message', onMessage);
+    listener.close();
   };
 }

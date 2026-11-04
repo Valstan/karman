@@ -35,9 +35,12 @@ export default async function MinimaxWindowPage({
   ]);
   if (!account) notFound();
 
+  // Проект в окне: тот, что уже выбран на вкладке раздела (query), иначе —
+  // прошлый проект аккаунта. Так же, как в диалоге на вкладке: молча гасить
+  // аккаунт «без проекта», забыв, куда он зачислен, не должен никто.
   const rawProjectId = params.projectId ? Number(params.projectId) : Number.NaN;
   const initialProjectId =
-    Number.isInteger(rawProjectId) && rawProjectId > 0 ? rawProjectId : null;
+    Number.isInteger(rawProjectId) && rawProjectId > 0 ? rawProjectId : account.projectId;
 
   return (
     <MinimaxWindow

@@ -11,6 +11,10 @@ import { MinimaxProjectDialog } from './minimax-activate-dialog';
  * Панель кнопок над разделом «Минимакс» (04.11): «Добавить проект»,
  * «Добавить аккаунт», «Импорт списка аккаунтов» — все три сверху, рядом.
  *
+ * Кнопки переносятся (`flex-wrap`): левой половине экрана они иногда не
+ * помещаются в одну строку, и без переноса третья кнопка уезжала под правую
+ * половину (в колонку «Минимакс» справа).
+ *
  * Компонент целиком клиентский и сам рисует все три кнопки: серверная страница
  * не передаёт сюда готовые элементы-триггеры (разрыв рендера между сервером и
  * клиентом давал расхождение гидрации).
@@ -19,7 +23,7 @@ export function MinimaxToolbar() {
   const [projectOpen, setProjectOpen] = useState(false);
 
   return (
-    <div className="flex flex-nowrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2">
       <Button variant="outline" onClick={() => setProjectOpen(true)}>
         <Plus className="mr-1 h-4 w-4" /> Добавить проект
       </Button>

@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -116,6 +117,11 @@ export function MinimaxFormDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{account ? 'Аккаунт' : 'Новый аккаунт'}</DialogTitle>
+          <DialogDescription>
+            {account
+              ? 'Название, почта и проект аккаунта. Пароль оставьте пустым, чтобы не менять его.'
+              : 'Логин и пароль от аккаунта MiniMax. Пароль хранится зашифрованным и показывается только по запросу.'}
+          </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-1">
