@@ -10,10 +10,12 @@ import {
   createProject,
   deleteAccount,
   importAccounts,
+  listAccount,
   listAccounts,
   listProjects,
   projectUsage,
 } from '@/lib/services/accounts';
+import { splitAccounts } from '@/lib/accounts/rotation';
 import type { SessionUser } from '@/lib/auth/rbac';
 
 /**
@@ -208,6 +210,50 @@ describe('мультиаккаунт: активация и тушение на 
   it('чужой аккаунт не активируется', async () => {
     const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
     expect(await activateAccount(stranger, { id: a, projectId: null, tokens: 1 }, NOW)).toBe(false);
+  });
+});
+
+describe('мультиаккаунт: верхний слот и порядок активированных', () => {
+  it('верхний слот — следующий свободный; после активации его место занимает следующий', async () => {
+    const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+    const b = await createAccount(owner, { title: 'B', email: 'b@example.test', password: 'p' });
+
+    const before = splitAccounts(await listAccounts(owner, NOW), NOW);
+    expect(before.next?.id).toBe(a);
+
+    await activateAccount(owner, { id: a, projectId: null, tokens: 0 }, NOW);
+
+    const after = splitAccounts(await listAccounts(owner, NOW), NOW);
+    // Слот освободился — встал следующий свободный, а активированный ушёл вниз.
+    expect(after.next?.id).toBe(b);
+    expect(after.activated.map((row) => row.id)).toEqual([a]);
+  });
+
+  it('активированные в списке — свежий сверху', async () => {
+    const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+    const b = await createAccount(owner, { title: 'B', email: 'b@example.test', password: 'p' });
+    await activateAccount(owner, { id: a, projectId: null, tokens: 0 }, NOW);
+    await activateAccount(
+      owner,
+      { id: b, projectId: null, tokens: 0 },
+      new Date(NOW.getTime() + 60 * 60 * 1000),
+    );
+
+    const split = splitAccounts(
+      await listAccounts(owner, new Date(NOW.getTime() + 60 * 60 * 1000)),
+      new Date(NOW.getTime() + 60 * 60 * 1000),
+    );
+    // B активирован позже — он выше.
+    expect(split.activated.map((row) => row.id)).toEqual([b, a]);
+  });
+
+  it('один аккаунт по id читается владельцем, чужому — нет (для всплывающего окна)', async () => {
+    const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+    const found = await listAccount(owner, a, NOW);
+    expect(found?.id).toBe(a);
+    expect(found?.email).toBe('a@example.test');
+    expect(await listAccount(stranger, a, NOW)).toBeNull();
+    expect(await listAccount(owner, 999999, NOW)).toBeNull();
   });
 });
 

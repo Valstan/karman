@@ -14,8 +14,17 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { createAccountAction, updateAccountAction } from '@/lib/actions/accounts';
-import type { AccountListItem } from '@/lib/services/accounts';
+import type { AccountListItem, ProjectListItem } from '@/lib/services/accounts';
+
+const NONE = '__none__';
 
 type Values = { title: string; email: string; password: string };
 
@@ -24,13 +33,20 @@ type Values = { title: string; email: string; password: string };
  *
  * Пароль обязателен при СОЗДАНИИ (его потом копируют в сервис, куда владелец
  * входит). При правке пароль можно не трогать — тогда он остаётся прежним.
+ *
+ * При правке можно сменить проект аккаунта (04.11: «может быть, изменить
+ * проект»): это проект, который подставится по умолчанию при следующей
+ * активации. Статистика при этом не переписывается — она живёт в журнале
+ * активаций.
  */
 export function MinimaxFormDialog({
   account,
   trigger,
+  projects,
 }: {
   account?: AccountListItem;
   trigger: ReactNode;
+  projects?: ProjectListItem[];
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -39,10 +55,20 @@ export function MinimaxFormDialog({
     email: account?.email ?? '',
     password: '',
   });
+  const [project, setProject] = useState<string>(
+    account?.projectId === null || account?.projectId === undefined
+      ? NONE
+      : String(account.projectId),
+  );
   const [saving, setSaving] = useState(false);
 
   function reset() {
     setValues({ title: account?.title ?? '', email: account?.email ?? '', password: '' });
+    setProject(
+      account?.projectId === null || account?.projectId === undefined
+        ? NONE
+        : String(account.projectId),
+    );
   }
 
   async function onSubmit() {
@@ -61,7 +87,11 @@ export function MinimaxFormDialog({
       ...(values.password ? { password: values.password } : {}),
     };
     const result = account
-      ? await updateAccountAction({ id: account.id, ...payload })
+      ? await updateAccountAction({
+          id: account.id,
+          ...payload,
+          projectId: project === NONE ? null : Number(project),
+        })
       : await createAccountAction(payload);
     setSaving(false);
     if (!result.ok) {
@@ -119,6 +149,24 @@ export function MinimaxFormDialog({
               onChange={(e) => setValues((v) => ({ ...v, password: e.target.value }))}
             />
           </div>
+          {account && projects && projects.length > 0 ? (
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="account-project">Проект аккаунта</Label>
+              <Select value={project} onValueChange={setProject}>
+                <SelectTrigger id="account-project">
+                  <SelectValue placeholder="Без проекта" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>Без проекта</SelectItem>
+                  {projects.map((p) => (
+                    <SelectItem key={p.id} value={String(p.id)}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
         </div>
         <DialogFooter>
           <Button onClick={onSubmit} disabled={saving}>

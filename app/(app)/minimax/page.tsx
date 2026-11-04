@@ -7,7 +7,6 @@ import {
   projectUsageByDay,
 } from '@/lib/services/accounts';
 import { MinimaxPanel } from '@/components/app/minimax-panel';
-import { MinimaxToolbar } from '@/components/app/minimax-toolbar';
 
 /**
  * «Минимакс» — раздел мультиаккаунта (задача владельца 2026-11-03): аккаунты
@@ -17,12 +16,19 @@ import { MinimaxToolbar } from '@/components/app/minimax-toolbar';
  * действиях; отказ — 404, как у раздела секретов. Второй фактор нужен не на
  * странице, а на ПОКАЗЕ ПАРОЛЯ (он уходит в буфер обмена) — это стоит в
  * действии `revealAccountPasswordAction`.
+ *
+ * Экран перестроен 04.11: две половины — слева кнопки и статистика, справа
+ * аккаунты (см. `components/app/minimax-panel.tsx`).
  */
 export default async function MinimaxPage() {
   const user = await requireUser();
   if (!user.isSuperuser) notFound();
+
+  // Один момент на весь список: иначе «свободен через …» в разных строках
+  // считалось бы по разным часам, а список мог бы разъехаться при гидрации.
+  const now = new Date();
   const [accounts, projects, usage, usageByDay] = await Promise.all([
-    listAccounts(user),
+    listAccounts(user, now),
     listProjects(user),
     projectUsage(user),
     projectUsageByDay(user),
@@ -30,20 +36,13 @@ export default async function MinimaxPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <h1 className="text-2xl font-semibold">Минимакс</h1>
-          <p className="text-sm text-muted-foreground">
-            Аккаунты MiniMax, которыми переключаешься, пока программирует. Копируешь почту или
-            пароль — аккаунт гаснет на 24 часа с момента активации, а активация уходит в
-            статистику выбранного проекта.
-          </p>
-        </div>
-        {user.isSuperuser ? (
-          <div className="shrink-0">
-            <MinimaxToolbar />
-          </div>
-        ) : null}
+      <div className="min-w-0">
+        <h1 className="text-2xl font-semibold">Минимакс</h1>
+        <p className="text-sm text-muted-foreground">
+          Аккаунты MiniMax, которыми переключаешься, пока программирует. Копируешь почту или
+          пароль — аккаунт гаснет на 24 часа с момента активации, а активация уходит в
+          статистику выбранного проекта.
+        </p>
       </div>
 
       <MinimaxPanel
@@ -51,6 +50,7 @@ export default async function MinimaxPage() {
         projects={projects}
         usage={usage}
         usageByDay={usageByDay}
+        serverNow={now.toISOString()}
       />
     </div>
   );

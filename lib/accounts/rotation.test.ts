@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ACTIVATED_PREVIEW_LIMIT,
   ACTIVATION_WINDOW_HOURS,
   ACTIVATION_WINDOW_MS,
   aggregateUsage,
@@ -7,6 +8,7 @@ import {
   isSpent,
   moscowToday,
   sortAccounts,
+  splitAccounts,
   type AccountRotationRow,
 } from '@/lib/accounts/rotation';
 
@@ -112,7 +114,7 @@ describe('мультиаккаунт: порядок списка', () => {
     expect(sorted.map((a) => a.id)).toEqual([2, 1, 3]);
   });
 
-  it('израсходованные внизу, между собой — по давноте', () => {
+  it('израсходованные внизу, между собой — свежий сверху', () => {
     const sorted = sortAccounts(
       [
         row({ id: 1, usedOn: '2026-11-03', usedAt: '2026-11-03T11:00:00Z' }),
@@ -121,7 +123,9 @@ describe('мультиаккаунт: порядок списка', () => {
       ],
       now,
     );
-    expect(sorted.map((a) => a.id)).toEqual([3, 2, 1]);
+    // 04.11: «чем позже активирован, тем выше он находится» — последний
+    // активированный сразу под верхним слотом, а не в конце списка.
+    expect(sorted.map((a) => a.id)).toEqual([3, 1, 2]);
   });
 
   it('исходный массив не мутируется', () => {
@@ -131,6 +135,74 @@ describe('мультиаккаунт: порядок списка', () => {
     ];
     sortAccounts(input, now);
     expect(input.map((a) => a.id)).toEqual([2, 1]);
+  });
+});
+
+describe('мультиаккаунт: разбиение списка на экран', () => {
+  const now = new Date('2026-11-03T12:00:00Z');
+
+  it('верхний слот — один: тот, кто дольше всех не активировался', () => {
+    const split = splitAccounts(
+      [
+        row({ id: 1, usedOn: '2026-11-03', usedAt: '2026-11-03T11:00:00Z' }),
+        row({ id: 2, usedOn: null, usedAt: null }),
+        row({ id: 3, usedOn: null, usedAt: null }),
+      ],
+      now,
+    );
+    // Никогда не активированные идут первыми; между собой — по id.
+    expect(split.next?.id).toBe(2);
+    expect(split.queued.map((a) => a.id)).toEqual([3]);
+    expect(split.activated.map((a) => a.id)).toEqual([1]);
+  });
+
+  it('после активации слота его место занимает следующий свободный', () => {
+    const split = splitAccounts(
+      [
+        row({ id: 1, usedOn: null, usedAt: null }),
+        row({ id: 2, usedOn: null, usedAt: null }),
+        row({ id: 3, usedOn: null, usedAt: null }),
+      ],
+      now,
+    );
+    expect(split.next?.id).toBe(1);
+    // Активировали слот — он уходит в активированные, следующий встаёт наверх.
+    const after = splitAccounts(
+      [
+        row({ id: 1, usedOn: '2026-11-03', usedAt: '2026-11-03T11:00:00Z' }),
+        row({ id: 2, usedOn: null, usedAt: null }),
+        row({ id: 3, usedOn: null, usedAt: null }),
+      ],
+      now,
+    );
+    expect(after.next?.id).toBe(2);
+    expect(after.activated.map((a) => a.id)).toEqual([1]);
+  });
+
+  it('активированные — свежий сверху, по умолчанию показываем 10', () => {
+    const accounts = Array.from({ length: 12 }, (_, i) =>
+      row({
+        id: i + 1,
+        usedOn: '2026-11-03',
+        // Чем больше минута, тем свежее активация.
+        usedAt: new Date(new Date('2026-11-03T09:00:00Z').getTime() + i * 60_000).toISOString(),
+      }),
+    );
+    const split = splitAccounts(accounts, now);
+    expect(split.next).toBeNull();
+    expect(split.activated.length).toBe(12);
+    expect(split.activated[0]!.id).toBe(12);
+    expect(split.activated.slice(0, ACTIVATED_PREVIEW_LIMIT).map((a) => a.id)).toEqual([
+      12, 11, 10, 9, 8, 7, 6, 5, 4, 3,
+    ]);
+    expect(ACTIVATED_PREVIEW_LIMIT).toBe(10);
+  });
+
+  it('пустой список — пустое разбиение', () => {
+    const split = splitAccounts([], now);
+    expect(split.next).toBeNull();
+    expect(split.activated).toEqual([]);
+    expect(split.queued).toEqual([]);
   });
 });
 
