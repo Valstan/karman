@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -62,12 +63,13 @@ export function MinimaxImportDialog({ trigger }: { trigger: ReactNode }) {
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Импорт списка аккаунтов</DialogTitle>
+          <DialogDescription>
+            По одной строке на аккаунт: почта|пароль|название. Название можно не указывать —
+            возьмётся имя ящика.
+          </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-2">
-          <Label htmlFor="minimax-import">
-            По одной строке: почта|пароль|название (название можно не указывать — возьмётся имя
-            ящика)
-          </Label>
+          <Label htmlFor="minimax-import">Список аккаунтов</Label>
           <Textarea
             id="minimax-import"
             rows={10}
