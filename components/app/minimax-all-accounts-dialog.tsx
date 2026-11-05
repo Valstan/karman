@@ -38,6 +38,7 @@ export function MinimaxAllAccountsDialog({
   projects,
   now,
   onCopy,
+  onEdit,
   onDelete,
 }: {
   open: boolean;
@@ -45,7 +46,10 @@ export function MinimaxAllAccountsDialog({
   accounts: AccountListItem[];
   projects: ProjectListItem[];
   now: number | null;
+  /** Копирование — гасить аккаунт больше не входит сюда (заказ 05.11). */
   onCopy: (account: AccountListItem, kind: ActivateKind) => void;
+  /** Правка: раздел перехватывает и спрашивает, что делать с погашенным. */
+  onEdit?: (account: AccountListItem) => void;
   onDelete: (account: AccountListItem) => void | Promise<void>;
 }) {
   const clock = now === null ? new Date() : new Date(now);
@@ -109,7 +113,7 @@ export function MinimaxAllAccountsDialog({
                       <Button
                         variant="outline"
                         size="sm"
-                        title="Скопировать почту (аккаунт погаснет на 24 часа)"
+                        title="Скопировать почту (аккаунт не гаснет)"
                         onClick={() => onCopy(account, 'email')}
                       >
                         <Copy className="h-4 w-4" />
@@ -119,22 +123,28 @@ export function MinimaxAllAccountsDialog({
                       <Button
                         variant="outline"
                         size="sm"
-                        title="Скопировать пароль (аккаунт погаснет на 24 часа)"
+                        title="Скопировать пароль (аккаунт не гаснет)"
                         onClick={() => onCopy(account, 'password')}
                       >
                         <KeyRound className="h-4 w-4" />
                       </Button>
                     </TableCell>
                     <TableCell className="text-right">
-                      <MinimaxFormDialog
-                        account={account}
-                        projects={projects}
-                        trigger={
-                          <Button variant="ghost" size="sm">
-                            Правка
-                          </Button>
-                        }
-                      />
+                      {onEdit ? (
+                        <Button variant="ghost" size="sm" onClick={() => onEdit(account)}>
+                          Правка
+                        </Button>
+                      ) : (
+                        <MinimaxFormDialog
+                          account={account}
+                          projects={projects}
+                          trigger={
+                            <Button variant="ghost" size="sm">
+                              Правка
+                            </Button>
+                          }
+                        />
+                      )}
                     </TableCell>
                     <TableCell className="text-right">
                       <ConfirmDialog

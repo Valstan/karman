@@ -39,18 +39,30 @@ type Values = { title: string; email: string; password: string };
  * проект»): это проект, который подставится по умолчанию при следующей
  * активации. Статистика при этом не переписывается — она живёт в журнале
  * активаций.
+ *
+ * Два режима: С КНОПКОЙ (своя кнопка открывает) и УПРАВЛЯЕМЫЙ (открывает
+ * родитель — так раздел перехватывает правку уже погашенного аккаунта и
+ * сначала спрашивает, что делать: обновить страницу или править).
  */
 export function MinimaxFormDialog({
   account,
   trigger,
   projects,
+  open: openProp,
+  onOpenChange: onOpenChangeProp,
 }: {
   account?: AccountListItem;
-  trigger: ReactNode;
+  /** Кнопка-триггер. В управляемом режиме не нужна. */
+  trigger?: ReactNode;
   projects?: ProjectListItem[];
+  /** Управляемый режим: `undefined` — диалог сам держит открытость. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const router = useRouter();
-  const [open, setOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(false);
+  const controlled = openProp !== undefined;
+  const open = controlled ? openProp : ownOpen;
   const [values, setValues] = useState<Values>({
     title: account?.title ?? '',
     email: account?.email ?? '',
@@ -70,6 +82,12 @@ export function MinimaxFormDialog({
         ? NONE
         : String(account.projectId),
     );
+  }
+
+  function changeOpen(next: boolean) {
+    if (!controlled) setOwnOpen(next);
+    onOpenChangeProp?.(next);
+    if (!next) reset();
   }
 
   async function onSubmit() {
@@ -100,20 +118,14 @@ export function MinimaxFormDialog({
       return;
     }
     toast.success(account ? 'Аккаунт обновлён' : 'Аккаунт добавлен');
-    setOpen(false);
+    changeOpen(false);
     reset();
     router.refresh();
   }
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next);
-        if (!next) reset();
-      }}
-    >
-      <DialogTrigger asChild>{trigger}</DialogTrigger>
+    <Dialog open={open} onOpenChange={changeOpen}>
+      {trigger ? <DialogTrigger asChild>{trigger}</DialogTrigger> : null}
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{account ? 'Аккаунт' : 'Новый аккаунт'}</DialogTitle>

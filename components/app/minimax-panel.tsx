@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { Copy, ExternalLink, KeyRound, LayoutList, Trash2 } from 'lucide-react';
+import { Copy, ExternalLink, KeyRound, LayoutList, Trash2, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Table,
@@ -16,12 +16,15 @@ import {
 import { deleteAccountAction, deleteProjectAction } from '@/lib/actions/accounts';
 import {
   ACTIVATED_PREVIEW_LIMIT,
-  ACTIVATION_WINDOW_MS,
   isSpent,
   splitAccounts,
 } from '@/lib/accounts/rotation';
 import { MinimaxFormDialog } from './minimax-form-dialog';
 import { MinimaxActivateDialog } from './minimax-activate-dialog';
+import {
+  MinimaxAlreadyActivatedDialog,
+  type MinimaxBlockedIntent,
+} from './minimax-already-activated-dialog';
 import { ConfirmDialog } from './confirm-dialog';
 import { MinimaxToolbar } from './minimax-toolbar';
 import { MinimaxAccountRow } from './minimax-account-row';
@@ -32,7 +35,6 @@ import { MinimaxAccountRating } from './minimax-account-rating';
 import { MinimaxActivityChart } from './minimax-activity-chart';
 import {
   copyAccountSecret,
-  publishMinimaxActivated,
   subscribeMinimaxActivated,
   type ActivateKind,
 } from './minimax-activation';
@@ -43,11 +45,13 @@ import { sortProjectsByUsage } from '@/lib/accounts/stats';
 import type { ProjectUsage } from '@/lib/accounts/rotation';
 
 /**
- * «Минимакс» — мультиаккаунт (задача владельца 2026-11-03, экран перестроен 04.11).
+ * «Минимакс» — мультиаккаунт (задача владельца 2026-11-03, экран перестроен 04.11,
+ * правило и статистика изменены 05.11).
  *
- * Правило: КОПИРОВАНИЕ почты или пароля = активация. Аккаунт гаснет на СВОИ
- * 24 ЧАСА с момента активации (04.11) — не до полуночи: каждый аккаунт
- * отсчитывает своё время.
+ * Правило: **копирование почты или пароля НЕ гасит аккаунт** (заказ владельца
+ * 05.11). Гасит только явная кнопка «Активировать». Аккаунт после активации
+ * гаснет на СВОИ 24 ЧАСА от момента активации (04.11) — не до полуночи: каждый
+ * аккаунт отсчитывает своё время.
  *
  * Экран — две половины (04.11). Слева: кнопки (добавить проект, добавить
  * аккаунт, импорт) и статистика — «Расход по проектам», «Суммы по дням»,
@@ -56,8 +60,10 @@ import type { ProjectUsage } from '@/lib/accounts/rotation';
  * ниже активированные — свежий сверху; по умолчанию последние 5, полный список —
  * по кнопке «показать все аккаунты».
  *
- * Проект спрашивается ДО гашения и только ОДИН РАЗ на аккаунт: второе нажатие
- * (другая кнопка) копирует молча, с уже выбранным проектом.
+ * Защита от повторной активации (05.11): страница иногда не обновляется, и
+ * владелец жмёт на уже погашенный аккаунт. Тогда показывается модалка
+ * «Аккаунт уже активирован» с выбором: обновить страницу (тогда сверху встанет
+ * свежий аккаунт), всё равно скопировать / активировать, или открыть правку.
  */
 export function MinimaxPanel({
   accounts,
@@ -92,17 +98,20 @@ export function MinimaxPanel({
     [accounts, clockMs],
   );
 
-  // Активация: сначала диалог с проектом (проект спрашивается ДО гашения),
-  // потом копирование, потом гашение.
-  const [activateTarget, setActivateTarget] = useState<{
-    account: AccountListItem;
-    kind: ActivateKind;
-  } | null>(null);
+  // Активация — только явной кнопкой (заказ владельца 05.11). Копирование
+  // почты или пароля аккаунт больше НЕ гасит.
+  const [activateTarget, setActivateTarget] = useState<AccountListItem | null>(null);
   const [allOpen, setAllOpen] = useState(false);
 
-  // Проект, выбранный для аккаунта в ЭТОЙ вкладке. Живёт ровно окно активации:
-  // следующая сессия (окно истекло) — снова спрашиваем.
-  const pickedRef = useRef<Record<number, { projectId: number | null; at: number }>>({});
+  // Правка аккаунта — диалогом панели, а не внутри строки: на уже активированном
+  // аккаунте сначала показываем предупреждение и спрашиваем, что делать.
+  const [editTarget, setEditTarget] = useState<AccountListItem | null>(null);
+
+  // Аккаунт уже активирован, а владелец нажал копирование / правку / активацию.
+  const [blocked, setBlocked] = useState<{
+    account: AccountListItem;
+    intent: MinimaxBlockedIntent;
+  } | null>(null);
 
   // Всплывающее окно активировало аккаунт — список на вкладке должен устареть.
   useEffect(
@@ -110,56 +119,57 @@ export function MinimaxPanel({
     [router],
   );
 
+  /** Аккаунт погашен (окно 24 ч не истекло)? */
+  function isBlocked(account: AccountListItem): boolean {
+    return isSpent(account, new Date(clockMs));
+  }
+
   /**
-   * Проект для активации: `undefined` — спросить, число — зачесть на проект,
-   * null — без проекта.
-   *
-   * Порядок: сначала выбор, сделанный в этой вкладке (он живёт окно
-   * активации), потом проект уже открытой сессии (значит, он уже выбран),
-   * иначе — спросить.
+   * Показываем предупреждение И обновляем список: страница могла устареть, и
+   * сверху должен встать свежий, неактивированный аккаунт (заказ 05.11).
    */
-  function resolveProject(account: AccountListItem): number | null | undefined {
-    const picked = pickedRef.current[account.id];
-    if (picked && Date.now() - picked.at < ACTIVATION_WINDOW_MS) return picked.projectId;
-    if (isSpent(account, new Date(clockMs))) return account.projectId;
-    return undefined;
+  function block(account: AccountListItem, intent: MinimaxBlockedIntent) {
+    setBlocked({ account, intent });
+    router.refresh();
   }
 
-  function rememberProject(account: AccountListItem, projectId: number | null | undefined) {
-    pickedRef.current[account.id] = {
-      projectId: projectId === undefined ? account.projectId : projectId,
-      at: Date.now(),
-    };
-  }
-
-  /** Копирование (и гашение): с проектом — молча, без проекта — через диалог. */
+  /**
+   * Копирование: НЕ гасит аккаунт (заказ 05.11). На уже погашенном — спросим,
+   * что делать, и перезагрузить ли страницу.
+   */
   function handleCopy(account: AccountListItem, kind: ActivateKind) {
-    const project = resolveProject(account);
-    if (project === undefined) {
-      setActivateTarget({ account, kind });
+    if (isBlocked(account)) {
+      block(account, kind === 'email' ? 'copy-email' : 'copy-password');
       return;
     }
-    void copyAndActivate(account, kind, project);
+    void doCopy(account, kind);
   }
 
-  async function copyAndActivate(
-    account: AccountListItem,
-    kind: ActivateKind,
-    projectId: number | null | undefined,
-  ) {
-    const outcome = await copyAccountSecret(account, kind, projectId);
+  async function doCopy(account: AccountListItem, kind: ActivateKind) {
+    const outcome = await copyAccountSecret(account, kind);
     if (!outcome.ok) {
       toast.error(outcome.error);
       return;
     }
-    rememberProject(account, projectId);
-    toast.success(
-      kind === 'email'
-        ? 'Почта скопирована — аккаунт погаснет на 24 часа'
-        : 'Пароль скопирован — аккаунт погаснет на 24 часа',
-    );
-    publishMinimaxActivated(account.id);
-    router.refresh();
+    toast.success(kind === 'email' ? 'Почта скопирована' : 'Пароль скопирован');
+  }
+
+  /** Правка аккаунта: на погашенном — сначала предупреждение. */
+  function handleEdit(account: AccountListItem) {
+    if (isBlocked(account)) {
+      block(account, 'edit');
+      return;
+    }
+    setEditTarget(account);
+  }
+
+  /** Активация: единственный путь, на котором аккаунт гаснет. */
+  function handleActivate(account: AccountListItem) {
+    if (isBlocked(account)) {
+      block(account, 'activate');
+      return;
+    }
+    setActivateTarget(account);
   }
 
   /**
@@ -172,8 +182,6 @@ export function MinimaxPanel({
    */
   function openWindow(account: AccountListItem) {
     const params = new URLSearchParams({ accountId: String(account.id) });
-    const project = resolveProject(account);
-    if (project !== undefined && project !== null) params.set('projectId', String(project));
     const opened = window.open(
       `/minimax-window?${params.toString()}`,
       'karman-minimax-window',
@@ -328,17 +336,25 @@ export function MinimaxPanel({
                 </div>
                 <div className="flex shrink-0 flex-wrap items-center gap-2">
                   <Button
-                    title="Скопировать почту (аккаунт погаснет на 24 часа)"
+                    title="Скопировать почту (аккаунт не гаснет)"
                     onClick={() => handleCopy(next, 'email')}
                   >
                     <Copy className="mr-1 h-4 w-4" /> Почта
                   </Button>
                   <Button
                     variant="outline"
-                    title="Скопировать пароль (аккаунт погаснет на 24 часа)"
+                    title="Скопировать пароль (аккаунт не гаснет)"
                     onClick={() => handleCopy(next, 'password')}
                   >
                     <KeyRound className="mr-1 h-4 w-4" /> Пароль
+                  </Button>
+                  {/* Активация — единственное, что гасит аккаунт (заказ 05.11). */}
+                  <Button
+                    variant="secondary"
+                    title="Активировать аккаунт: погаснет на 24 часа"
+                    onClick={() => handleActivate(next)}
+                  >
+                    <Zap className="mr-1 h-4 w-4" /> Активировать
                   </Button>
                   <Button
                     variant="outline"
@@ -347,13 +363,9 @@ export function MinimaxPanel({
                   >
                     <ExternalLink className="mr-1 h-4 w-4" /> В окне
                   </Button>
-                  <MinimaxFormDialog
-                    account={next}
-                    projects={orderedProjects}
-                    trigger={
-                      <Button variant="ghost">Правка</Button>
-                    }
-                  />
+                  <Button variant="ghost" onClick={() => handleEdit(next)}>
+                    Правка
+                  </Button>
                   <ConfirmDialog
                     title="Удалить аккаунт?"
                     description={`«${next.title || next.email}» будет удалён вместе с историей активаций.`}
@@ -401,6 +413,7 @@ export function MinimaxPanel({
                   now={now}
                   projects={orderedProjects}
                   onCopy={(kind) => handleCopy(account, kind)}
+                  onEdit={() => handleEdit(account)}
                   onDelete={() => removeAccount(account)}
                   onOpenWindow={() => openWindow(account)}
                 />
@@ -416,18 +429,47 @@ export function MinimaxPanel({
         </div>
       </div>
 
-      {/* Активация: проект спрашивается ДО гашения (04.11) и только один раз. */}
+      {/* Активация: проект и токены спрашиваются ДО гашения (04.11). Копирование
+          аккаунт не гасит — гасит только эта кнопка (заказ 05.11). */}
       <MinimaxActivateDialog
         open={activateTarget !== null}
         onOpenChange={(open) => {
           if (!open) setActivateTarget(null);
         }}
-        account={activateTarget?.account ?? null}
-        kind={activateTarget?.kind ?? 'email'}
+        account={activateTarget}
         projects={orderedProjects}
-        onActivated={(accountId, projectId) => {
-          const account = accounts.find((row) => row.id === accountId);
-          if (account) rememberProject(account, projectId);
+      />
+
+      {/* Правка аккаунта — диалог панели: на погашенном аккаунте сначала
+          предупреждение и вопрос «обновить или править». */}
+      <MinimaxFormDialog
+        account={editTarget ?? undefined}
+        projects={orderedProjects}
+        open={editTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setEditTarget(null);
+        }}
+      />
+
+      {/* «Аккаунт уже активирован»: защита от повторной активации на устаревшей
+          странице (заказ 05.11). */}
+      <MinimaxAlreadyActivatedDialog
+        open={blocked !== null}
+        onOpenChange={(open) => {
+          if (!open) setBlocked(null);
+        }}
+        account={blocked?.account ?? null}
+        intent={blocked?.intent ?? 'copy-email'}
+        now={now}
+        onReload={() => router.refresh()}
+        onCopy={(kind) => {
+          if (blocked) void doCopy(blocked.account, kind);
+        }}
+        onActivate={() => {
+          if (blocked) setActivateTarget(blocked.account);
+        }}
+        onEdit={() => {
+          if (blocked) setEditTarget(blocked.account);
         }}
       />
 
@@ -438,6 +480,7 @@ export function MinimaxPanel({
         projects={orderedProjects}
         now={now}
         onCopy={(account, kind) => handleCopy(account, kind)}
+        onEdit={(account) => handleEdit(account)}
         onDelete={(account) => removeAccount(account)}
       />
     </div>

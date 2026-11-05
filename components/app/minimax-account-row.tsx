@@ -20,6 +20,7 @@ export function MinimaxAccountRow({
   spent,
   now,
   onCopy,
+  onEdit,
   onDelete,
   onOpenWindow,
   projects,
@@ -29,8 +30,10 @@ export function MinimaxAccountRow({
   spent: boolean;
   /** Клиентские часы; null — показываем серверное значение. */
   now: number | null;
-  /** Копирование (и гашение) — с проектом или с диалогом, решает вызывающий. */
+  /** Копирование — гасить аккаунт больше не входит сюда (заказ 05.11). */
   onCopy: (kind: ActivateKind) => void;
+  /** Правка: если задана — вызывает её, иначе открывается свой диалог. */
+  onEdit?: () => void;
   onDelete: () => void | Promise<void>;
   /** Открыть в отдельном окне поверх вкладок. */
   onOpenWindow?: () => void;
@@ -69,7 +72,7 @@ export function MinimaxAccountRow({
         <Button
           variant="outline"
           size="sm"
-          title="Скопировать почту (аккаунт погаснет на 24 часа)"
+          title="Скопировать почту (аккаунт не гаснет)"
           onClick={() => onCopy('email')}
         >
           <Copy className="mr-1 h-4 w-4" /> Почта
@@ -77,7 +80,7 @@ export function MinimaxAccountRow({
         <Button
           variant="outline"
           size="sm"
-          title="Скопировать пароль (аккаунт погаснет на 24 часа)"
+          title="Скопировать пароль (аккаунт не гаснет)"
           onClick={() => onCopy('password')}
         >
           <KeyRound className="mr-1 h-4 w-4" /> Пароль
@@ -92,15 +95,21 @@ export function MinimaxAccountRow({
             <ExternalLink className="mr-1 h-4 w-4" /> В окне
           </Button>
         ) : null}
-        <MinimaxFormDialog
-          account={account}
-          projects={projects}
-          trigger={
-            <Button variant="ghost" size="sm">
-              Правка
-            </Button>
-          }
-        />
+        {onEdit ? (
+          <Button variant="ghost" size="sm" onClick={onEdit}>
+            Правка
+          </Button>
+        ) : (
+          <MinimaxFormDialog
+            account={account}
+            projects={projects}
+            trigger={
+              <Button variant="ghost" size="sm">
+                Правка
+              </Button>
+            }
+          />
+        )}
         <ConfirmDialog
           title="Удалить аккаунт?"
           description={`«${account.title || account.email}» будет удалён вместе с историей активаций.`}

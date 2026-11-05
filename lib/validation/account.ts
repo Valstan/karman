@@ -38,7 +38,7 @@ export const accountUpdateSchema = z.object({
   projectId: z.coerce.number().int().positive().nullable().optional(),
 });
 
-/** Активация аккаунта: копирование почты или пароля гасит его до завтра. */
+/** Активация аккаунта: гасит его до завтра (только явная кнопка «Активировать»). */
 export const accountActivateSchema = z.object({
   id: z.coerce.number().int().positive(),
   /** Проект, на который уходят токены этого аккаунта (может быть не указан). */

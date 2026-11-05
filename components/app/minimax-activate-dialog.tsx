@@ -23,24 +23,20 @@ import {
 } from '@/components/ui/select';
 import { createProjectAction } from '@/lib/actions/accounts';
 import { DEFAULT_ACTIVATION_TOKENS } from '@/lib/accounts/rotation';
-import { copyAccountSecret, type ActivateKind } from './minimax-activation';
+import { activateAccountOnly, publishMinimaxActivated } from './minimax-activation';
 import type { AccountListItem, ProjectListItem } from '@/lib/services/accounts';
 
 const NONE = '__none__';
 
 /**
  * Диалог активации: владелец СПРАШИВАЕТ, по какому проекту активируется
- * аккаунт, — ДО того, как аккаунт погаснет (04.11: «все таки, спрашивал он,
- * сразу, до того, как погасится»).
+ * аккаунт, и сколько на это токенов — и только после этого аккаунт гаснет.
  *
- * Поэтому диалог открывается ДО копирования: сначала ответ, потом буфер
- * обмена, потом активация. Отмена в диалоге не копирует и не гасит.
+ * Заказ владельца 05.11: **гасит аккаунт только явная кнопка «Активировать»**,
+ * копирование почты или пароля больше ничего не меняет. Поэтому диалог вызывается
+ * кнопкой активации, а не копированием, и копирования он не делает.
  *
- * Порядок внутри: сначала копирование, потом активация. Если копирование не
- * удалось — аккаунт не гасим (иначе владелец потерял бы аккаунт зря).
- *
- * Проект по умолчанию — тот, что был при прошлой активации этого аккаунта,
- * чтобы не выбирать его заново каждый раз.
+ * Отмена в диалоге ничего не активирует.
  *
  * Состояние живёт ВНУТРИ содержимого диалога: то содержимое размонтируется при
  * закрытии, поэтому каждое открытие начинается с чистых полей (без сброса
@@ -50,17 +46,12 @@ export function MinimaxActivateDialog({
   open,
   onOpenChange,
   account,
-  kind,
   projects,
-  onActivated,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   account: AccountListItem | null;
-  kind: ActivateKind;
   projects: ProjectListItem[];
-  /** Активация состоялась — раздел запоминает выбранный проект. */
-  onActivated?: (accountId: number, projectId: number | null) => void;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -68,10 +59,8 @@ export function MinimaxActivateDialog({
         <DialogContent>
           <ActivateForm
             account={account}
-            kind={kind}
             projects={projects}
             onOpenChange={onOpenChange}
-            onActivated={onActivated}
           />
         </DialogContent>
       ) : null}
@@ -81,16 +70,12 @@ export function MinimaxActivateDialog({
 
 function ActivateForm({
   account,
-  kind,
   projects,
   onOpenChange,
-  onActivated,
 }: {
   account: AccountListItem;
-  kind: ActivateKind;
   projects: ProjectListItem[];
   onOpenChange: (open: boolean) => void;
-  onActivated?: (accountId: number, projectId: number | null) => void;
 }) {
   const router = useRouter();
   const [project, setProject] = useState<string>(
@@ -106,18 +91,16 @@ function ActivateForm({
       const projectId = project === NONE ? null : Number(project);
       const tokensValue = raw === '' ? undefined : Number(raw);
 
-      const outcome = await copyAccountSecret(account, kind, projectId, tokensValue);
+      const outcome = await activateAccountOnly(account.id, projectId, tokensValue);
       if (!outcome.ok) {
         toast.error(outcome.error);
         return;
       }
 
-      toast.success(
-        kind === 'email'
-          ? 'Почта скопирована — аккаунт погаснет на 24 часа'
-          : 'Пароль скопирован — аккаунт погаснет на 24 часа',
-      );
-      onActivated?.(account.id, projectId);
+      toast.success('Аккаунт активирован — погаснет на 24 часа');
+      // Другие вкладки раздела должны увидеть новое состояние (тот же канал,
+      // что и у плавающего окна).
+      publishMinimaxActivated(account.id);
       onOpenChange(false);
       router.refresh();
     } finally {
@@ -130,8 +113,9 @@ function ActivateForm({
       <DialogHeader>
         <DialogTitle>Активация аккаунта</DialogTitle>
         <DialogDescription>
-          «{account.title || account.email}» — на какой проект зачислить эту активацию? Аккаунт
-          погаснет на 24 часа с момента активации.
+          «{account.title || account.email}» — на какой проект зачесть активацию? Аккаунт
+          погаснет на 24 часа с момента активации. Копирование почты или пароля аккаунт
+          не гасит.
         </DialogDescription>
       </DialogHeader>
       <div className="flex flex-col gap-3">
@@ -171,7 +155,7 @@ function ActivateForm({
           Отмена
         </Button>
         <Button onClick={onSubmit} disabled={busy}>
-          {busy ? 'Сохраняю…' : kind === 'email' ? 'Скопировать почту' : 'Скопировать пароль'}
+          {busy ? 'Активирую…' : 'Активировать'}
         </Button>
       </DialogFooter>
     </>
