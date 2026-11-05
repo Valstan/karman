@@ -309,6 +309,14 @@ export function MinimaxPanel({
                     {next.title || '—'}
                   </button>
                   <div className="font-mono text-sm text-muted-foreground">{next.email}</div>
+                  {/* Сводка по аккаунту (заказ 05.11): верхний слот тоже может быть
+                      не новым — у него есть история активаций. */}
+                  {next.activations > 0 ? (
+                    <div className="text-xs text-muted-foreground">
+                      активаций: {next.activations}
+                      {next.totalTokens > 0 ? ` · токенов всего: ${next.totalTokens}` : ''}
+                    </div>
+                  ) : null}
                 </div>
                 <div className="flex shrink-0 flex-wrap items-center gap-2">
                   <Button
