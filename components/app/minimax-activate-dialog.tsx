@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { createProjectAction } from '@/lib/actions/accounts';
+import { DEFAULT_ACTIVATION_TOKENS } from '@/lib/accounts/rotation';
 import { copyAccountSecret, type ActivateKind } from './minimax-activation';
 import type { AccountListItem, ProjectListItem } from '@/lib/services/accounts';
 
@@ -95,7 +96,7 @@ function ActivateForm({
   const [project, setProject] = useState<string>(
     account.projectId === null ? NONE : String(account.projectId),
   );
-  const [tokens, setTokens] = useState('');
+  const [tokens, setTokens] = useState(String(DEFAULT_ACTIVATION_TOKENS));
   const [busy, setBusy] = useState(false);
 
   async function onSubmit() {
@@ -151,7 +152,9 @@ function ActivateForm({
           </Select>
         </div>
         <div className="flex flex-col gap-1">
-          <Label htmlFor="activate-tokens">Токены за активацию (необязательно)</Label>
+          <Label htmlFor="activate-tokens">
+            Токены за активацию (по умолчанию {DEFAULT_ACTIVATION_TOKENS})
+          </Label>
           <Input
             id="activate-tokens"
             type="number"

@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation';
 import { requireUser } from '@/lib/auth/current-user';
-import { listAccount, listProjects } from '@/lib/services/accounts';
+import { listAccount, listProjects, projectUsage } from '@/lib/services/accounts';
+import { sortProjectsByUsage } from '@/lib/accounts/stats';
 import { MinimaxWindow } from '@/components/app/minimax-window';
 
 /**
@@ -29,11 +30,17 @@ export default async function MinimaxWindowPage({
   const accountId = Number(params.accountId);
   if (!Number.isInteger(accountId) || accountId <= 0) notFound();
 
-  const [account, projects] = await Promise.all([
+  const [account, projects, usage] = await Promise.all([
     listAccount(user, accountId),
     listProjects(user),
+    projectUsage(user),
   ]);
   if (!account) notFound();
+
+  // Проекты в списке выбора — по частоте: самые ходовые наверху (заказ
+  // владельца 05.11). В окне список виден каждую активацию, и искать нужный
+  // проект глазами каждый раз — лишнее.
+  const orderedProjects = sortProjectsByUsage(projects, usage);
 
   // Проект в окне: тот, что уже выбран на вкладке раздела (query), иначе —
   // прошлый проект аккаунта. Так же, как в диалоге на вкладке: молча гасить
@@ -45,7 +52,7 @@ export default async function MinimaxWindowPage({
   return (
     <MinimaxWindow
       account={account}
-      projects={projects}
+      projects={orderedProjects}
       initialProjectId={initialProjectId}
     />
   );

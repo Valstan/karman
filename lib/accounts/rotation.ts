@@ -39,6 +39,16 @@ export const ACTIVATION_WINDOW_MS = ACTIVATION_WINDOW_HOURS * 3_600_000;
  */
 export const ACTIVATED_PREVIEW_LIMIT = 5;
 
+/**
+ * Токены за активацию по умолчанию (заказ владельца 05.11: «обычно 400 токенов
+ * дается, но иногда 1000 — тогда я стеру 400 и напишу 1000»).
+ *
+ * Число подставляется в поле готовым: вводить одно и то же каждый раз не надо.
+ * Пустое поле по-прежнему значит «не меняю» (прошлое значение не затирается) —
+ * обнулить поле можно и руками.
+ */
+export const DEFAULT_ACTIVATION_TOKENS = 400;
+
 /** Московская дата 'YYYY-MM-DD' для момента времени. */
 export function moscowToday(now: Date = new Date()): string {
   return utcToMoscowLocal(now).slice(0, 10);

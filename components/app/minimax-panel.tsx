@@ -39,6 +39,7 @@ import {
 import { useNowTick } from './use-now';
 import type { AccountListItem, ProjectListItem, ProjectUsageDay } from '@/lib/services/accounts';
 import type { AccountRatingRow, DailyUsage } from '@/lib/accounts/stats';
+import { sortProjectsByUsage } from '@/lib/accounts/stats';
 import type { ProjectUsage } from '@/lib/accounts/rotation';
 
 /**
@@ -211,6 +212,13 @@ export function MinimaxPanel({
     [next, queued, activated],
   );
 
+  // Проекты в списках выбора — по частоте: самые ходовые наверху (заказ
+  // владельца 05.11). Сам справочник проектов (чипы внизу) остаётся как был.
+  const orderedProjects = useMemo(
+    () => sortProjectsByUsage(projects, usage),
+    [projects, usage],
+  );
+
   return (
     <div className="flex flex-col gap-6">
       <div className="grid gap-6 lg:grid-cols-2">
@@ -341,7 +349,7 @@ export function MinimaxPanel({
                   </Button>
                   <MinimaxFormDialog
                     account={next}
-                    projects={projects}
+                    projects={orderedProjects}
                     trigger={
                       <Button variant="ghost">Правка</Button>
                     }
@@ -391,7 +399,7 @@ export function MinimaxPanel({
                   account={account}
                   spent
                   now={now}
-                  projects={projects}
+                  projects={orderedProjects}
                   onCopy={(kind) => handleCopy(account, kind)}
                   onDelete={() => removeAccount(account)}
                   onOpenWindow={() => openWindow(account)}
@@ -416,7 +424,7 @@ export function MinimaxPanel({
         }}
         account={activateTarget?.account ?? null}
         kind={activateTarget?.kind ?? 'email'}
-        projects={projects}
+        projects={orderedProjects}
         onActivated={(accountId, projectId) => {
           const account = accounts.find((row) => row.id === accountId);
           if (account) rememberProject(account, projectId);
@@ -427,7 +435,7 @@ export function MinimaxPanel({
         open={allOpen}
         onOpenChange={setAllOpen}
         accounts={allAccounts}
-        projects={projects}
+        projects={orderedProjects}
         now={now}
         onCopy={(account, kind) => handleCopy(account, kind)}
         onDelete={(account) => removeAccount(account)}
