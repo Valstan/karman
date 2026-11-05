@@ -111,8 +111,8 @@ export async function deleteAccountAction(id: number): Promise<ActionResult> {
 
 /**
  * Активация аккаунта: гасит его до завтра, запоминает проект и расход токенов.
- * Вызывается и по кнопке «копировать почту», и по «копировать пароль» —
- * по правилу владельца копирование = активация.
+ * Вызывается ТОЛЬКО явной кнопкой «Активировать» (заказ владельца 05.11):
+ * копирование почты или пароля аккаунт больше не гасит.
  */
 export async function activateAccountAction(values: unknown): Promise<ActionResult> {
   const user = await currentUserOrNull();

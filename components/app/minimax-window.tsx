@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { Copy, KeyRound, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -14,6 +15,10 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { MinimaxCountdown, availableAtFromNow } from './minimax-countdown';
+import {
+  MinimaxAlreadyActivatedDialog,
+  type MinimaxBlockedIntent,
+} from './minimax-already-activated-dialog';
 import { ACTIVATION_WINDOW_MS, DEFAULT_ACTIVATION_TOKENS } from '@/lib/accounts/rotation';
 import {
   activateAccountOnly,
@@ -51,6 +56,7 @@ export function MinimaxWindow({
   initialProjectId: number | null;
 }) {
   const now = useNowTick();
+  const router = useRouter();
   const [project, setProject] = useState<string>(
     initialProjectId === null ? NONE : String(initialProjectId),
   );
@@ -58,33 +64,53 @@ export function MinimaxWindow({
   const [busy, setBusy] = useState(false);
   /** Момент активации в этом окне — для обратного отсчёта. */
   const [activatedAt, setActivatedAt] = useState<number | null>(null);
+  /** Аккаунт уже погашен: что собирались нажать — копирование или активация. */
+  const [blocked, setBlocked] = useState<MinimaxBlockedIntent | null>(null);
 
   const projectId = project === NONE ? null : Number(project);
 
-  async function onCopy(kind: ActivateKind) {
-    setBusy(true);
-    try {
-      const raw = tokens.trim();
-      const outcome = await copyAccountSecret(
-        account,
-        kind,
-        projectId,
-        raw === '' ? undefined : Number(raw),
-      );
-      if (!outcome.ok) {
-        toast.error(outcome.error);
-        return;
-      }
-      setActivatedAt(Date.now());
-      setTokens(String(DEFAULT_ACTIVATION_TOKENS));
-      publishMinimaxActivated(account.id);
-      toast.success(kind === 'email' ? 'Почта скопирована' : 'Пароль скопирован');
-    } finally {
-      setBusy(false);
+  /** Аккаунт уже погашен? Тогда копируем с вопросом, а не молча. */
+  const spent = account.spent;
+
+  function onReload() {
+    // Страница перезагрузится: сервер отдаст свежий список, и владелец увидит
+    // актуальное состояние аккаунта (окно могло истечь, пока окно висело).
+    window.location.reload();
+  }
+
+  async function doCopy(kind: ActivateKind) {
+    const outcome = await copyAccountSecret(account, kind);
+    if (!outcome.ok) {
+      toast.error(outcome.error);
+      return;
     }
+    setActivatedAt(Date.now());
+    setTokens(String(DEFAULT_ACTIVATION_TOKENS));
+    toast.success(kind === 'email' ? 'Почта скопирована' : 'Пароль скопирован');
+  }
+
+  async function onCopy(kind: ActivateKind) {
+    if (spent) {
+      setBlocked(kind === 'email' ? 'copy-email' : 'copy-password');
+      // Страница могла устареть: обновляем, чтобы окно показывало актуальное
+      // состояние аккаунта (заказ 05.11).
+      router.refresh();
+      return;
+    }
+    await doCopy(kind);
   }
 
   async function onActivate() {
+    if (spent) {
+      setBlocked('activate');
+      router.refresh();
+      return;
+    }
+    await activateNow();
+  }
+
+  /** Сама активация — без проверки «погашен ли аккаунт». */
+  async function activateNow() {
     setBusy(true);
     try {
       // Токены из поля идут ВМЕСТЕ с активацией (заказ владельца 05.11): раньше
@@ -179,9 +205,26 @@ export function MinimaxWindow({
       </div>
 
       <p className="text-xs text-muted-foreground">
-        Копирование почты или пароля тоже гасит аккаунт на 24 часа — так устроено
-        правило раздела.
+        Копирование почты или пароля аккаунт <strong>не гасит</strong> — гасит только кнопка
+        «Активировать этот аккаунт». Так владелец сам решает, когда аккаунт занят.
       </p>
+
+      <MinimaxAlreadyActivatedDialog
+        open={blocked !== null}
+        onOpenChange={(open) => {
+          if (!open) setBlocked(null);
+        }}
+        account={account}
+        intent={blocked ?? 'copy-email'}
+        now={now}
+        onReload={onReload}
+        onCopy={(kind) => {
+          void doCopy(kind);
+        }}
+        onActivate={() => {
+          void activateNow();
+        }}
+      />
     </div>
   );
 }

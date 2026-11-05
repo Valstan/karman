@@ -74,8 +74,10 @@ CREATE TABLE IF NOT EXISTS accounts_usage (
 CREATE INDEX IF NOT EXISTS accounts_usage_user_project_idx
   ON accounts_usage (user_id, project_id);
 
--- Одна активация аккаунта на сутки: копирование почты и копирование пароля —
--- одна и та же активация, а не две (иначе статистика по проектам удваивалась бы).
+-- Одна активация аккаунта на сутки: пока окно 24 часа не истекло, повторная
+-- активация — продолжение той же сессии, а не новая (иначе статистика по
+-- проектам удваивалась бы). С 05.11 гасит аккаунт только явная кнопка
+-- «Активировать»; ограничение осталось тем же.
 CREATE UNIQUE INDEX IF NOT EXISTS accounts_usage_account_day_uq
   ON accounts_usage (account_id, used_on);
 
