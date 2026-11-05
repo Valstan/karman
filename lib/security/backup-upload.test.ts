@@ -61,7 +61,16 @@ describe('выгрузка бэкапа: сверка размера не тер
     let out = '';
     let failed = false;
     try {
-      out = execFileSync(bash as string, [HARNESS], { cwd: ROOT, encoding: 'utf8' });
+      // Путь к харнессу — POSIX-relative, от корня репозитория (cwd = ROOT).
+      // Абсолютный путь на Windows приезжает в bash с обратными слэшами, и bash
+      // трактует их как экранирование: `D:\valstan\...` превращается в
+      // `D:valstanREPOkarman...` → «No such file or directory». Относительный
+      // путь одинаков на всех платформах, а харнесс сам находит свою папку по
+      // `dirname -- "$0"` (scripts/tests/backup_upload.test.sh:30).
+      out = execFileSync(bash as string, ['scripts/tests/backup_upload.test.sh'], {
+        cwd: ROOT,
+        encoding: 'utf8',
+      });
     } catch (err) {
       failed = true;
       const e = err as { stdout?: string; stderr?: string };
