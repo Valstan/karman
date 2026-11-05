@@ -193,9 +193,10 @@ describe('мультиаккаунт: разбиение списка на эк�
     expect(split.activated.length).toBe(12);
     expect(split.activated[0]!.id).toBe(12);
     expect(split.activated.slice(0, ACTIVATED_PREVIEW_LIMIT).map((a) => a.id)).toEqual([
-      12, 11, 10, 9, 8, 7, 6, 5, 4, 3,
+      12, 11, 10, 9, 8,
     ]);
-    expect(ACTIVATED_PREVIEW_LIMIT).toBe(10);
+    // Заказ владельца 05.11: «оставим активированных аккаунтов не 10, а 5».
+    expect(ACTIVATED_PREVIEW_LIMIT).toBe(5);
   });
 
   it('пустой список — пустое разбиение', () => {

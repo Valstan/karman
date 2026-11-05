@@ -7,6 +7,12 @@ import { decryptSecret, encryptSecret } from '@/lib/secrets/crypto';
 import { isUniqueViolation } from '@/lib/db/pg-error';
 import { defaultAccountTitle } from '@/lib/accounts/import';
 import {
+  aggregateDailyUsage,
+  rankAccounts,
+  type AccountRatingRow,
+  type DailyUsage,
+} from '@/lib/accounts/stats';
+import {
   ACTIVATION_WINDOW_MS,
   aggregateUsage,
   availableAt,
@@ -47,6 +53,10 @@ export type AccountListItem = AccountRotationRow & {
   availableAt: string | null;
   /** Сколько осталось до освобождения (мс) — для обратного отсчёта в UI. */
   remainingMs: number;
+  /** Сколько сессий активации у аккаунта за всю историю (заказ владельца 05.11). */
+  activations: number;
+  /** Сколько токенов на них ушло суммарно — по всем активациям, не только за последнюю. */
+  totalTokens: number;
 };
 
 export type ProjectListItem = {
@@ -68,24 +78,61 @@ const accountColumns = {
 };
 
 /** Строка списка: аккаунт + состояние окна простоя. */
-function toListItem(row: AccountRotationRow, now: Date): AccountListItem {
+function toListItem(
+  row: AccountRotationRow,
+  now: Date,
+  stats?: { activations: number; tokens: number },
+): AccountListItem {
   const free = availableAt(row.usedAt);
   return {
     ...row,
     spent: isSpent(row, now),
     availableAt: free,
     remainingMs: free ? Math.max(0, new Date(free).getTime() - now.getTime()) : 0,
+    activations: stats?.activations ?? 0,
+    totalTokens: stats?.tokens ?? 0,
   };
+}
+
+/**
+ * Сколько сессий активации у аккаунта и сколько на них токенов — по журналу
+ * `accounts_usage` (заказ владельца 05.11: «сколько раз он был активирован»).
+ *
+ * Считается по журналу, а не по текущему состоянию аккаунта: у аккаунта хранится
+ * только ПОСЛЕДНЯЯ активация, а рейтинг и строка аккаунта нуждаются во всей
+ * истории.
+ */
+async function accountUsageStats(
+  user: SessionUser,
+  accountId?: number,
+): Promise<Map<number, { activations: number; tokens: number }>> {
+  const rows = await db
+    .select({
+      accountId: accountsUsage.accountId,
+      activations: sql<number>`count(*)::int`,
+      tokens: sql<number>`coalesce(sum(${accountsUsage.tokens}), 0)::int`,
+    })
+    .from(accountsUsage)
+    .where(
+      accountId === undefined
+        ? ownership(user, accountsUsage.userId)
+        : and(ownership(user, accountsUsage.userId), eq(accountsUsage.accountId, accountId)),
+    )
+    .groupBy(accountsUsage.accountId);
+  return new Map(rows.map((row) => [row.accountId, { activations: row.activations, tokens: row.tokens }]));
 }
 
 /** Все аккаунты пользователя в порядке «доступные сверху, израсходованные снизу». */
 export async function listAccounts(user: SessionUser, now: Date = new Date()): Promise<AccountListItem[]> {
-  const rows = await db
-    .select(accountColumns)
-    .from(accountsAccount)
-    .leftJoin(accountsProject, eq(accountsAccount.usedProjectId, accountsProject.id))
-    .where(ownership(user, accountsAccount.userId));
-  return sortAccounts(rows, now).map((row) => toListItem(row, now));
+  const [rows, stats] = await Promise.all([
+    db
+      .select(accountColumns)
+      .from(accountsAccount)
+      .leftJoin(accountsProject, eq(accountsAccount.usedProjectId, accountsProject.id))
+      .where(ownership(user, accountsAccount.userId)),
+    accountUsageStats(user),
+  ]);
+  return sortAccounts(rows, now).map((row) => toListItem(row, now, stats.get(row.id)));
 }
 
 /**
@@ -103,7 +150,9 @@ export async function listAccount(
     .leftJoin(accountsProject, eq(accountsAccount.usedProjectId, accountsProject.id))
     .where(and(eq(accountsAccount.id, accountId), ownership(user, accountsAccount.userId)))
     .limit(1);
-  return row ? toListItem(row, now) : null;
+  if (!row) return null;
+  const stats = await accountUsageStats(user, accountId);
+  return toListItem(row, now, stats.get(accountId));
 }
 
 /**
@@ -379,6 +428,50 @@ export async function projectUsageByDay(user: SessionUser): Promise<ProjectUsage
     .groupBy(accountsUsage.projectId, accountsProject.name, accountsUsage.usedOn)
     .orderBy(desc(accountsUsage.usedOn), desc(sql<number>`count(*)`));
   return rows;
+}
+
+/**
+ * Суммы по дням: сколько активаций, сколько разных проектов задействовано и
+ * сколько токенов потрачено (заказ владельца 05.11).
+ *
+ * Считается ЧИСТОЙ функцией `aggregateDailyUsage` по сырым строкам журнала —
+ * ровно той, что покрыта юнит-гейтом `lib/accounts/stats.test.ts`. Считать то
+ * же самое дважды (здесь и в компоненте) нельзя: числа на экране разъедутся с
+ * проверенными.
+ */
+export async function dailyUsage(user: SessionUser): Promise<DailyUsage[]> {
+  const rows = await db
+    .select({
+      usedOn: accountsUsage.usedOn,
+      projectId: accountsUsage.projectId,
+      tokens: accountsUsage.tokens,
+    })
+    .from(accountsUsage)
+    .where(ownership(user, accountsUsage.userId));
+  return aggregateDailyUsage(rows);
+}
+
+/**
+ * Рейтинг аккаунтов: кто активировался чаще всего и сколько на них ушло токенов
+ * (заказ владельца 05.11: «десятка самых популярных аккаунтов»).
+ *
+ * Порядок и отсечение — чистой функцией `rankAccounts`, тем же правилом, что
+ * покрыто юнит-гейтом.
+ */
+export async function accountRating(user: SessionUser, limit = 10): Promise<AccountRatingRow[]> {
+  const rows = await db
+    .select({
+      id: accountsAccount.id,
+      title: accountsAccount.title,
+      email: accountsAccount.email,
+      activations: sql<number>`count(*)::int`,
+      tokens: sql<number>`coalesce(sum(${accountsUsage.tokens}), 0)::int`,
+    })
+    .from(accountsUsage)
+    .innerJoin(accountsAccount, eq(accountsUsage.accountId, accountsAccount.id))
+    .where(ownership(user, accountsUsage.userId))
+    .groupBy(accountsAccount.id, accountsAccount.title, accountsAccount.email);
+  return rankAccounts(rows, limit);
 }
 
 /**

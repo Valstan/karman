@@ -2,7 +2,7 @@
 
 import { Copy, ExternalLink, KeyRound, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { MinimaxCountdown } from './minimax-countdown';
+import { MinimaxCountdown, formatAvailableAt } from './minimax-countdown';
 import { MinimaxFormDialog } from './minimax-form-dialog';
 import { ConfirmDialog } from './confirm-dialog';
 import type { ActivateKind } from './minimax-activation';
@@ -53,8 +53,17 @@ export function MinimaxAccountRow({
               remainingMs={account.remainingMs}
               now={now}
             />
+            {account.availableAt ? ` · освободится ${formatAvailableAt(account.availableAt)}` : ''}
           </div>
         ) : null}
+        {/* Заказ владельца 05.11: по аккаунту — на какой проект он активирован,
+            сколько токенов ушло и сколько раз его брали. */}
+        <div className="text-xs text-muted-foreground">
+          {account.projectName ? `проект: ${account.projectName} · ` : 'без проекта · '}
+          {account.lastTokens > 0 ? `токенов за активацию: ${account.lastTokens} · ` : ''}
+          активаций: {account.activations}
+          {account.totalTokens > 0 ? ` · токенов всего: ${account.totalTokens}` : ''}
+        </div>
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-1">
         <Button

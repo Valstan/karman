@@ -5,9 +5,11 @@ import { createTestDb, type TestDb } from '@/lib/db/test-db';
 import { accountsAccount, accountsUsage, authUser } from '@/lib/db/schema';
 import {
   accountPassword,
+  accountRating,
   activateAccount,
   createAccount,
   createProject,
+  dailyUsage,
   deleteAccount,
   importAccounts,
   listAccount,
@@ -327,5 +329,101 @@ describe('мультиаккаунт: проекты и статистика', (
       activations: 2,
       tokens: 350,
     });
+  });
+});
+
+/**
+ * Статистика по дням и рейтинг аккаунтов (заказ владельца 05.11).
+ *
+ * Считается по журналу активаций: у аккаунта хранится только последняя
+ * активация, а владельцу нужно «сколько раз он был активирован» и «сколько
+ * токенов на него ушло» — за всю историю.
+ */
+describe('мультиаккаунт: свод по дням и рейтинг', () => {
+  it('в строке аккаунта видно число активаций и сумму токенов за всю историю', async () => {
+    const projectId = await createProject(owner, { name: 'Матрица РМЗ' });
+    const id = await createAccount(owner, {
+      title: 'A',
+      email: 'rating@example.test',
+      password: 'p',
+    });
+    // Две разные сессии: окно 24 ч между ними истекло.
+    await activateAccount(owner, { id, projectId, tokens: 100 }, LONG_AGO);
+    await activateAccount(owner, { id, projectId, tokens: 250 }, NOW);
+
+    const list = await listAccounts(owner, NOW);
+    const row = list.find((r) => r.id === id)!;
+    expect(row.activations).toBe(2);
+    expect(row.totalTokens).toBe(350);
+    // За последнюю активацию — свои 250 (поле «токены за активацию»).
+    expect(row.lastTokens).toBe(250);
+    expect(row.projectName).toBe('Матрица РМЗ');
+  });
+
+  it('свод по дням: активации, задействованные проекты и токены', async () => {
+    const p1 = await createProject(owner, { name: 'Матрица РМЗ' });
+    const p2 = await createProject(owner, { name: 'Сабантуй' });
+    const a = await createAccount(owner, { title: 'A', email: 'day-a@example.test', password: 'p' });
+    const b = await createAccount(owner, { title: 'B', email: 'day-b@example.test', password: 'p' });
+    await activateAccount(owner, { id: a, projectId: p1, tokens: 100 }, LONG_AGO);
+    await activateAccount(owner, { id: b, projectId: p2, tokens: 700 }, NOW);
+    await activateAccount(owner, { id: a, projectId: p1, tokens: 250 }, NOW);
+
+    const daily = await dailyUsage(owner);
+    // Свежий день сверху.
+    expect(daily[0]).toEqual({
+      usedOn: '2026-11-03',
+      activations: 2,
+      projects: 2,
+      tokens: 950,
+    });
+    expect(daily[1]).toEqual({
+      usedOn: '2026-11-02',
+      activations: 1,
+      projects: 1,
+      tokens: 100,
+    });
+  });
+
+  it('рейтинг: чаще активируемый аккаунт выше, и он ограничен десяткой', async () => {
+    const projectId = await createProject(owner, { name: 'Матрица РМЗ' });
+    const busy = await createAccount(owner, {
+      title: 'Занятой',
+      email: 'busy@example.test',
+      password: 'p',
+    });
+    const quiet = await createAccount(owner, {
+      title: 'Тихий',
+      email: 'quiet@example.test',
+      password: 'p',
+    });
+    await activateAccount(owner, { id: busy, projectId, tokens: 10 }, LONG_AGO);
+    await activateAccount(owner, { id: busy, projectId, tokens: 20 }, NOW);
+    await activateAccount(owner, { id: quiet, projectId, tokens: 5 }, NOW);
+
+    const rating = await accountRating(owner);
+    expect(rating[0]!.id).toBe(busy);
+    expect(rating[0]!.activations).toBe(2);
+    expect(rating[0]!.tokens).toBe(30);
+    expect(rating[1]!.id).toBe(quiet);
+    expect(rating[1]!.activations).toBe(1);
+
+    // Десятка — верхний срез: активируем ОДИН аккаунт одиннадцать раз. Порядок
+    // важен: активации идут ХРОНОЛОГИЧЕСКИ (от самой старой к самой новой) —
+    // иначе вторая «назад по времени» попадает в ещё открытое окно первой и
+    // считается продолжением той же сессии.
+    const many = await createAccount(owner, {
+      title: 'Одиннадцать',
+      email: 'many@example.test',
+      password: 'p',
+    });
+    for (let day = 11; day >= 1; day -= 1) {
+      const at = new Date(NOW.getTime() - day * 25 * 60 * 60 * 1000);
+      await activateAccount(owner, { id: many, projectId, tokens: 1 }, at);
+    }
+    const limited = await accountRating(owner, 3);
+    expect(limited).toHaveLength(3);
+    expect(limited[0]!.id).toBe(many);
+    expect(limited[0]!.activations).toBe(11);
   });
 });
