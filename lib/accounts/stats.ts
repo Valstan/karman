@@ -144,3 +144,46 @@ function byDateDesc(a: DailyUsage, b: DailyUsage): number {
   if (a.usedOn === b.usedOn) return 0;
   return a.usedOn < b.usedOn ? 1 : -1;
 }
+
+/** Проект для выпадающего списка: id и название. */
+export type ProjectChoice = { id: number; name: string };
+
+/** Сколько раз проект попал в активации (по журналу). */
+export type ProjectUsageCount = {
+  projectId: number | null;
+  activations: number;
+  tokens: number;
+};
+
+/**
+ * Проекты в порядке «чаще всего используемые сверху» (заказ владельца 05.11):
+ * в списке выбора проекта самые ходовые должны быть наверху — иначе каждый раз
+ * приходится искать нужный глазами.
+ *
+ * Порядок: число активаций (как часто берут), при равенстве — токены (куда уходит
+ * больше), потом название — чтобы список не прыгал между прогонами.
+ *
+ * Проект без единой активации уходит вниз (нули), «Без проекта» в список не
+ * входит вовсе — его владелец ставит первым вручную.
+ */
+export function sortProjectsByUsage<T extends ProjectChoice>(
+  projects: T[],
+  usage: ProjectUsageCount[],
+): T[] {
+  const counts = new Map<number, { activations: number; tokens: number }>();
+  for (const row of usage) {
+    if (row.projectId === null) continue;
+    counts.set(row.projectId, { activations: row.activations, tokens: row.tokens });
+  }
+  return [...projects].sort((a, b) => {
+    const left = counts.get(a.id);
+    const right = counts.get(b.id);
+    const leftActivations = left?.activations ?? 0;
+    const rightActivations = right?.activations ?? 0;
+    if (leftActivations !== rightActivations) return rightActivations - leftActivations;
+    const leftTokens = left?.tokens ?? 0;
+    const rightTokens = right?.tokens ?? 0;
+    if (leftTokens !== rightTokens) return rightTokens - leftTokens;
+    return a.name.localeCompare(b.name);
+  });
+}

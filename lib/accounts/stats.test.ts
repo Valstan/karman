@@ -5,6 +5,7 @@ import {
   rankAccounts,
   shiftDate,
   sortDailyUsage,
+  sortProjectsByUsage,
   type AccountRatingRow,
 } from './stats';
 
@@ -157,5 +158,47 @@ describe('календарный сдвиг даты', () => {
   it('переносит через февраль високосного года', () => {
     expect(shiftDate('2028-02-28', 1)).toBe('2028-02-29');
     expect(shiftDate('2028-02-29', 1)).toBe('2028-03-01');
+  });
+});
+
+describe('порядок проектов в списке выбора', () => {
+  const projects = [
+    { id: 1, name: 'Матрица РМЗ' },
+    { id: 2, name: 'Сабантуй' },
+    { id: 3, name: 'Казанская' },
+    { id: 4, name: 'Новый' },
+  ];
+
+  it('чаще используемые — сверху', () => {
+    const sorted = sortProjectsByUsage(projects, [
+      { projectId: 3, activations: 9, tokens: 100 },
+      { projectId: 1, activations: 4, tokens: 900 },
+      { projectId: 2, activations: 4, tokens: 50 },
+    ]);
+    expect(sorted.map((p) => p.id)).toEqual([3, 1, 2, 4]);
+  });
+
+  it('при равном числе активаций решают токены', () => {
+    const sorted = sortProjectsByUsage(projects, [
+      { projectId: 2, activations: 4, tokens: 50 },
+      { projectId: 1, activations: 4, tokens: 900 },
+    ]);
+    expect(sorted.map((p) => p.id)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('проект без активаций уходит вниз, а «без проекта» в список не попадает', () => {
+    const sorted = sortProjectsByUsage(projects, [
+      { projectId: null, activations: 100, tokens: 1000 },
+    ]);
+    // Ни у кого активаций нет — порядок по названию: Казанская, Матрица РМЗ,
+    // Новый, Сабантуй.
+    expect(sorted.map((p) => p.id)).toEqual([3, 1, 4, 2]);
+    expect(sorted.map((p) => p.id)).not.toContain(null);
+  });
+
+  it('исходный массив не трогается', () => {
+    const copy = [...projects];
+    sortProjectsByUsage(projects, [{ projectId: 3, activations: 9, tokens: 100 }]);
+    expect(projects).toEqual(copy);
   });
 });

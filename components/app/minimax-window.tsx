@@ -14,7 +14,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { MinimaxCountdown, availableAtFromNow } from './minimax-countdown';
-import { ACTIVATION_WINDOW_MS } from '@/lib/accounts/rotation';
+import { ACTIVATION_WINDOW_MS, DEFAULT_ACTIVATION_TOKENS } from '@/lib/accounts/rotation';
 import {
   activateAccountOnly,
   copyAccountSecret,
@@ -54,7 +54,7 @@ export function MinimaxWindow({
   const [project, setProject] = useState<string>(
     initialProjectId === null ? NONE : String(initialProjectId),
   );
-  const [tokens, setTokens] = useState('');
+  const [tokens, setTokens] = useState(String(DEFAULT_ACTIVATION_TOKENS));
   const [busy, setBusy] = useState(false);
   /** Момент активации в этом окне — для обратного отсчёта. */
   const [activatedAt, setActivatedAt] = useState<number | null>(null);
@@ -76,7 +76,7 @@ export function MinimaxWindow({
         return;
       }
       setActivatedAt(Date.now());
-      setTokens('');
+      setTokens(String(DEFAULT_ACTIVATION_TOKENS));
       publishMinimaxActivated(account.id);
       toast.success(kind === 'email' ? 'Почта скопирована' : 'Пароль скопирован');
     } finally {
@@ -149,7 +149,9 @@ export function MinimaxWindow({
       </div>
 
       <div className="flex flex-col gap-1">
-        <Label htmlFor="window-tokens">Токены за активацию (необязательно)</Label>
+        <Label htmlFor="window-tokens">
+          Токены за активацию (по умолчанию {DEFAULT_ACTIVATION_TOKENS})
+        </Label>
         <Input
           id="window-tokens"
           type="number"
