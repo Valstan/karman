@@ -1,6 +1,8 @@
 import { notFound } from 'next/navigation';
 import { requireUser } from '@/lib/auth/current-user';
 import {
+  accountRating,
+  dailyUsage,
   listAccounts,
   listProjects,
   projectUsage,
@@ -27,11 +29,13 @@ export default async function MinimaxPage() {
   // Один момент на весь список: иначе «свободен через …» в разных строках
   // считалось бы по разным часам, а список мог бы разъехаться при гидрации.
   const now = new Date();
-  const [accounts, projects, usage, usageByDay] = await Promise.all([
+  const [accounts, projects, usage, usageByDay, daily, rating] = await Promise.all([
     listAccounts(user, now),
     listProjects(user),
     projectUsage(user),
     projectUsageByDay(user),
+    dailyUsage(user),
+    accountRating(user),
   ]);
 
   return (
@@ -50,6 +54,8 @@ export default async function MinimaxPage() {
         projects={projects}
         usage={usage}
         usageByDay={usageByDay}
+        daily={daily}
+        rating={rating}
         serverNow={now.toISOString()}
       />
     </div>

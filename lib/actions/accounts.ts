@@ -8,9 +8,11 @@ import {
 } from '@/lib/validation/account';
 import {
   accountPassword,
+  accountRating,
   activateAccount,
   createAccount,
   createProject,
+  dailyUsage,
   deleteAccount,
   deleteProject,
   importAccounts,
@@ -38,18 +40,22 @@ export async function listAccountsAction(): Promise<
     projects: Awaited<ReturnType<typeof listProjects>>;
     usage: Awaited<ReturnType<typeof projectUsage>>;
     usageByDay: Awaited<ReturnType<typeof projectUsageByDay>>;
+    daily: Awaited<ReturnType<typeof dailyUsage>>;
+    rating: Awaited<ReturnType<typeof accountRating>>;
   }>
 > {
   const user = await currentUserOrNull();
   if (!user) return { ok: false, error: 'Требуется авторизация' };
   if (!user.isSuperuser) return { ok: false, error: 'Раздел доступен только владельцу' };
-  const [accounts, projects, usage, usageByDay] = await Promise.all([
+  const [accounts, projects, usage, usageByDay, daily, rating] = await Promise.all([
     listAccounts(user),
     listProjects(user),
     projectUsage(user),
     projectUsageByDay(user),
+    dailyUsage(user),
+    accountRating(user),
   ]);
-  return { ok: true, data: { accounts, projects, usage, usageByDay } };
+  return { ok: true, data: { accounts, projects, usage, usageByDay, daily, rating } };
 }
 
 export async function createAccountAction(values: unknown): Promise<ActionResult<{ id: number }>> {

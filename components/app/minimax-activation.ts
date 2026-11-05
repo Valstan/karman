@@ -51,12 +51,18 @@ export async function copyAccountSecret(
 /**
  * Погасить аккаунт без копирования — кнопка «Активировать этот аккаунт» в
  * плавающем окне: секрет в буфер не уходит, активация уходит в статистику.
+ *
+ * Токены — обязательный третий аргумент (заказ владельца 05.11): поле «Токены за
+ * активацию» в окне до этого молча терялось, потому что активация уходила без
+ * них. Теперь число доезжает до журнала и статистики, а `undefined` означает
+ * «не меняю» (пустое поле не затирает прошлое значение).
  */
 export async function activateAccountOnly(
   accountId: number,
   projectId: number | null | undefined,
+  tokens?: number,
 ): Promise<ActivationOutcome> {
-  const activated = await activateAccountAction({ id: accountId, projectId });
+  const activated = await activateAccountAction({ id: accountId, projectId, tokens });
   if (!activated.ok) return { ok: false, error: activated.error };
   return { ok: true };
 }

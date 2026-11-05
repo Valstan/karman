@@ -26,6 +26,10 @@ import { ConfirmDialog } from './confirm-dialog';
 import { MinimaxToolbar } from './minimax-toolbar';
 import { MinimaxAccountRow } from './minimax-account-row';
 import { MinimaxAllAccountsDialog } from './minimax-all-accounts-dialog';
+import { MinimaxActivationsByDay } from './minimax-activations-by-day';
+import { MinimaxDailySums } from './minimax-daily-sums';
+import { MinimaxAccountRating } from './minimax-account-rating';
+import { MinimaxActivityChart } from './minimax-activity-chart';
 import {
   copyAccountSecret,
   publishMinimaxActivated,
@@ -34,6 +38,7 @@ import {
 } from './minimax-activation';
 import { useNowTick } from './use-now';
 import type { AccountListItem, ProjectListItem, ProjectUsageDay } from '@/lib/services/accounts';
+import type { AccountRatingRow, DailyUsage } from '@/lib/accounts/stats';
 import type { ProjectUsage } from '@/lib/accounts/rotation';
 
 /**
@@ -44,10 +49,11 @@ import type { ProjectUsage } from '@/lib/accounts/rotation';
  * отсчитывает своё время.
  *
  * Экран — две половины (04.11). Слева: кнопки (добавить проект, добавить
- * аккаунт, импорт) и статистика — «Расход по проектам» сверху, «Активации по
- * дням» ниже. Справа — сами аккаунты: наверху ОДИН следующий (тот, что дольше
- * всех не активировался), ниже активированные — свежий сверху; по умолчанию
- * последние 10, полный список — по кнопке «показать все аккаунты».
+ * аккаунт, импорт) и статистика — «Расход по проектам», «Суммы по дням»,
+ * «Активации по дням», рейтинг аккаунтов и график активности. Справа — сами
+ * аккаунты: наверху ОДИН следующий (тот, что дольше всех не активировался),
+ * ниже активированные — свежий сверху; по умолчанию последние 5, полный список —
+ * по кнопке «показать все аккаунты».
  *
  * Проект спрашивается ДО гашения и только ОДИН РАЗ на аккаунт: второе нажатие
  * (другая кнопка) копирует молча, с уже выбранным проектом.
@@ -57,12 +63,18 @@ export function MinimaxPanel({
   projects,
   usage,
   usageByDay,
+  daily,
+  rating,
   serverNow,
 }: {
   accounts: AccountListItem[];
   projects: ProjectListItem[];
   usage: ProjectUsage[];
   usageByDay: ProjectUsageDay[];
+  /** Суммы по дням: активации, задействованные проекты, токены (заказ 05.11). */
+  daily: DailyUsage[];
+  /** Рейтинг аккаунтов: кто активировался чаще всего (заказ 05.11). */
+  rating: AccountRatingRow[];
   /** Момент, на котором сервер посчитал список (ISO) — для гидрации. */
   serverNow: string;
 }) {
@@ -237,36 +249,17 @@ export function MinimaxPanel({
             </Table>
           </div>
 
-          <div className="rounded-md border">
-            <div className="p-4 pb-2">
-              <h2 className="text-lg font-semibold">Активации по дням</h2>
-            </div>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>День</TableHead>
-                  <TableHead>Проект</TableHead>
-                  <TableHead className="text-right">Активаций</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {usageByDay.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={3} className="text-center text-muted-foreground">
-                      Пока ни одной активации.
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-                {usageByDay.map((row) => (
-                  <TableRow key={`${row.usedOn}-${row.projectId ?? 'none'}`}>
-                    <TableCell>{row.usedOn}</TableCell>
-                    <TableCell>{row.projectName ?? 'Без проекта'}</TableCell>
-                    <TableCell className="text-right">{row.activations}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+          {/* Суммы по дням: активации, проекты, токены (заказ владельца 05.11). */}
+          <MinimaxDailySums days={daily} serverNow={serverNow} />
+
+          {/* Активации по дням: последние 3 дня по умолчанию, вся история — по кнопке. */}
+          <MinimaxActivationsByDay rows={usageByDay} />
+
+          {/* Рейтинг: кто аккаунтов активировал чаще всего (заказ владельца 05.11). */}
+          <MinimaxAccountRating rows={rating} />
+
+          {/* Кривая активности за 90 дней (заказ владельца 05.11). */}
+          <MinimaxActivityChart days={daily} serverNow={serverNow} />
 
           {/* Проекты: справочник названий. */}
           <div className="rounded-md border p-4">
@@ -370,7 +363,7 @@ export function MinimaxPanel({
             )}
           </div>
 
-          {/* Активированные: свежий сверху, по умолчанию последние 10. */}
+          {/* Активированные: свежий сверху, по умолчанию последние 5 (заказ 05.11). */}
           <div className="rounded-md border">
             <div className="flex flex-wrap items-center justify-between gap-2 p-4 pb-2">
               <h2 className="text-lg font-semibold">Активированные</h2>

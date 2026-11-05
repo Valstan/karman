@@ -87,7 +87,15 @@ export function MinimaxWindow({
   async function onActivate() {
     setBusy(true);
     try {
-      const outcome = await activateAccountOnly(account.id, projectId);
+      // Токены из поля идут ВМЕСТЕ с активацией (заказ владельца 05.11): раньше
+      // кнопка «Активировать этот аккаунт» уходила в сервер без них, и введённое
+      // число молча пропадало — не в аккаунте, не в журнале, не в статистике.
+      const raw = tokens.trim();
+      const outcome = await activateAccountOnly(
+        account.id,
+        projectId,
+        raw === '' ? undefined : Number(raw),
+      );
       if (!outcome.ok) {
         toast.error(outcome.error);
         return;
@@ -108,6 +116,10 @@ export function MinimaxWindow({
         </h1>
         <div className="text-lg font-semibold leading-tight">{account.title || '—'}</div>
         <div className="font-mono text-sm text-muted-foreground">{account.email}</div>
+        <div className="mt-0.5 text-xs text-muted-foreground">
+          активаций: {account.activations} · токенов за всё время: {account.totalTokens}
+          {account.projectName ? ` · проект: ${account.projectName}` : ''}
+        </div>
         {activatedAt !== null ? (
           <div className="mt-1 text-xs text-muted-foreground">
             <MinimaxCountdown
