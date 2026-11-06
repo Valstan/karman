@@ -16,6 +16,7 @@ import {
 import { deleteAccountAction, deleteProjectAction } from '@/lib/actions/accounts';
 import {
   ACTIVATED_PREVIEW_LIMIT,
+  accountPoolSummary,
   isSpent,
   splitAccounts,
 } from '@/lib/accounts/rotation';
@@ -95,6 +96,14 @@ export function MinimaxPanel({
   // Верхний слот — один следующий аккаунт; ниже — активированные, свежий сверху.
   const { next, activated, queued } = useMemo(
     () => splitAccounts(accounts, new Date(clockMs)),
+    [accounts, clockMs],
+  );
+
+  // Короткая сводка по запасу (заказ владельца 06.11): сколько аккаунтов
+  // свободно сейчас и сколько освободится в ближайшие полчаса. Считается по
+  // окнам (у каждого аккаунта своё время), а не по календарю.
+  const pool = useMemo(
+    () => accountPoolSummary(accounts, new Date(clockMs)),
     [accounts, clockMs],
   );
 
@@ -308,6 +317,12 @@ export function MinimaxPanel({
 
         {/* ПРАВАЯ ПОЛОВИНА: аккаунты. */}
         <div className="flex flex-col gap-4">
+          {/* Сводка по запасу — одна строка над верхним слотом (заказ владельца
+              06.11): «Свободных - N, Скоро освободятся - M». */}
+          <div className="text-sm font-medium text-muted-foreground">
+            Свободных - {pool.free}, Скоро освободятся - {pool.soon}
+          </div>
+
           {/* Верхний слот: ОДИН следующий аккаунт. */}
           <div className="rounded-md border border-emerald-500/50 bg-emerald-500/10 p-4">
             {next ? (
