@@ -2,12 +2,22 @@ import 'server-only';
 
 import { and, asc, desc, eq, isNotNull, isNull, lt, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
-import { authUser, prompt } from '@/lib/db/schema';
+import { authUser, prompt, promptProject } from '@/lib/db/schema';
 import { ownership, type SessionUser } from '@/lib/auth/rbac';
 import { derivePromptTitle, normalizePromptText } from '@/lib/prompts/normalize';
-import type { PromptItem, PromptProjectSummary, PromptSource } from '@/lib/prompts/types';
+import type {
+  PromptItem,
+  PromptProjectSummary,
+  PromptSection,
+  PromptSource,
+} from '@/lib/prompts/types';
 
-export type { PromptItem, PromptProjectSummary, PromptSource } from '@/lib/prompts/types';
+export type {
+  PromptItem,
+  PromptProjectSummary,
+  PromptSection,
+  PromptSource,
+} from '@/lib/prompts/types';
 
 /**
  * Библиотека промтов (заказ владельца 2026-11-06).
@@ -61,8 +71,9 @@ export async function listPrompts(
 /**
  * Сводка по разделам: сколько живых промтов в каждом проекте.
  *
- * Нужна странице, чтобы показать «сколько накопилось» рядом с разделом и
- * не дать владельцу искать нужный проект перебором.
+ * Устаревшая форма: считала по промтам, а не по реестру разделов, поэтому
+ * заранее заведённый пустой раздел в неё не попадал. Осталась для сценариев,
+ * где нужен именно счётчик по промтам.
  */
 export async function summarizePromptProjects(user: SessionUser): Promise<PromptProjectSummary[]> {
   const rows = await db
@@ -75,6 +86,126 @@ export async function summarizePromptProjects(user: SessionUser): Promise<Prompt
     .groupBy(prompt.project)
     .orderBy(asc(sql`lower(${prompt.project})`));
   return rows.map((row) => ({ project: row.project, count: row.count }));
+}
+
+/**
+ * Разделы библиотеки: реестр разделов + счётчик промтов в указанном состоянии.
+ *
+ * Источник списка — реестр (`prompt_project`), а не «разные значения project среди
+ * промтов»: пустой раздел должен существовать и быть виден, чтобы все разделы
+ * экосистемы можно было завести заранее (заказ владельца 2026-11-06).
+ *
+ * Условие состояния — в ON джойна, а не в WHERE: в WHERE оно превратило бы
+ * LEFT JOIN в INNER и выкинуло бы разделы без промтов в этом состоянии — то
+ * есть ровно те, которые заведены заранее.
+ */
+export async function listPromptSections(
+  user: SessionUser,
+  options: { archived: boolean },
+): Promise<PromptSection[]> {
+  const state = options.archived ? isNotNull(prompt.archivedAt) : isNull(prompt.archivedAt);
+  const rows = await db
+    .select({
+      name: promptProject.name,
+      count: sql<number>`count(${prompt.id})::int`,
+    })
+    .from(promptProject)
+    .leftJoin(
+      prompt,
+      and(
+        eq(prompt.userId, promptProject.userId),
+        eq(prompt.project, promptProject.name),
+        state,
+      ),
+    )
+    .where(ownership(user, promptProject.userId))
+    .groupBy(promptProject.name)
+    .orderBy(asc(sql`lower(${promptProject.name})`));
+  return rows.map((row) => ({ name: row.name, count: row.count }));
+}
+
+/**
+ * Завести раздел, если его ещё нет (идемпотентно).
+ *
+ * Вызывается при записи промта: раздел появляется сам, даже если его не было в
+ * реестре (например, первый промт приехал раньше, чем приехал канон).
+ */
+export async function ensurePromptProject(user: SessionUser, name: string): Promise<void> {
+  const clean = name.trim();
+  if (!clean || clean.length > 64) return;
+  await db
+    .insert(promptProject)
+    .values({ userId: user.id, name: clean })
+    .onConflictDoNothing();
+}
+
+/**
+ * Синхронизировать список разделов с каноном экосистемы (машинный канал Мозга).
+ *
+ * Только ДОБАВЛЕНИЕ: чужие разделы не трогаются и не пропадают — канон может
+ * прийти неполным, и стирать то, что завёл человек, нельзя. Переименование —
+ * отдельной операцией (`renamePromptProject`).
+ */
+export async function syncPromptProjects(user: SessionUser, names: string[]): Promise<number> {
+  const clean = [
+    ...new Set(
+      names
+        .map((name) => name.trim())
+        .filter((name) => name.length > 0 && name.length <= 64),
+    ),
+  ];
+  if (clean.length === 0) return 0;
+  const rows = await db
+    .insert(promptProject)
+    .values(clean.map((name) => ({ userId: user.id, name })))
+    .onConflictDoNothing()
+    .returning({ id: promptProject.id });
+  return rows.length;
+}
+
+/**
+ * Переименовать раздел — и сам раздел, и его промты.
+ *
+ * Если раздел с новым именем уже есть, раздел сливается с ним: промты
+ * переезжают, старый раздел исчезает. Иначе переименовывается на месте.
+ */
+export async function renamePromptProject(
+  user: SessionUser,
+  from: string,
+  to: string,
+): Promise<boolean> {
+  const target = to.trim();
+  if (!target || target.length > 64 || target === from) return false;
+  const [section] = await db
+    .select({ id: promptProject.id })
+    .from(promptProject)
+    .where(and(eq(promptProject.userId, user.id), eq(promptProject.name, from)))
+    .limit(1);
+  if (!section) return false;
+
+  const [existing] = await db
+    .select({ id: promptProject.id })
+    .from(promptProject)
+    .where(and(eq(promptProject.userId, user.id), eq(promptProject.name, target)))
+    .limit(1);
+
+  await db
+    .update(prompt)
+    .set({ project: target })
+    .where(and(eq(prompt.userId, user.id), eq(prompt.project, from)));
+
+  if (existing) {
+    // Слияние: целевой раздел уже есть — старый убираем, промты живут в целевом.
+    await db
+      .delete(promptProject)
+      .where(and(eq(promptProject.userId, user.id), eq(promptProject.name, from)));
+  } else {
+    await db
+      .update(promptProject)
+      .set({ name: target })
+      .where(and(eq(promptProject.userId, user.id), eq(promptProject.name, from)));
+  }
+  return true;
 }
 
 /**
@@ -91,6 +222,7 @@ export async function createPrompt(
 ): Promise<PromptItem> {
   const body = normalizePromptText(input.body);
   const title = input.title?.trim() ? input.title.trim() : derivePromptTitle(body);
+  await ensurePromptProject(user, input.project);
   const [row] = await db
     .insert(prompt)
     .values({

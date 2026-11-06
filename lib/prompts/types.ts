@@ -26,3 +26,13 @@ export type PromptProjectSummary = {
   project: string;
   count: number;
 };
+
+/**
+ * Раздел библиотеки: каноническое имя + число промтов в текущем состоянии
+ * (живых или архивных). Раздел живёт в реестре, а не «посчитан» из промтов, —
+ * поэтому бывают разделы, в которых пока ноль промтов.
+ */
+export type PromptSection = {
+  name: string;
+  count: number;
+};
