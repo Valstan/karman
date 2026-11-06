@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createBrainMapCache,
   fetchBrainMap,
+  fetchBrainMapManifest,
   makeGithubFetcher,
   parseTabsManifest,
   type BrainMap,
@@ -63,6 +64,7 @@ describe('fetchBrainMap — манифест, потом файлы вкладо
     expect(calls[0]).toBe('tabs.json');
     expect(map.tabs.map((t) => t.markdown)).toEqual(['# Планы\n', '# Серверы\n']);
     expect(map.updated).toBe('2026-09-12');
+    expect(map.contentIncluded).toBe(true);
   });
 
   it('makeGithubFetcher: raw-accept, bearer, в ошибке нет тела ответа', async () => {
@@ -79,8 +81,40 @@ describe('fetchBrainMap — манифест, потом файлы вкладо
   });
 });
 
+/**
+ * Манифест без содержимого — то, что читает НЕ владелец карты (заказ владельца
+ * 2026-11-06: карта проектов «только мне», кнопки вкладок видны всем).
+ */
+describe('fetchBrainMapManifest — список вкладок без содержимого', () => {
+  it('читает только tabs.json: файлы вкладок с GitHub не тянутся', async () => {
+    const calls: string[] = [];
+    const map = await fetchBrainMapManifest(async (f) => {
+      calls.push(f);
+      if (f === 'tabs.json') return JSON.stringify(manifest);
+      throw new Error(`файл вкладки не должен читаться: ${f}`);
+    });
+    expect(calls).toEqual(['tabs.json']);
+    expect(map.tabs.map((t) => t.slug)).toEqual(['plans', 'servers']);
+    expect(map.tabs.map((t) => t.title)).toEqual(['Планы', 'Серверы']);
+    expect(map.contentIncluded).toBe(false);
+  });
+
+  it('содержимое вкладок пустое — чужим аккаунтам показывать нечего', async () => {
+    const map = await fetchBrainMapManifest(async (f) =>
+      f === 'tabs.json' ? JSON.stringify(manifest) : '# секрет\n',
+    );
+    expect(map.tabs.every((t) => t.markdown === '')).toBe(true);
+  });
+
+  it('битый манифест — ошибка текстом, как и у полной версии', async () => {
+    await expect(
+      fetchBrainMapManifest(async () => '{ not json'),
+    ).rejects.toThrow(/tabs\.json не разбирается/);
+  });
+});
+
 function fakeMap(updated: string): BrainMap {
-  return { updated, source: '', tabs: [], fetchedAt: new Date() };
+  return { updated, source: '', tabs: [], fetchedAt: new Date(), contentIncluded: true };
 }
 
 describe('createBrainMapCache — 10 минут, последняя удачная версия при сбое', () => {

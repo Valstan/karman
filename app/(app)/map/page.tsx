@@ -21,6 +21,12 @@ import { PromptsPanel } from '@/components/app/prompts-panel';
  * D-090, 12.09). Активная вкладка — в URL (`/map?tab=plans`), чтобы ссылку можно было
  * прислать владельцу. Страница не публичная: в тексте хосты и порты.
  *
+ * ГРАНИЦА ВИДИМОСТИ (заказ владельца 2026-11-06): карта — ЛИЧНАЯ страница
+ * владельца. Кнопки вкладок видны всем (разделы и кнопки — общие), а содержимое
+ * (планы, серверы, ферма, дела, телефон) — только владельцу: не владелец видит
+ * вместо вкладки заглушку, и файлы вкладок с GitHub для него вообще не
+ * читаются. Вкладка «Промты» — отдельная, своя у каждого аккаунта.
+ *
  * Вкладка «Промты» — из другой породы: её содержимое лежит в БД КАРМАНА, а не в
  * репозитории Мозга (промт надо копировать в буфер и архивировать, а писать в
  * репозиторий Мозга из приложения нечем — токен только на чтение). Поэтому она
@@ -35,7 +41,12 @@ export default async function MapPage({
   searchParams: Promise<{ tab?: string | string[]; view?: string | string[] }>;
 }) {
   const user = await requireUser();
-  const [result, params] = await Promise.all([loadBrainMap(), searchParams]);
+  const isOwner = user.isSuperuser;
+  const [result, params] = await Promise.all([
+    // Не владелец получает только манифест: список вкладок без содержимого.
+    loadBrainMap({ includeContent: isOwner }),
+    searchParams,
+  ]);
   const requested = typeof params.tab === 'string' ? params.tab : '';
   const view = typeof params.view === 'string' && params.view === 'archive' ? 'archive' : 'active';
 
@@ -46,7 +57,8 @@ export default async function MapPage({
   ];
 
   // Промты — из БД, поэтому эта ветка идёт ПЕРЕД проверками GitHub: библиотека
-  // должна открываться и тогда, когда репозиторий Мозга не читается.
+  // должна открываться и тогда, когда репозиторий Мозга не читается. И она
+  // доступна КАЖДОМУ: у каждого аккаунта своя библиотека.
   if (requested === PROMPTS_TAB) {
     const [prompts, projects, archivedCount] = await Promise.all([
       listPrompts(user, { archived: view === 'archive' }),
@@ -71,6 +83,34 @@ export default async function MapPage({
           view={view}
           archivedCount={archivedCount}
         />
+      </Shell>
+    );
+  }
+
+  // Не владелец: кнопки вкладок на месте, содержимого нет — оно личное.
+  if (!isOwner) {
+    return (
+      <Shell
+        subtitle={
+          <>
+            Карта проектов — личная страница владельца. Ваши промты лежат во вкладке
+            «Промты».
+          </>
+        }
+      >
+        <nav className="flex flex-wrap gap-1 border-b" aria-label="Вкладки карты">
+          <MapNav tabs={tabs} active={requested || PROMPTS_TAB} />
+        </nav>
+        <section className="rounded-b-md rounded-tr-md border border-t-0 bg-card p-4 sm:p-6">
+          <Alert>
+            <AlertTitle>Этот раздел доступен только владельцу</AlertTitle>
+            <AlertDescription>
+              Содержимое карты — планы, серверы, ферма, дела и телефон — личные данные
+              владельца, и другим аккаунтам оно не показывается. Свои промты смотрите во
+              вкладке «Промты».
+            </AlertDescription>
+          </Alert>
+        </section>
       </Shell>
     );
   }
