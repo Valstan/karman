@@ -90,7 +90,7 @@ export function MinimaxActivityChart({
             size="sm"
             onClick={() => setMetric('tokens')}
           >
-            Токены
+            Очки
           </Button>
         </div>
       </div>
@@ -99,7 +99,7 @@ export function MinimaxActivityChart({
           viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
           className="h-48 w-full"
           role="img"
-          aria-label={`Активность по дням: ${metric === 'activations' ? 'активации' : 'токены'}`}
+          aria-label={`Активность по дням: ${metric === 'activations' ? 'активации' : 'очки'}`}
         >
           {/* Сетка: ноль, половина, максимум. */}
           {[0, 0.5, 1].map((part) => {
@@ -138,7 +138,7 @@ export function MinimaxActivityChart({
               className="fill-primary"
             >
               <title>
-                {point.day.usedOn}: активаций {point.day.activations}, токенов {point.day.tokens}
+                {point.day.usedOn}: активаций {point.day.activations}, очков {point.day.tokens}
               </title>
             </circle>
           ))}

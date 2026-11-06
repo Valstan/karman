@@ -78,7 +78,7 @@ export function MinimaxPanel({
   projects: ProjectListItem[];
   usage: ProjectUsage[];
   usageByDay: ProjectUsageDay[];
-  /** Суммы по дням: активации, задействованные проекты, токены (заказ 05.11). */
+  /** Суммы по дням: активации, задействованные проекты, очки (заказ 05.11). */
   daily: DailyUsage[];
   /** Рейтинг аккаунтов: кто активировался чаще всего (заказ 05.11). */
   rating: AccountRatingRow[];
@@ -243,7 +243,7 @@ export function MinimaxPanel({
                 <TableRow>
                   <TableHead>Проект</TableHead>
                   <TableHead className="text-right">Активаций</TableHead>
-                  <TableHead className="text-right">Токенов</TableHead>
+                  <TableHead className="text-right">Очков</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -265,7 +265,7 @@ export function MinimaxPanel({
             </Table>
           </div>
 
-          {/* Суммы по дням: активации, проекты, токены (заказ владельца 05.11). */}
+          {/* Суммы по дням: активации, проекты, очки (заказ владельца 05.11). */}
           <MinimaxDailySums days={daily} serverNow={serverNow} />
 
           {/* Активации по дням: последние 3 дня по умолчанию, вся история — по кнопке. */}
@@ -330,7 +330,7 @@ export function MinimaxPanel({
                   {next.activations > 0 ? (
                     <div className="text-xs text-muted-foreground">
                       активаций: {next.activations}
-                      {next.totalTokens > 0 ? ` · токенов всего: ${next.totalTokens}` : ''}
+                      {next.totalTokens > 0 ? ` · очков всего: ${next.totalTokens}` : ''}
                     </div>
                   ) : null}
                 </div>
@@ -429,7 +429,7 @@ export function MinimaxPanel({
         </div>
       </div>
 
-      {/* Активация: проект и токены спрашиваются ДО гашения (04.11). Копирование
+      {/* Активация: проект и очки спрашиваются ДО гашения (04.11). Копирование
           аккаунт не гасит — гасит только эта кнопка (заказ 05.11). */}
       <MinimaxActivateDialog
         open={activateTarget !== null}

@@ -142,8 +142,31 @@ describe('мультиаккаунт: активация и тушение на 
 
     const rows = await refs.current!.select().from(accountsUsage);
     expect(rows.length).toBe(1);
-    // Токены не затираются повторной активацией без нового значения.
+    // Очки не затираются повторной активацией без нового значения.
     expect(rows[0]!.tokens).toBe(500);
+  });
+
+  it('окно 24 ч длиннее московских суток: за день — не более одной активации', async () => {
+    const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+    // 05:50 по Москве.
+    const morning = new Date('2026-11-03T02:50:00Z');
+    await activateAccount(owner, { id: a, projectId: null, tokens: 400 }, morning);
+    // 23:55 по Москве — тот же московский день, и окно ещё открыто.
+    await activateAccount(owner, { id: a, projectId: null, tokens: 400 }, new Date('2026-11-03T20:55:00Z'));
+
+    // Одна строка журнала на московские сутки — на этом стоит уникальный
+    // индекс (account_id, used_on): окно длиннее суток гарантирует, что
+    // вторая сессия того же дня невозможна.
+    const rows = await refs.current!.select().from(accountsUsage);
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.usedOn).toBe('2026-11-03');
+
+    // И окно не сдвинулось: окно открывает первая активация.
+    const [row] = await refs.current!
+      .select()
+      .from(accountsAccount)
+      .where(eq(accountsAccount.id, a));
+    expect(new Date(row!.usedAt!).getTime()).toBe(morning.getTime());
   });
 
   it('активация с проеклем записывает проект в строку и в журнал', async () => {
