@@ -927,3 +927,31 @@ export const accountsUsage = pgTable('accounts_usage', {
 export type AccountsProjectRow = typeof accountsProject.$inferSelect;
 export type AccountsAccountRow = typeof accountsAccount.$inferSelect;
 export type AccountsUsageRow = typeof accountsUsage.$inferSelect;
+
+// --- Промты (заказ владельца 2026-11-06) -------------------------------------
+// Библиотерия промтов, разложенных по проектам: Мозг раскладывает
+// надиктованное по разделам, владелец копирует промт в буфер и уходит с ним
+// в нейронку. Архив — НЕ удаление: строка остаётся с проставленным
+// archived_at (история, обучение), чистится вручную из интерфейса.
+// Схема — миграция 0025_prompts.sql.
+
+export const prompt = pgTable('prompt', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  /** Название проекта — это раздел списка (из реестра Мозга, projects/INDEX.md). */
+  project: varchar('project', { length: 64 }).notNull(),
+  /** Короткое имя для списка; пусто — берётся первая строка промта. */
+  title: varchar('title', { length: 200 }).notNull().default(''),
+  /** Текст промта — ровно то, что уходит в буфер обмена и дальше в нейронку. */
+  body: text('body').notNull(),
+  /** 'manual' — человек в интерфейсе, 'brain' — Мозг по команде владельца. */
+  source: varchar('source', { length: 16 })
+    .notNull()
+    .$type<'manual' | 'brain'>()
+    .default('manual'),
+  /** Когда промт создан — показывается в списке. */
+  createdAt: tstz('created_at').notNull().defaultNow(),
+  /** Проставлен при «В архив»; строка при этом остаётся в таблице. */
+  archivedAt: tstz('archived_at'),
+});
+
+export type PromptRow = typeof prompt.$inferSelect;

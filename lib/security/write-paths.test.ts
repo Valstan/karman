@@ -182,11 +182,11 @@ describe('таблица путей записи (docs/write-paths.md) опис�
     const writes = handlers.filter((h) => (WRITE_METHODS as readonly string[]).includes(h.method));
     const actions = modules.flatMap((m) => m.exports);
 
-    expect(routes.length, 'роутов').toBe(24);
-    expect(handlers.length, 'обработчиков').toBe(33);
-    expect(writes.length, 'пишущих обработчиков').toBe(19);
-    expect(modules.length, 'модулей действий').toBe(16);
-    expect(actions.length, 'действий').toBe(78);
+    expect(routes.length, 'роутов').toBe(25);
+    expect(handlers.length, 'обработчиков').toBe(35);
+    expect(writes.length, 'пишущих обработчиков').toBe(20);
+    expect(modules.length, 'модулей действий').toBe(17);
+    expect(actions.length, 'действий').toBe(83);
 
     // Числа в prose документа — не украшение: следующий аудит ссылается на них.
     // Форма слова «файл» склоняется (21 файл, 23 файла), поэтому счёт роутов
@@ -261,6 +261,7 @@ describe('HTTP-роуты: у пишущих обработчиков есть �
     'bearerToken',
     'checkInternalBearer',
     'checkHotlineBearer',
+    'checkPromptsBearer',
     'checkProvisionKey',
     'grantsGate',
     'getCurrentUser',

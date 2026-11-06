@@ -156,6 +156,12 @@ echo "backup_vault: pg_dump vault-таблиц…"
 # берём: журнал срабатываний — растущий лог воркера, а не состояние; включить
 # его — решение владельца отдельным пунктом (запарковано в PENDING).
 #
+# 2026-11-06: добавлена `prompt` (миграция 0025, библиотека промтов по
+# проектам) — по прямому заказу владельца: промты сохраняются «на будущее,
+# мало ли где пригодится — для обучения или для истории». Текст промтов —
+# рабочий контекст владельца и его разработчиков, поэтому в бэкапе он лежит
+# вместе с остальным содержимым: gpg-слой архива здесь тот же, что у vault.
+#
 # BACKUP_EXCLUDES — таблицы схемы, сознательно НЕ попадающие в дамп. Формат
 # `таблица|причина`, по одной на строку. Не украшение: список читает гейт
 # `lib/security/backup-tables.test.ts`, который падает, если в схеме есть
@@ -188,6 +194,7 @@ pg_dump "$PG_DSN_NOPASS" --no-owner --no-privileges \
   -t family_person -t family_relation \
   -t hotline_message -t hotline_presence \
   -t accounts_account -t accounts_project -t accounts_usage \
+  -t prompt \
   > "$WORK/vault.sql"
 
 # --- 2. Частота: снимок media/ — раз в неделю --------------------------------
@@ -241,7 +248,7 @@ write_manifest() {
 KARMAN vault backup
 created_utc: ${STAMP}
 kind: ${kind}
-includes: vault.sql (secrets_*/passport_*/auth_oidc_identity/auth_totp/auth_recovery_code/auth_audit/person_profile/documents_*/document_field/document_file/circle*/family_*/hotline_*), media.tar.gz
+includes: vault.sql (secrets_*/passport_*/auth_oidc_identity/auth_totp/auth_recovery_code/auth_audit/person_profile/documents_*/document_field/document_file/circle*/family_*/hotline_*/accounts_*/prompt), media.tar.gz
 excludes: credits_* (кредиты и платежи — восстановимы из выписок банка)
 excludes: SECRETS_MASTER_KEY (корень доверия — хранится у владельца отдельно, pool #008)
 excludes: passport_jwks_cache (кеш чужих публичных ключей — восстанавливается фетчем)
