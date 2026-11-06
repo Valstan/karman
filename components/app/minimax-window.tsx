@@ -113,7 +113,7 @@ export function MinimaxWindow({
   async function activateNow() {
     setBusy(true);
     try {
-      // Токены из поля идут ВМЕСТЕ с активацией (заказ владельца 05.11): раньше
+      // Очки из поля идут ВМЕСТЕ с активацией (заказ владельца 05.11): раньше
       // кнопка «Активировать этот аккаунт» уходила в сервер без них, и введённое
       // число молча пропадало — не в аккаунте, не в журнале, не в статистике.
       const raw = tokens.trim();
@@ -143,7 +143,7 @@ export function MinimaxWindow({
         <div className="text-lg font-semibold leading-tight">{account.title || '—'}</div>
         <div className="font-mono text-sm text-muted-foreground">{account.email}</div>
         <div className="mt-0.5 text-xs text-muted-foreground">
-          активаций: {account.activations} · токенов за всё время: {account.totalTokens}
+          активаций: {account.activations} · очков за всё время: {account.totalTokens}
           {account.projectName ? ` · проект: ${account.projectName}` : ''}
         </div>
         {activatedAt !== null ? (
@@ -176,7 +176,7 @@ export function MinimaxWindow({
 
       <div className="flex flex-col gap-1">
         <Label htmlFor="window-tokens">
-          Токены за активацию (по умолчанию {DEFAULT_ACTIVATION_TOKENS})
+          Очки за активацию (по умолчанию {DEFAULT_ACTIVATION_TOKENS})
         </Label>
         <Input
           id="window-tokens"

@@ -60,12 +60,12 @@ export function MinimaxAccountRow({
           </div>
         ) : null}
         {/* Заказ владельца 05.11: по аккаунту — на какой проект он активирован,
-            сколько токенов ушло и сколько раз его брали. */}
+            сколько очков ушло и сколько раз его брали. */}
         <div className="text-xs text-muted-foreground">
           {account.projectName ? `проект: ${account.projectName} · ` : 'без проекта · '}
-          {account.lastTokens > 0 ? `токенов за активацию: ${account.lastTokens} · ` : ''}
+          {account.lastTokens > 0 ? `очков за активацию: ${account.lastTokens} · ` : ''}
           активаций: {account.activations}
-          {account.totalTokens > 0 ? ` · токенов всего: ${account.totalTokens}` : ''}
+          {account.totalTokens > 0 ? ` · очков всего: ${account.totalTokens}` : ''}
         </div>
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-1">
