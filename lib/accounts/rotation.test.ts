@@ -3,6 +3,8 @@ import {
   ACTIVATED_PREVIEW_LIMIT,
   ACTIVATION_WINDOW_HOURS,
   ACTIVATION_WINDOW_MS,
+  SOON_RELEASE_WINDOW_MS,
+  accountPoolSummary,
   aggregateUsage,
   availableAt,
   isSpent,
@@ -66,6 +68,42 @@ describe('мультиаккаунт: окно активации — 24 час�
   it('availableAt — момент освобождения аккаунта', () => {
     expect(availableAt('2026-11-03T10:00:00Z')).toBe('2026-11-04T10:00:00.000Z');
     expect(availableAt(null)).toBeNull();
+  });
+});
+
+describe('мультиаккаунт: сводка по запасу (заказ владельца 06.11)', () => {
+  const now = new Date('2026-11-03T12:00:00Z');
+
+  it('свободные сейчас и освобождающиеся в ближайшие полчаса', () => {
+    const summary = accountPoolSummary(
+      [
+        // Никогда не активированный — свободен.
+        row({ id: 1 }),
+        // Окно истекло — свободен.
+        row({ id: 2, usedOn: '2026-11-01', usedAt: '2026-11-01T06:00:00Z' }),
+        // Освободится через 10 минут.
+        row({ id: 3, usedOn: '2026-11-02', usedAt: '2026-11-02T12:10:00Z' }),
+        // Освободится через 5 часов — это уже не «скоро».
+        row({ id: 4, usedOn: '2026-11-02', usedAt: '2026-11-02T17:00:00Z' }),
+      ],
+      now,
+    );
+    expect(summary).toEqual({ free: 2, soon: 1 });
+  });
+
+  it('полчаса — граница «скоро»', () => {
+    expect(SOON_RELEASE_WINDOW_MS).toBe(30 * 60 * 1000);
+    // Ровно за полчаса до освобождения — ещё «скоро».
+    const usedAt = '2026-11-02T11:30:00Z';
+    const summary = accountPoolSummary(
+      [row({ id: 1, usedOn: '2026-11-02', usedAt })],
+      new Date(new Date(usedAt).getTime() + ACTIVATION_WINDOW_MS - SOON_RELEASE_WINDOW_MS),
+    );
+    expect(summary).toEqual({ free: 0, soon: 1 });
+  });
+
+  it('пустой список — ноль и ноль', () => {
+    expect(accountPoolSummary([], now)).toEqual({ free: 0, soon: 0 });
   });
 });
 

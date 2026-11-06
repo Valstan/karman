@@ -86,6 +86,39 @@ export function isSpent(account: { usedAt: string | null }, now: Date = new Date
   return new Date(account.usedAt).getTime() + ACTIVATION_WINDOW_MS > now.getTime();
 }
 
+/**
+ * «Скоро освободятся» — окно в полчаса (заказ владельца 06.11: «сколько
+ * аккаунтов скоро освободятся, в ближайшие полчата»).
+ */
+export const SOON_RELEASE_WINDOW_MS = 30 * 60_000;
+
+/**
+ * Короткая сводка по запасу аккаунтов: сколько свободно сейчас и сколько
+ * освободится в ближайшие полчаса (заказ владельца 06.11).
+ *
+ * Считается по окнам, а не по датам: у каждого аккаунта своё время
+ * освобождения, поэтому «скоро» — это про остаток окна, а не про календарь.
+ *
+ * `free` — все живые аккаунты, которыми можно взять прямо сейчас, включая
+ * предложенный в верхнем слоте (тот самый тоже свободен).
+ */
+export function accountPoolSummary(
+  accounts: AccountRotationRow[],
+  now: Date = new Date(),
+): { free: number; soon: number } {
+  let free = 0;
+  let soon = 0;
+  for (const account of accounts) {
+    if (!isSpent(account, now)) {
+      free += 1;
+      continue;
+    }
+    const releasesAt = new Date(account.usedAt!).getTime() + ACTIVATION_WINDOW_MS;
+    if (releasesAt - now.getTime() <= SOON_RELEASE_WINDOW_MS) soon += 1;
+  }
+  return { free, soon };
+}
+
 /** Состояние аккаунта в том виде, в котором его видит список. */
 export type AccountRotationRow = {
   id: number;
