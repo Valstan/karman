@@ -46,6 +46,15 @@ export type BrainMap = {
   tabs: MapTab[];
   /** Когда эта версия была успешно прочитана с GitHub. */
   fetchedAt: Date;
+  /**
+   * false — вкладки перечислены, но их содержимое НЕ читалось.
+   *
+   * Так карта отдаётся не владельцу: названия вкладок видны всем (кнопки и
+   * разделы — общие, как просил владелец 06.11), а содержимое — хосты, порты,
+   * планы, дела — только владельцу. Заодно содержимое вообще не вытаскивается
+   * с GitHub для тех, кому оно не положено.
+   */
+  contentIncluded: boolean;
 };
 
 export type BrainMapResult =
@@ -118,7 +127,38 @@ export async function fetchBrainMap(
       markdown: await fetchRaw(tab.file),
     })),
   );
-  return { updated: manifest.updated, source: manifest.source, tabs, fetchedAt: now() };
+  return {
+    updated: manifest.updated,
+    source: manifest.source,
+    tabs,
+    fetchedAt: now(),
+    contentIncluded: true,
+  };
+}
+
+/**
+ * Чтение ТОЛЬКО манифеста: список вкладок без их содержимого.
+ *
+ * Для тех, кому карта принадлежит не целиком: названия вкладок (кнопки) видны
+ * всем, содержимое — только владельцу. Файлы вкладок при этом с GitHub НЕ
+ * тянутся: там хосты и порты, и незачем их держать в памяти процесса для
+ * того, кому они не показываются.
+ */
+export async function fetchBrainMapManifest(
+  fetchRaw: RawFetcher,
+  now: () => Date = () => new Date(),
+): Promise<BrainMap> {
+  const manifestRaw = await fetchRaw('tabs.json');
+  const parsed = parseTabsManifest(manifestRaw);
+  if (!parsed.ok) throw new Error(parsed.message);
+  const { manifest } = parsed;
+  return {
+    updated: manifest.updated,
+    source: manifest.source,
+    tabs: manifest.tabs.map((tab) => ({ slug: tab.slug, title: tab.title, markdown: '' })),
+    fetchedAt: now(),
+    contentIncluded: false,
+  };
 }
 
 type CacheState = {
@@ -189,6 +229,18 @@ type GlobalWithCache = typeof globalThis & {
   [globalKey]?: ReturnType<typeof createBrainMapCache>;
 };
 
+/**
+ * Отдельный кэш для манифеста — без содержимого вкладок.
+ *
+ * Отдельный не изяществом, а необходимостью: полная версия и манифест — разные
+ * данные, и общий кэш отдавал бы тому, кому положен только список, содержимое
+ * (или наоборот — пустые вкладки владельцу).
+ */
+const manifestGlobalKey = Symbol.for('karman.brainMapManifestCache');
+type GlobalWithManifestCache = typeof globalThis & {
+  [manifestGlobalKey]?: ReturnType<typeof createBrainMapCache>;
+};
+
 function getCache() {
   const g = globalThis as GlobalWithCache;
   if (!g[globalKey]) {
@@ -203,7 +255,33 @@ function getCache() {
   return g[globalKey];
 }
 
-export async function loadBrainMap(opts: { force?: boolean } = {}): Promise<BrainMapResult> {
+function getManifestCache() {
+  const g = globalThis as GlobalWithManifestCache;
+  if (!g[manifestGlobalKey]) {
+    g[manifestGlobalKey] = createBrainMapCache({
+      fetchMap: () => {
+        const token = process.env.BRAIN_MAP_GITHUB_TOKEN;
+        if (!token) throw new Error('BRAIN_MAP_GITHUB_TOKEN не задан');
+        return fetchBrainMapManifest(makeGithubFetcher(token));
+      },
+    });
+  }
+  return g[manifestGlobalKey];
+}
+
+/**
+ * Карта проектов.
+ *
+ * `includeContent: false` — только манифест (список вкладок), без содержимого.
+ * Так её читает НЕ владелец: кнопки вкладок видны всем, содержимое — только
+ * владельцу (заказ владельца 2026-11-06: карта проектов «только мне»).
+ */
+export async function loadBrainMap(
+  opts: { force?: boolean; includeContent?: boolean } = {},
+): Promise<BrainMapResult> {
   if (!process.env.BRAIN_MAP_GITHUB_TOKEN) return { status: 'unconfigured' };
+  if (opts.includeContent === false) {
+    return getManifestCache().load(opts.force ?? false);
+  }
   return getCache().load(opts.force ?? false);
 }
