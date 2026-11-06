@@ -19,32 +19,32 @@ import {
   purgeArchivedPromptsAction,
   restorePromptAction,
 } from '@/lib/actions/prompts';
-import type { PromptItem, PromptProjectSummary } from '@/lib/prompts/types';
+import type { PromptItem, PromptSection } from '@/lib/prompts/types';
 
 /**
  * Промты (заказ владельца 2026-11-06).
  *
- * Разделы — по проектам; внутри раздела промты свежие сверху. У каждого
- * промта две кнопки: «Копировать» (в буфер — дальше в нейронку) и «В архив»
- * (убрать из живого списка, но НЕ удалить: строка остаётся с датой архивации).
+ * Экран поделён пополам: слева — разделы (проекты) и названия промтов, справа —
+ * весь выбранный промт целиком. Текст в списке не показывается: названия
+ * достаточно, чтобы выбрать, а весь текст нужен в одном месте.
  *
- * Архив — отдельный вид того же списка: там промт можно вернуть в живые или
- * удалить насовсем, а сверху — «Очистить архив», потому что архив имеет
- * свойство разрастаться, а удалять его руками по одной — не работа.
+ * Прокрутка у колонок СВОЯ: листая правую, левая остаётся на месте — видно,
+ * какой промт открыт и где ты в списке. Поэтому у колонок ограниченная высота
+ * и `overflow-y-auto` на каждой, а не общая прокрутка страницы.
  *
- * Библиотека ЛИЧНАЯ: список уже отфильтрован по владельцу на сервере, и кнопки
- * правят только СВОИ промты. Поэтому гейта «только суперпользователь» здесь
- * нет: каждый вошедший управляет своей библиотекой, а чужие промты закрыты
- * `ownership()` в сервисе.
+ * Разделы берутся из РЕЕСТРА (`prompt_project`), а не «посчитываются» из промтов:
+ * заранее заведённый раздел без промтов виден как пустой. Библиотека ЛИЧНАЯ:
+ * список уже отфильтрован по владельцу на сервере, и кнопки правят только
+ * СВОИ промты.
  */
 export function PromptsPanel({
   prompts,
-  projects,
+  sections,
   view,
   archivedCount,
 }: {
   prompts: PromptItem[];
-  projects: PromptProjectSummary[];
+  sections: PromptSection[];
   view: 'active' | 'archive';
   archivedCount: number;
 }) {
@@ -55,19 +55,32 @@ export function PromptsPanel({
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [before, setBefore] = useState('');
+  const [selectedId, setSelectedId] = useState<number | null>(null);
 
-  const groups = useMemo(() => {
-    const out: { project: string; items: PromptItem[] }[] = [];
+  // Промты по разделам. Раздел берётся из реестра, но если промт попал в
+  // раздел, которого в реестре нет (запись обошла реестр), он не должен
+  // потеряться — такой раздел показываем последним.
+  const grouped = useMemo(() => {
+    const known = new Set(sections.map((s) => s.name));
+    const map = new Map<string, PromptItem[]>();
+    for (const section of sections) map.set(section.name, []);
     for (const item of prompts) {
-      const last = out[out.length - 1];
-      if (last && last.project === item.project) {
-        last.items.push(item);
-      } else {
-        out.push({ project: item.project, items: [item] });
-      }
+      if (!known.has(item.project) && !map.has(item.project)) map.set(item.project, []);
+      map.get(item.project)!.push(item);
     }
-    return out;
-  }, [prompts]);
+    return [...map.entries()]
+      .map(([name, items]) => ({ name, items }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  }, [prompts, sections]);
+
+  // Выбранный промт: по умолчанию — первый в списке. Если выбранного в текущем
+  // виде нет (переключили «живые ↔ архив»), показываем первый. Отдельного
+  // эффекта для синхронизации не нужно: выбор хранится в состоянии, а подмена
+  // «на первый» считается прямо здесь.
+  const selected = useMemo(() => {
+    const all = grouped.flatMap((g) => g.items);
+    return all.find((p) => p.id === selectedId) ?? all[0] ?? null;
+  }, [grouped, selectedId]);
 
   async function copyPrompt(item: PromptItem) {
     try {
@@ -78,15 +91,15 @@ export function PromptsPanel({
     }
   }
 
-  async function run(item: PromptItem, job: () => Promise<{ ok: boolean; error?: string }>) {
-    setBusyId(item.id);
+  async function run(job: () => Promise<{ ok: boolean; error?: string }>) {
     try {
       const result = await job();
       if (!result.ok) {
         toast.error(result.error ?? 'Не получилось');
-        return;
+        return false;
       }
       router.refresh();
+      return true;
     } finally {
       setBusyId(null);
     }
@@ -118,9 +131,7 @@ export function PromptsPanel({
       return;
     }
     toast.success(
-      result.data?.removed
-        ? `Убрано из архива: ${result.data.removed}`
-        : 'В архиве было пусто',
+      result.data?.removed ? `Убрано из архива: ${result.data.removed}` : 'В архиве было пусто',
     );
     router.refresh();
   }
@@ -144,57 +155,49 @@ export function PromptsPanel({
         </div>
       </div>
 
-      <p className="text-sm text-muted-foreground">
-        Промты раскладывает Мозг по проектам — по вашей команде в чате. Здесь они
-        копируются в буфер и уходят в нейронку. Архив — это убранное из живого
-        списка, но сохранённое: вернуть можно всегда, удалить — только руками.
-      </p>
-
-      {!isArchive ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Добавить промт</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <form className="flex flex-col gap-3" onSubmit={submit}>
-              <div className="flex flex-col gap-3 sm:flex-row">
-                <Input
-                  className="sm:w-64"
-                  list="prompt-projects"
-                  placeholder="Проект"
-                  value={project}
-                  onChange={(event) => setProject(event.target.value)}
-                />
-                <datalist id="prompt-projects">
-                  {projects.map((item) => (
-                    <option key={item.project} value={item.project} />
-                  ))}
-                </datalist>
-                <Input
-                  className="sm:flex-1"
-                  placeholder="Заголовок (если без него — возьмём первую строку)"
-                  value={title}
-                  onChange={(event) => setTitle(event.target.value)}
-                />
-              </div>
-              <Textarea
-                placeholder="Текст промта"
-                rows={6}
-                value={body}
-                onChange={(event) => setBody(event.target.value)}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Добавить промт</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <form className="flex flex-col gap-3" onSubmit={submit}>
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <Input
+                className="sm:w-64"
+                list="prompt-projects"
+                placeholder="Проект (раздел)"
+                value={project}
+                onChange={(event) => setProject(event.target.value)}
               />
-              <div>
-                <Button type="submit" disabled={adding || !body.trim() || !project.trim()}>
-                  <Plus className="mr-1 h-4 w-4" />
-                  Добавить
-                </Button>
-              </div>
-            </form>
-          </CardContent>
-        </Card>
-      ) : null}
+              <datalist id="prompt-projects">
+                {sections.map((section) => (
+                  <option key={section.name} value={section.name} />
+                ))}
+              </datalist>
+              <Input
+                className="sm:flex-1"
+                placeholder="Заголовок (если без него — возьмём первую строку)"
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+              />
+            </div>
+            <Textarea
+              placeholder="Текст промта"
+              rows={5}
+              value={body}
+              onChange={(event) => setBody(event.target.value)}
+            />
+            <div>
+              <Button type="submit" disabled={adding || !body.trim() || !project.trim()}>
+                <Plus className="mr-1 h-4 w-4" />
+                Добавить
+              </Button>
+            </div>
+          </form>
+        </CardContent>
+      </Card>
 
-      {isArchive ? (
+      {isArchive && (
         <div className="flex flex-wrap items-center gap-2 rounded-md border bg-card px-3 py-2">
           <span className="text-sm text-muted-foreground">
             В архиве {archivedCount} промт(ов). Чистка — безвозвратная.
@@ -223,97 +226,131 @@ export function PromptsPanel({
             onConfirm={purge}
           />
         </div>
-      ) : null}
-
-      {groups.length === 0 ? (
-        <p className="rounded-md border bg-card px-3 py-4 text-sm text-muted-foreground">
-          {isArchive
-            ? 'Архив пуст — сюда попадают промты, отправленные в архив.'
-            : 'Промтов пока нет. Скиньте текст в чат и скажите: «добавь это в промты».'}
-        </p>
-      ) : (
-        groups.map((group) => (
-          <section key={group.project}>
-            <h2 className="mb-2 flex items-center gap-2 text-lg font-medium">
-              {group.project}
-              <Badge variant="secondary">{group.items.length}</Badge>
-            </h2>
-            <ul className="flex flex-col gap-2">
-              {group.items.map((item) => (
-                <li key={item.id} className="rounded-md border bg-card px-3 py-2">
-                  <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                    <span className="font-medium">{item.title || 'Без названия'}</span>
-                    <Badge variant="outline">
-                      {item.source === 'brain' ? 'Мозг' : 'Вручную'}
-                    </Badge>
-                    <span className="ml-auto text-xs text-muted-foreground">
-                      {isArchive && item.archivedAt
-                        ? `в архиве с ${formatDateTime(item.archivedAt)} · создан ${formatDateTime(item.createdAt)}`
-                        : `создан ${formatDateTime(item.createdAt)}`}
-                    </span>
-                  </div>
-                  <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 text-sm">
-                    {item.body}
-                  </pre>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <Button size="sm" variant="outline" onClick={() => copyPrompt(item)}>
-                      <Copy className="mr-1 h-4 w-4" />
-                      Копировать
-                    </Button>
-                    {!isArchive ? (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busyId === item.id}
-                        onClick={() =>
-                          run(item, () => archivePromptAction(item.id)).then(() =>
-                            toast.success('Промт в архиве'),
-                          )
-                        }
-                      >
-                        <Archive className="mr-1 h-4 w-4" />
-                        В архив
-                      </Button>
-                    ) : null}
-                    {isArchive ? (
-                      <>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={busyId === item.id}
-                          onClick={() =>
-                            run(item, () => restorePromptAction(item.id)).then(() =>
-                              toast.success('Промт вернулся в живые'),
-                            )
-                          }
-                        >
-                          <ArchiveRestore className="mr-1 h-4 w-4" />
-                          Вернуть
-                        </Button>
-                        <ConfirmDialog
-                          trigger={
-                            <Button size="sm" variant="outline" disabled={busyId === item.id}>
-                              <Trash2 className="mr-1 h-4 w-4" />
-                              Удалить
-                            </Button>
-                          }
-                          title="Удалить промт навсегда?"
-                          description="Строка исчезнет из базы. Отменить будет нельзя."
-                          confirmText="Удалить"
-                          onConfirm={async () => {
-                            await run(item, () => deletePromptAction(item.id));
-                            toast.success('Промт удалён');
-                          }}
-                        />
-                      </>
-                    ) : null}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </section>
-        ))
       )}
+
+      <div className="grid gap-4 lg:h-[70vh] lg:grid-cols-[minmax(220px,1fr)_minmax(0,2fr)]">
+        {/* Левая колонка: разделы и названия промтов. Своя прокрутка. */}
+        <div className="min-h-0 overflow-y-auto rounded-md border bg-card p-3">
+          {grouped.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              {isArchive
+                ? 'Архив пуст — сюда попадают промты, отправленные в архив.'
+                : 'Промтов пока нет. Скиньте текст в чат и скажите: «добавь это в промты».'}
+            </p>
+          ) : (
+            <div className="flex flex-col gap-4">
+              {grouped.map((group) => (
+                <div key={group.name}>
+                  <div className="mb-1 flex items-center gap-2">
+                    <span className="text-sm font-semibold">{group.name}</span>
+                    <Badge variant="secondary">{group.items.length}</Badge>
+                  </div>
+                  {group.items.length === 0 ? (
+                    <p className="pl-1 text-xs text-muted-foreground">пусто</p>
+                  ) : (
+                    <ul className="flex flex-col gap-0.5">
+                      {group.items.map((item) => {
+                        const active = selected?.id === item.id;
+                        return (
+                          <li key={item.id}>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedId(item.id)}
+                              className={
+                                active
+                                  ? 'w-full truncate rounded px-2 py-1 text-left text-sm font-medium ring-1 ring-ring'
+                                  : 'w-full truncate rounded px-2 py-1 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground'
+                              }
+                              title={item.title}
+                            >
+                              {item.title || 'Без названия'}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Правая колонка: весь выбранный промт. Своя прокрутка. */}
+        <div className="min-h-0 overflow-y-auto rounded-md border bg-card p-4">
+          {!selected ? (
+            <p className="text-sm text-muted-foreground">
+              Слева — разделы и промты. Выберите промт, и здесь появится его текст целиком.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <h2 className="text-lg font-semibold">{selected.title || 'Без названия'}</h2>
+                <Badge variant="outline">{selected.source === 'brain' ? 'Мозг' : 'Вручную'}</Badge>
+                <span className="ml-auto text-xs text-muted-foreground">
+                  {isArchive && selected.archivedAt
+                    ? `в архиве с ${formatDateTime(selected.archivedAt)} · создан ${formatDateTime(selected.createdAt)}`
+                    : `создан ${formatDateTime(selected.createdAt)}`}
+                </span>
+              </div>
+              <pre className="whitespace-pre-wrap rounded bg-muted p-3 text-sm">{selected.body}</pre>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" onClick={() => copyPrompt(selected)}>
+                  <Copy className="mr-1 h-4 w-4" />
+                  Копировать
+                </Button>
+                {!isArchive ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busyId === selected.id}
+                    onClick={async () => {
+                      setBusyId(selected.id);
+                      const ok = await run(() => archivePromptAction(selected.id));
+                      if (ok) toast.success('Промт в архиве');
+                    }}
+                  >
+                    <Archive className="mr-1 h-4 w-4" />
+                    В архив
+                  </Button>
+                ) : (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busyId === selected.id}
+                      onClick={async () => {
+                        setBusyId(selected.id);
+                        const ok = await run(() => restorePromptAction(selected.id));
+                        if (ok) toast.success('Промт вернулся в живые');
+                      }}
+                    >
+                      <ArchiveRestore className="mr-1 h-4 w-4" />
+                      Вернуть
+                    </Button>
+                    <ConfirmDialog
+                      trigger={
+                        <Button size="sm" variant="outline" disabled={busyId === selected.id}>
+                          <Trash2 className="mr-1 h-4 w-4" />
+                          Удалить
+                        </Button>
+                      }
+                      title="Удалить промт навсегда?"
+                      description="Строка исчезнет из базы. Отменить будет нельзя."
+                      confirmText="Удалить"
+                      onConfirm={async () => {
+                        setBusyId(selected.id);
+                        const ok = await run(() => deletePromptAction(selected.id));
+                        if (ok) toast.success('Промт удалён');
+                      }}
+                    />
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

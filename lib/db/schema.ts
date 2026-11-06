@@ -964,3 +964,21 @@ export const prompt = pgTable('prompt', {
 });
 
 export type PromptRow = typeof prompt.$inferSelect;
+
+// --- Реестр разделов библиотеки промтов (миграция 0028) ---------------------
+// Раздел («Матрица РМЗ», «KARMAN», …) — это ИМЯ, а не значение, посчитанное из
+// промтов: пустой раздел должен существовать, чтобы все разделы экосистемы
+// можно было завести заранее (заказ владельца 2026-11-06).
+
+export const promptProject = pgTable('prompt_project', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  /** Владелец раздела: у каждого аккаунта своя раскладка, как и промты. */
+  userId: integer('user_id')
+    .notNull()
+    .references(() => authUser.id, { onDelete: 'cascade' }),
+  /** Каноническое имя раздела (латиница, как в реестре проектов Мозга). */
+  name: varchar('name', { length: 64 }).notNull(),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+});
+
+export type PromptProjectRow = typeof promptProject.$inferSelect;

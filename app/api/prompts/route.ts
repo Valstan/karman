@@ -2,9 +2,9 @@ import { NextResponse } from 'next/server';
 import { clientIp } from '@/lib/api/client-ip';
 import { rateLimit } from '@/lib/secrets/rate-limit';
 import { checkPromptsBearer, promptsConfigured } from '@/lib/prompts/auth';
-import { createPrompt, listPrompts, resolveOwnerAccountId } from '@/lib/services/prompts';
+import { ownerAccount } from '@/lib/prompts/owner';
+import { createPrompt, listPrompts } from '@/lib/services/prompts';
 import { promptCreateSchema } from '@/lib/validation/prompt';
-import type { SessionUser } from '@/lib/auth/rbac';
 
 /**
  * Канал промтов Мозга (заказ владельца 2026-11-06).
@@ -30,20 +30,6 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const NO_STORE = { headers: { 'Cache-Control': 'no-store' } };
-
-/** Аккаунт владельца для машинной записи; null — живого аккаунта нет. */
-async function ownerAccount(): Promise<SessionUser | null> {
-  const id = await resolveOwnerAccountId();
-  if (id === null) return null;
-  return {
-    id,
-    username: 'owner',
-    email: '',
-    firstName: '',
-    lastName: '',
-    isSuperuser: true,
-  };
-}
 
 async function denied(): Promise<Response | null> {
   if (!(await promptsConfigured())) {

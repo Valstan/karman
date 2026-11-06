@@ -6,11 +6,14 @@ import {
   countArchivedPrompts,
   createPrompt,
   deletePrompt,
+  listPromptSections,
   listPrompts,
   purgeArchivedPrompts,
+  renamePromptProject,
   resolveOwnerAccountId,
   setPromptArchived,
   summarizePromptProjects,
+  syncPromptProjects,
 } from '@/lib/services/prompts';
 
 /**
@@ -197,5 +200,83 @@ describe('библиотека промтов', () => {
 
   it('живой аккаунт владельца для машинного канала — активный суперпользователь', async () => {
     expect(await resolveOwnerAccountId()).toBe(owner.id);
+  });
+});
+
+/**
+ * Реестр разделов (миграция 0028): раздел — имя из реестра, а не «разные
+ * значения project среди промтов». Иначе нельзя завести раздел заранее и нельзя
+ * показать пустой.
+ */
+describe('реестр разделов библиотеки', () => {
+  it('запись промта заводит раздел, даже если его не было', async () => {
+    await createPrompt(owner, { project: 'MatricaRMZ', body: 'Текст' });
+    const разделы = await listPromptSections(owner, { archived: false });
+    expect(разделы).toEqual([{ name: 'MatricaRMZ', count: 1 }]);
+  });
+
+  it('раздел без промтов виден и считает ноль', async () => {
+    await syncPromptProjects(owner, ['MatricaRMZ', 'KARMAN']);
+    const разделы = await listPromptSections(owner, { archived: false });
+    expect(разделы).toEqual([
+      { name: 'KARMAN', count: 0 },
+      { name: 'MatricaRMZ', count: 0 },
+    ]);
+  });
+
+  it('синхронизация только добавляет: чужие разделы не пропадают', async () => {
+    await createPrompt(owner, { project: 'Свой раздел', body: 'Текст' });
+    await syncPromptProjects(owner, ['MatricaRMZ']);
+    const разделы = await listPromptSections(owner, { archived: false });
+    expect(разделы.map((s) => s.name)).toContain('Свой раздел');
+    expect(разделы.map((s) => s.name)).toContain('MatricaRMZ');
+  });
+
+  it('синхронизация идемпотентна и чистит пустые имена', async () => {
+    expect(await syncPromptProjects(owner, ['KARMAN', 'KARMAN', '  ', ''])).toBe(1);
+    expect(await syncPromptProjects(owner, ['KARMAN'])).toBe(0);
+    expect((await listPromptSections(owner, { archived: false })).map((s) => s.name)).toEqual([
+      'KARMAN',
+    ]);
+  });
+
+  it('счётчик раздела считает промты выбранного состояния', async () => {
+    const живой = await createPrompt(owner, { project: 'KARMAN', body: 'Живой' });
+    const вАрхив = await createPrompt(owner, { project: 'KARMAN', body: 'В архиве' });
+    await setPromptArchived(owner, вАрхив.id, true);
+
+    const живые = await listPromptSections(owner, { archived: false });
+    expect(живые).toEqual([{ name: 'KARMAN', count: 1 }]);
+    const архив = await listPromptSections(owner, { archived: true });
+    expect(архив).toEqual([{ name: 'KARMAN', count: 1 }]);
+
+    // В живых — тот, что не архивировали; в архиве — тот, что архивировали.
+    const живыеПромты = await listPrompts(owner, { archived: false });
+    expect(живыеПромты.map((p) => p.id)).toEqual([живой.id]);
+    const архивные = await listPrompts(owner, { archived: true });
+    expect(архивные.map((p) => p.id)).toEqual([вАрхив.id]);
+  });
+
+  it('переименование раздела тянет за собой его промты', async () => {
+    await createPrompt(owner, { project: 'МАТРИЦА РМЗ', body: 'Текст' });
+    expect(await renamePromptProject(owner, 'МАТРИЦА РМЗ', 'MatricaRMZ')).toBe(true);
+    const разделы = await listPromptSections(owner, { archived: false });
+    expect(разделы).toEqual([{ name: 'MatricaRMZ', count: 1 }]);
+    const промты = await listPrompts(owner, { archived: false });
+    expect(промты[0]!.project).toBe('MatricaRMZ');
+  });
+
+  it('переименование в существующий раздел сливает их', async () => {
+    await createPrompt(owner, { project: 'МАТРИЦА РМЗ', body: 'Первое' });
+    await createPrompt(owner, { project: 'MatricaRMZ', body: 'Второе' });
+    expect(await renamePromptProject(owner, 'МАТРИЦА РМЗ', 'MatricaRMZ')).toBe(true);
+    const разделы = await listPromptSections(owner, { archived: false });
+    expect(разделы).toEqual([{ name: 'MatricaRMZ', count: 2 }]);
+  });
+
+  it('чужой раздел не переименовать', async () => {
+    await createPrompt(other, { project: 'Их раздел', body: 'Текст' });
+    expect(await renamePromptProject(owner, 'Их раздел', 'Мой')).toBe(false);
+    expect((await listPromptSections(owner, { archived: false }))).toEqual([]);
   });
 });

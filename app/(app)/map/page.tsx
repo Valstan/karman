@@ -5,8 +5,8 @@ import { loadBrainMap } from '@/lib/ecosystem/brain-map';
 import { refreshMapAction } from '@/lib/actions/map';
 import {
   countArchivedPrompts,
+  listPromptSections,
   listPrompts,
-  summarizePromptProjects,
 } from '@/lib/services/prompts';
 import { formatDate, formatDateTime } from '@/lib/format';
 import { cn } from '@/lib/utils';
@@ -60,9 +60,9 @@ export default async function MapPage({
   // должна открываться и тогда, когда репозиторий Мозга не читается. И она
   // доступна КАЖДОМУ: у каждого аккаунта своя библиотека.
   if (requested === PROMPTS_TAB) {
-    const [prompts, projects, archivedCount] = await Promise.all([
+    const [prompts, sections, archivedCount] = await Promise.all([
       listPrompts(user, { archived: view === 'archive' }),
-      summarizePromptProjects(user),
+      listPromptSections(user, { archived: view === 'archive' }),
       countArchivedPrompts(user),
     ]);
     return (
@@ -79,7 +79,7 @@ export default async function MapPage({
         </nav>
         <PromptsPanel
           prompts={prompts}
-          projects={projects}
+          sections={sections}
           view={view}
           archivedCount={archivedCount}
         />
