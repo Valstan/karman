@@ -32,20 +32,19 @@ import type { PromptItem, PromptProjectSummary } from '@/lib/prompts/types';
  * удалить насовсем, а сверху — «Очистить архив», потому что архив имеет
  * свойство разрастаться, а удалять его руками по одной — не работа.
  *
- * Писать может только владелец (`canEdit`): библиотека одна на приложение,
- * и второй пользователь КАРМАНА видит её, но не может ни переписать чужой
- * промт, ни вычистить архив.
+ * Библиотека ЛИЧНАЯ: список уже отфильтрован по владельцу на сервере, и кнопки
+ * правят только СВОИ промты. Поэтому гейта «только суперпользователь» здесь
+ * нет: каждый вошедший управляет своей библиотекой, а чужие промты закрыты
+ * `ownership()` в сервисе.
  */
 export function PromptsPanel({
   prompts,
   projects,
-  canEdit,
   view,
   archivedCount,
 }: {
   prompts: PromptItem[];
   projects: PromptProjectSummary[];
-  canEdit: boolean;
   view: 'active' | 'archive';
   archivedCount: number;
 }) {
@@ -151,7 +150,7 @@ export function PromptsPanel({
         списка, но сохранённое: вернуть можно всегда, удалить — только руками.
       </p>
 
-      {canEdit && !isArchive ? (
+      {!isArchive ? (
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Добавить промт</CardTitle>
@@ -195,7 +194,7 @@ export function PromptsPanel({
         </Card>
       ) : null}
 
-      {isArchive && canEdit ? (
+      {isArchive ? (
         <div className="flex flex-wrap items-center gap-2 rounded-md border bg-card px-3 py-2">
           <span className="text-sm text-muted-foreground">
             В архиве {archivedCount} промт(ов). Чистка — безвозвратная.
@@ -261,7 +260,7 @@ export function PromptsPanel({
                       <Copy className="mr-1 h-4 w-4" />
                       Копировать
                     </Button>
-                    {canEdit && !isArchive ? (
+                    {!isArchive ? (
                       <Button
                         size="sm"
                         variant="outline"
@@ -276,7 +275,7 @@ export function PromptsPanel({
                         В архив
                       </Button>
                     ) : null}
-                    {canEdit && isArchive ? (
+                    {isArchive ? (
                       <>
                         <Button
                           size="sm"

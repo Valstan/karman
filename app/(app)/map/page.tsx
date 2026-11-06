@@ -49,9 +49,9 @@ export default async function MapPage({
   // должна открываться и тогда, когда репозиторий Мозга не читается.
   if (requested === PROMPTS_TAB) {
     const [prompts, projects, archivedCount] = await Promise.all([
-      listPrompts({ archived: view === 'archive' }),
-      summarizePromptProjects(),
-      countArchivedPrompts(),
+      listPrompts(user, { archived: view === 'archive' }),
+      summarizePromptProjects(user),
+      countArchivedPrompts(user),
     ]);
     return (
       <Shell
@@ -68,7 +68,6 @@ export default async function MapPage({
         <PromptsPanel
           prompts={prompts}
           projects={projects}
-          canEdit={user.isSuperuser}
           view={view}
           archivedCount={archivedCount}
         />
