@@ -937,6 +937,15 @@ export type AccountsUsageRow = typeof accountsUsage.$inferSelect;
 
 export const prompt = pgTable('prompt', {
   id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  /**
+   * Владелец промта. Библиотека ЛИЧНАЯ: «информация у каждого аккаунта видна
+   * только ему» (заказ владельца 2026-11-06). Фильтр — `ownership()`, без
+   * исключения для суперпользователя; единственный путь увидеть чужое —
+   * согласие в Круге.
+   */
+  userId: integer('user_id')
+    .notNull()
+    .references(() => authUser.id, { onDelete: 'cascade' }),
   /** Название проекта — это раздел списка (из реестра Мозга, projects/INDEX.md). */
   project: varchar('project', { length: 64 }).notNull(),
   /** Короткое имя для списка; пусто — берётся первая строка промта. */

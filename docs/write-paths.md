@@ -45,7 +45,7 @@
 | `telegram-link.ts` (1) | привязка Telegram к своему uid | сессия, только свой uid |
 | `map.ts` (1) | ничего (инвалидация кэша) | сессия (`requireUser`) |
 | `accounts.ts` (9) | `accounts_account`, `accounts_project`, `accounts_usage` | **суперпользователь** (раздел с паролями от внешних сервисов — только владелец: `accounts.ts` + `ownership()` по `user_id`). `revealAccountPasswordAction` — **step-up** (`requireSecretsAccess`): пароль уходит в буфер обмена, поэтому гейт «суперпользователь» на операции, возвращающей пароль открытым текстом, не удерживал ничего — тот же класс, что `resetAccountPassword` |
-| `prompts.ts` (5) | `prompt` | **суперпользователь**: библиотека промтов одна на приложение (без `user_id`), поэтому править её может только владелец — ни переписать чужой промт, ни вычистить архив (заказ владельца 2026-11-06) |
+| `prompts.ts` (5) | `prompt` | **владелец строки** (`ownership()` по `user_id`): библиотека ЛИЧНАЯ — каждый вошедший управляет СВОИМИ промтами, чужие закрыты `ownership()` без исключения для суперпользователя (заказ владельца 2026-11-06: «информация у каждого аккаунта видна только ему; разделы и кнопки видны всем; исключение — Круг») |
 
 Два слоя, а не один, — не избыточность, а необходимость: действие проверяет «кто зовёт»,
 сервис — «чью строку». `ownership()` (`lib/auth/rbac.ts`) **не имеет исключений для
@@ -79,7 +79,7 @@
 | `/api/telegram/ingest` | **POST** | по команде: `reminder`, привязки, профиль | внутренний Bearer; `proxy.ts` не трогает `/api/*`, поэтому защита здесь |
 | `/api/hotline` | GET, **POST** | `hotline_message` (POST), чтение ленты (GET) | общий секрет relay (`HOTLINE_RELAY_SECRET`, `checkHotlineBearer`, fail-closed 503 без секрета); POST — rate-limit по IP + серверный deny-линт до записи |
 | `/api/hotline/presence` | GET, **POST** | `hotline_presence` (upsert по метке) + сторож линии: GET/POST гасят протухшие `on_line` → `offline` (два пропуска по 30с, мандат 05.10) | тот же секрет relay; чтение присутствия — тем же Bearer |
-| `/api/prompts` | GET, **POST** | `prompt` (POST: промт от Мозга, `source = 'brain'`), чтение библиотеки (GET) | отдельный секрет канала (`PROMPTS_INGEST_SECRET`, `checkPromptsBearer`, fail-closed 503 без секрета); **не** секрет relay Телефона: промт из библиотеки уходит в буфер и в нейронку, и выдавать право писать в неё всем бэкендам-участникам комнаты незачем. POST — rate-limit по IP |
+| `/api/prompts` | GET, **POST** | `prompt` (POST: промт от Мозга, `source = 'brain'`), чтение библиотеки (GET). Запись идёт от имени ЖИВОГО АККАУНТА владельца (активный суперпользователь с наименьшим id) — сессии у машинного канала нет, а промт без хозяина не пишется | отдельный секрет канала (`PROMPTS_INGEST_SECRET`, `checkPromptsBearer`, fail-closed 503 без секрета); **не** секрет relay Телефона: промт из библиотеки уходит в буфер и в нейронку, и выдавать право писать в неё всем бэкендам-участникам комнаты незачем. POST — rate-limit по IP |
 | `/api/documents/[id]/files` | **POST** | файл в `MEDIA_ROOT` + `document_file` | сессия + **владение документом** (`getDocumentOwnerId`) |
 | `/api/documents/[id]/files/[fileId]` | GET, **DELETE** | удаление файла и строки | сессия + владение документом и файлом |
 | `/api/circle/files/[fileId]` | GET | — | сессия + **согласие круга** (`circleFilePath` → `documentVisibleTo`) |
