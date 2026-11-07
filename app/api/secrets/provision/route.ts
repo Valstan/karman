@@ -3,6 +3,7 @@ import { logProvisionAuthDenied, provisionRoom } from '@/lib/services/secrets';
 import { rateLimit } from '@/lib/secrets/rate-limit';
 import { checkProvisionKey, provisionKeyConfigured } from '@/lib/secrets/provision-key';
 import { clientIp } from '@/lib/api/client-ip';
+import { bearerToken } from '@/lib/api/request';
 import { secretProvisionSchema } from '@/lib/validation/secret';
 
 // node:crypto (timingSafeEqual, генерация токена) требует Node runtime.
@@ -17,12 +18,6 @@ export const runtime = 'nodejs';
  * ни разу не использованными токенами → первый рабочий rw-токен (старые
  * отзываются); живая комната → 409, переоткрытие только владельцем под 2FA.
  */
-function bearerToken(req: Request): string | null {
-  const m = /^Bearer\s+(.+)$/i.exec((req.headers.get('authorization') ?? '').trim());
-  const token = m?.[1]?.trim();
-  return token ? token : null;
-}
-
 export async function POST(req: Request) {
   const ip = clientIp(req);
   if (!rateLimit(`provision|${ip ?? '-'}`)) {
