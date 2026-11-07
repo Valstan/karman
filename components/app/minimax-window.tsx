@@ -19,7 +19,12 @@ import {
   MinimaxAlreadyActivatedDialog,
   type MinimaxBlockedIntent,
 } from './minimax-already-activated-dialog';
-import { ACTIVATION_WINDOW_MS, DEFAULT_ACTIVATION_TOKENS } from '@/lib/accounts/rotation';
+import { ACTIVATION_WINDOW_MS } from '@/lib/accounts/rotation';
+import {
+  WEEKLY_ACTIVATION_LIMIT,
+  WEEKLY_ACTIVATION_POINTS,
+  pointsForIndex,
+} from '@/lib/accounts/weekly';
 import {
   activateAccountOnly,
   copyAccountSecret,
@@ -60,7 +65,19 @@ export function MinimaxWindow({
   const [project, setProject] = useState<string>(
     initialProjectId === null ? NONE : String(initialProjectId),
   );
-  const [tokens, setTokens] = useState(String(DEFAULT_ACTIVATION_TOKENS));
+
+  // Номер активации в неделе аккаунта и очки по нему (заказ владельца 07.11):
+  // программа считает номер сама, владелец может уточнить, и тогда очки
+  // считаются по его номеру. Чек-ин за сегодня уже был — номер дня записан и
+  // не меняется (правится только поле очков).
+  const checkedInToday = account.weekCheckedInToday;
+  const defaultIndex = checkedInToday
+    ? (account.weekTodayIndex ?? account.week.nextIndex ?? WEEKLY_ACTIVATION_LIMIT)
+    : (account.week.nextIndex ?? WEEKLY_ACTIVATION_LIMIT);
+  const defaultTokens = checkedInToday ? account.lastTokens : pointsForIndex(defaultIndex);
+
+  const [index, setIndex] = useState(String(defaultIndex));
+  const [tokens, setTokens] = useState(String(defaultTokens));
   const [busy, setBusy] = useState(false);
   /** Момент активации в этом окне — для обратного отсчёта. */
   const [activatedAt, setActivatedAt] = useState<number | null>(null);
@@ -85,7 +102,7 @@ export function MinimaxWindow({
       return;
     }
     setActivatedAt(Date.now());
-    setTokens(String(DEFAULT_ACTIVATION_TOKENS));
+    setTokens(String(defaultTokens));
     toast.success(kind === 'email' ? 'Почта скопирована' : 'Пароль скопирован');
   }
 
@@ -121,13 +138,14 @@ export function MinimaxWindow({
         account.id,
         projectId,
         raw === '' ? undefined : Number(raw),
+        checkedInToday ? undefined : Number(index),
       );
       if (!outcome.ok) {
         toast.error(outcome.error);
         return;
       }
       publishMinimaxActivated(account.id);
-      toast.success('Аккаунт активирован на 24 часа');
+      toast.success('Аккаунт активирован на 6 часов');
       window.close();
     } finally {
       setBusy(false);
@@ -175,8 +193,36 @@ export function MinimaxWindow({
       </div>
 
       <div className="flex flex-col gap-1">
+        <Label htmlFor="window-index">Какая это по счёту активация в неделе</Label>
+        <Select
+          value={index}
+          disabled={checkedInToday}
+          onValueChange={(value) => {
+            setIndex(value);
+            setTokens(String(pointsForIndex(Number(value))));
+          }}
+        >
+          <SelectTrigger id="window-index">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {WEEKLY_ACTIVATION_POINTS.map((points, i) => (
+              <SelectItem key={i + 1} value={String(i + 1)}>
+                {i + 1}-я активация — {points} очков
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          {checkedInToday
+            ? 'Сегодня чек-ин уже был — номер и очки дня записаны.'
+            : `Неделя аккаунта своя: сделано ${account.week.used} из ${WEEKLY_ACTIVATION_LIMIT}, осталось ${account.week.remaining}.`}
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-1">
         <Label htmlFor="window-tokens">
-          Очки за активацию (по умолчанию {DEFAULT_ACTIVATION_TOKENS})
+          Очки за активацию (по умолчанию {defaultTokens})
         </Label>
         <Input
           id="window-tokens"

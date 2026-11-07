@@ -18,8 +18,10 @@ import {
   ACTIVATED_PREVIEW_LIMIT,
   accountPoolSummary,
   isSpent,
+  moscowToday,
   splitAccounts,
 } from '@/lib/accounts/rotation';
+import { weeklyPoolStats } from '@/lib/accounts/weekly';
 import { MinimaxFormDialog } from './minimax-form-dialog';
 import { MinimaxActivateDialog } from './minimax-activate-dialog';
 import {
@@ -51,8 +53,8 @@ import type { ProjectUsage } from '@/lib/accounts/rotation';
  *
  * Правило: **копирование почты или пароля НЕ гасит аккаунт** (заказ владельца
  * 05.11). Гасит только явная кнопка «Активировать». Аккаунт после активации
- * гаснет на СВОИ 24 ЧАСА от момента активации (04.11) — не до полуночи: каждый
- * аккаунт отсчитывает своё время.
+ * гаснет на СВОИ 6 ЧАСОВ от момента активации (заказ 07.11) — не до полуночи:
+ * каждый аккаунт отсчитывает своё время.
  *
  * Экран — две половины (04.11). Слева: кнопки (добавить проект, добавить
  * аккаунт, импорт) и статистика — «Расход по проектам», «Суммы по дням»,
@@ -105,6 +107,25 @@ export function MinimaxPanel({
   const pool = useMemo(
     () => accountPoolSummary(accounts, new Date(clockMs)),
     [accounts, clockMs],
+  );
+
+  // Сводка по недельной квоте (заказ владельца 07.11): сколько активаций
+  // возможно сегодня, сколько осталось в неделях и сколько это очков, плюс
+  // прогноз по текущему темпу — хватит ли до конца недели.
+  const week = useMemo(
+    () =>
+      weeklyPoolStats(
+        accounts.map((account) => ({
+          id: account.id,
+          spent: account.spent,
+          releasesAt: account.availableAt,
+          checkedInToday: account.weekCheckedInToday,
+          quota: account.week,
+        })),
+        usageByDay.map((day) => ({ usedOn: day.usedOn, activations: day.activations })),
+        moscowToday(new Date(clockMs)),
+      ),
+    [accounts, usageByDay, clockMs],
   );
 
   // Активация — только явной кнопкой (заказ владельца 05.11). Копирование
@@ -318,10 +339,27 @@ export function MinimaxPanel({
         {/* ПРАВАЯ ПОЛОВИНА: аккаунты. */}
         <div className="flex flex-col gap-4">
           {/* Сводка по запасу — одна строка над верхним слотом (заказ владельца
-              06.11): «Свободных - N, Скоро освободятся - M». */}
+              06.11): «Свободных - N, Скоро освободятся - M». Плюс недельная
+              квота (заказ 07.11): «За день - X, За неделю - Y (Z очков)» и
+              прогноз по текущему темпу — хватит ли до конца недели. */}
           <div className="text-sm font-medium text-muted-foreground">
-            Свободных - {pool.free}, Скоро освободятся - {pool.soon}
+            Свободных - {pool.free}, Скоро освободятся - {pool.soon}, За день - {week.today},
+            За неделю - {week.week} ({week.weekPoints} очков)
+            {week.perDay > 0 && week.daysLeft !== null
+              ? ` · темп ${week.perDay.toFixed(1)}/день, хватит на ${week.daysLeft.toFixed(1)} дней`
+              : ''}
+            {week.coversWeek === null
+              ? ''
+              : week.coversWeek
+                ? ' (до конца недели хватит)'
+                : ' (до конца недели не хватит)'}
           </div>
+          <p className="-mt-4 text-xs text-muted-foreground">
+            Неделя у аккаунта своя — 7 дней от его первой активации (так устроено окно
+            MiniMax). Очки: 400 за активацию, в 4-й и 7-й — 1000. «За неделю» — сколько
+            активаций ещё осталось в недельных циклах всех аккаунтов, «хватит на N дней» —
+            при текущем темпе (активаций в день за эту московскую неделю).
+          </p>
 
           {/* Верхний слот: ОДИН следующий аккаунт. */}
           <div className="rounded-md border border-emerald-500/50 bg-emerald-500/10 p-4">
@@ -366,7 +404,7 @@ export function MinimaxPanel({
                   {/* Активация — единственное, что гасит аккаунт (заказ 05.11). */}
                   <Button
                     variant="secondary"
-                    title="Активировать аккаунт: погаснет на 24 часа"
+                    title="Активировать аккаунт: погаснет на 6 часов"
                     onClick={() => handleActivate(next)}
                   >
                     <Zap className="mr-1 h-4 w-4" /> Активировать
