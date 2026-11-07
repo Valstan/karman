@@ -3,6 +3,7 @@ import { pullByToken, pushByToken } from '@/lib/services/secrets';
 import { rateLimit } from '@/lib/secrets/rate-limit';
 import { parsePullKeys } from '@/lib/secrets/pull-keys';
 import { clientIp } from '@/lib/api/client-ip';
+import { bearerToken } from '@/lib/api/request';
 import { secretPushSchema } from '@/lib/validation/secret';
 
 // Шифрование/расшифровка (node:crypto) требует Node runtime.
@@ -19,12 +20,6 @@ export const runtime = 'nodejs';
  *                                  требует токен с правом записи (can_write).
  * Авторизация: `Authorization: Bearer skm_…` (токен проекта).
  */
-function bearerToken(req: Request): string | null {
-  const m = /^Bearer\s+(.+)$/i.exec((req.headers.get('authorization') ?? '').trim());
-  const token = m?.[1]?.trim();
-  return token ? token : null;
-}
-
 export async function GET(req: Request) {
   const token = bearerToken(req);
   if (!token) {

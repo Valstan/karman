@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { openSession, revokeSession } from '@/lib/services/passport';
 import { rateLimit } from '@/lib/secrets/rate-limit';
 import { clientIp } from '@/lib/api/client-ip';
+import { bearerToken } from '@/lib/api/request';
 
 // Проверка подписи и генерация токена (jose + node:crypto) требуют Node runtime.
 export const runtime = 'nodejs';
@@ -18,12 +19,6 @@ export const runtime = 'nodejs';
  *
  * Общего секрета в этом пути нет: личность берётся из подписи, а не из строки.
  */
-function bearerToken(req: Request): string | null {
-  const m = /^Bearer\s+(.+)$/i.exec((req.headers.get('authorization') ?? '').trim());
-  const token = m?.[1]?.trim();
-  return token ? token : null;
-}
-
 export async function POST(req: Request) {
   const ip = clientIp(req);
   // Грубый бакет по IP — только чтобы неаутентифицированный поток не доходил до

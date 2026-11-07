@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { describeSession } from '@/lib/services/passport';
 import { rateLimit } from '@/lib/secrets/rate-limit';
+import { bearerToken } from '@/lib/api/request';
 
 // hashToken (node:crypto) требует Node runtime.
 export const runtime = 'nodejs';
@@ -13,12 +14,6 @@ export const runtime = 'nodejs';
  * Зачем: клиент CI должен уметь ответить «кто я и до когда» без обращения к
  * владельцу. Отзыв/истечение читаются как 401 — то же, что увидит `/api/secrets`.
  */
-function bearerToken(req: Request): string | null {
-  const m = /^Bearer\s+(.+)$/i.exec((req.headers.get('authorization') ?? '').trim());
-  const token = m?.[1]?.trim();
-  return token ? token : null;
-}
-
 export async function GET(req: Request) {
   const token = bearerToken(req);
   if (!token) {
