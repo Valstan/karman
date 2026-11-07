@@ -20,6 +20,7 @@ import {
   numeric,
   pgTable,
   serial,
+  smallint,
   text,
   timestamp,
   varchar,
@@ -921,6 +922,15 @@ export const accountsUsage = pgTable('accounts_usage', {
   }),
   usedOn: date('used_on', { mode: 'string' }).notNull(),
   tokens: bigint('tokens', { mode: 'number' }).notNull().default(0),
+  /**
+   * Номер активации в неделе аккаунта (1..7) или null — номер неизвестен
+   * (строки, записанные до миграции 0029).
+   *
+   * Неделя у аккаунта своя: окно MiniMax длится 7 дней от ПЕРВОГО использования
+   * (docs/minimax.md). По номеру считаются очки за активацию (4-я и 7-я — 1000,
+   * остальные — 400) и остаток недельной квоты. null = считаем по числу строк.
+   */
+  activationIndex: smallint('activation_index'),
   createdAt: tstz('created_at').notNull().defaultNow(),
 });
 

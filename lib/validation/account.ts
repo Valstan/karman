@@ -38,13 +38,19 @@ export const accountUpdateSchema = z.object({
   projectId: z.coerce.number().int().positive().nullable().optional(),
 });
 
-/** Активация аккаунта: гасит его до завтра (только явная кнопка «Активировать»). */
+/** Активация аккаунта: гасит его на 6 часов (только явная кнопка «Активировать»). */
 export const accountActivateSchema = z.object({
   id: z.coerce.number().int().positive(),
   /** Проект, на который уходят токены этого аккаунта (может быть не указан). */
   projectId: z.coerce.number().int().positive().nullable().optional(),
   /** Токены за эту активацию; undefined — «не меняю». */
   tokens: z.coerce.number().int().min(0, 'Токены не могут быть отрицательными').max(100_000_000).optional(),
+  /**
+   * Номер активации в неделе аккаунта (1..7) — по нему считаются очки
+   * (заказ владельца 07.11: 4-я и 7-я активации — 1000 очков, остальные —
+   * 400). undefined — «определи сам», по недельной квоте аккаунта.
+   */
+  activationIndex: z.coerce.number().int().min(1, 'Номер активации — от 1 до 7').max(7, 'Номер активации — от 1 до 7').optional(),
 });
 
 export const projectCreateSchema = z.object({

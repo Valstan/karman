@@ -51,18 +51,28 @@ export async function copyAccountSecret(
 }
 
 /**
- * Активировать аккаунт: открыть окно простоя на 24 часа от момента и записать
+ * Активировать аккаунт: открыть окно простоя на 6 часов от момента и записать
  * активацию в журнал (проект и очки уходят в статистику).
  *
  * Кнопка «Активировать этот аккаунт» в плавающем окне и «Активировать» в
  * верхнем слоте раздела — только здесь аккаунт гаснет.
+ *
+ * `activationIndex` — номер активации в неделе аккаунта (1..7): по нему
+ * считаются очки (4-я и 7-я — 1000, остальные — 400). undefined — «определи
+ * сам», по недельной квоте аккаунта.
  */
 export async function activateAccountOnly(
   accountId: number,
   projectId: number | null | undefined,
   tokens?: number,
+  activationIndex?: number,
 ): Promise<ActivationOutcome> {
-  const activated = await activateAccountAction({ id: accountId, projectId, tokens });
+  const activated = await activateAccountAction({
+    id: accountId,
+    projectId,
+    tokens,
+    activationIndex,
+  });
   if (!activated.ok) return { ok: false, error: activated.error };
   return { ok: true };
 }

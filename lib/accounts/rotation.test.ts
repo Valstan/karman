@@ -23,11 +23,13 @@ function row(over: Partial<AccountRotationRow> & { id: number }): AccountRotatio
     projectId: null,
     projectName: null,
     lastTokens: 0,
+    weekUsed: 0,
+    weekExhausted: false,
     ...over,
   };
 }
 
-describe('мультиаккаунт: окно активации — 24 часа с момента', () => {
+describe('мультиаккаунт: окно активации — 6 часов с момента', () => {
   it('московская дата — по UTC+3, а не по времени машины', () => {
     // 2026-11-02T21:30Z — это уже 3 ноября в Москве (UTC+3).
     expect(moscowToday(new Date('2026-11-02T21:30:00Z'))).toBe('2026-11-03');
@@ -35,18 +37,21 @@ describe('мультиаккаунт: окно активации — 24 час�
     expect(moscowToday(new Date('2026-11-02T20:59:00Z'))).toBe('2026-11-02');
   });
 
-  it('окно ровно 24 часа со момента активации', () => {
-    expect(ACTIVATION_WINDOW_HOURS).toBe(24);
-    expect(ACTIVATION_WINDOW_MS).toBe(24 * 60 * 60 * 1000);
+  it('окно ровно 6 часов со момента активации', () => {
+    // Заказ владельца 07.11: «как активировался аккаунт, через 6 часов, он
+    // снова свободный». Ограничителем недели теперь не сутки, а недельная
+    // квота в 7 активаций (lib/accounts/weekly.ts).
+    expect(ACTIVATION_WINDOW_HOURS).toBe(6);
+    expect(ACTIVATION_WINDOW_MS).toBe(6 * 60 * 60 * 1000);
   });
 
-  it('через 23 часа 59 минут аккаунт ещё израсходован', () => {
+  it('через 5 часов 59 минут аккаунт ещё израсходован', () => {
     const usedAt = '2026-11-03T10:00:00Z';
     const now = new Date(new Date(usedAt).getTime() + ACTIVATION_WINDOW_MS - 60_000);
     expect(isSpent({ usedAt }, now)).toBe(true);
   });
 
-  it('на исходе 24 часов аккаунт снова свободен', () => {
+  it('на исходе 6 часов аккаунт снова свободен', () => {
     const usedAt = '2026-11-03T10:00:00Z';
     const now = new Date(new Date(usedAt).getTime() + ACTIVATION_WINDOW_MS);
     expect(isSpent({ usedAt }, now)).toBe(false);
@@ -56,17 +61,17 @@ describe('мультиаккаунт: окно активации — 24 час�
     expect(isSpent({ usedAt: null }, new Date('2026-11-03T10:00:00Z'))).toBe(false);
   });
 
-  it('своё окно у каждого аккаунта: активированный в 23:50 живёт до 23:50 следующего дня', () => {
+  it('своё окно у каждого аккаунта: активированный в 23:50 живёт до 05:50', () => {
     // Активация в 23:50 МСК = 20:50Z.
     const usedAt = '2026-11-03T20:50:00Z';
     // Через два часа (уже 01:50 МСК следующего дня) — ещё израсходован.
     expect(isSpent({ usedAt }, new Date('2026-11-03T22:50:00Z'))).toBe(true);
-    // Через 24 часа — свободен.
-    expect(isSpent({ usedAt }, new Date('2026-11-04T20:50:00Z'))).toBe(false);
+    // Через 6 часов — свободен.
+    expect(isSpent({ usedAt }, new Date('2026-11-04T02:50:00Z'))).toBe(false);
   });
 
   it('availableAt — момент освобождения аккаунта', () => {
-    expect(availableAt('2026-11-03T10:00:00Z')).toBe('2026-11-04T10:00:00.000Z');
+    expect(availableAt('2026-11-03T10:00:00Z')).toBe('2026-11-03T16:00:00.000Z');
     expect(availableAt(null)).toBeNull();
   });
 });
@@ -81,10 +86,10 @@ describe('мультиаккаунт: сводка по запасу (заказ
         row({ id: 1 }),
         // Окно истекло — свободен.
         row({ id: 2, usedOn: '2026-11-01', usedAt: '2026-11-01T06:00:00Z' }),
-        // Освободится через 10 минут.
-        row({ id: 3, usedOn: '2026-11-02', usedAt: '2026-11-02T12:10:00Z' }),
+        // Освободится через 10 минут (окно простоя 6 ч).
+        row({ id: 3, usedOn: '2026-11-03', usedAt: '2026-11-03T06:10:00Z' }),
         // Освободится через 5 часов — это уже не «скоро».
-        row({ id: 4, usedOn: '2026-11-02', usedAt: '2026-11-02T17:00:00Z' }),
+        row({ id: 4, usedOn: '2026-11-03', usedAt: '2026-11-03T11:00:00Z' }),
       ],
       now,
     );
@@ -104,6 +109,16 @@ describe('мультиаккаунт: сводка по запасу (заказ
 
   it('пустой список — ноль и ноль', () => {
     expect(accountPoolSummary([], now)).toEqual({ free: 0, soon: 0 });
+  });
+
+  it('аккаунт с исчерпанной неделей не считается свободным', () => {
+    // Заказ владельца 07.11: неделя аккаунта кончилась (7 из 7) — им нельзя
+    // взять, значит он не в «свободных».
+    const summary = accountPoolSummary(
+      [row({ id: 1 }), row({ id: 2, weekUsed: 7, weekExhausted: true })],
+      now,
+    );
+    expect(summary).toEqual({ free: 1, soon: 0 });
   });
 });
 
@@ -133,9 +148,9 @@ describe('мультиаккаунт: порядок списка', () => {
     expect(isSpent({ usedAt: '2026-11-02T06:00:00Z' }, now)).toBe(false);
   });
 
-  it('активированный 12 часов назад — ещё израсходован (вчерашняя дата не значит «свободен»)', () => {
-    // 2026-11-02T23:00Z — это уже 3 ноября в Москве, но окно ещё не истекло.
-    expect(isSpent({ usedAt: '2026-11-02T23:00:00Z' }, now)).toBe(true);
+  it('активированный 3 часа назад — ещё израсходован (вчерашняя дата не значит «свободен»)', () => {
+    // 2026-11-03T09:00Z — это 3 часа назад по окну простоя (6 ч).
+    expect(isSpent({ usedAt: '2026-11-03T09:00:00Z' }, now)).toBe(true);
   });
 
   it('среди доступных первым идёт никогда не использованный, дальше — самый давний', () => {
@@ -242,6 +257,28 @@ describe('мультиаккаунт: разбиение списка на эк�
     expect(split.next).toBeNull();
     expect(split.activated).toEqual([]);
     expect(split.queued).toEqual([]);
+  });
+
+  it('аккаунт с исчерпанной неделей не встаёт в верхний слот', () => {
+    // Заказ владельца 07.11: «если на этой неделе у аккаунта уже прошло семь
+    // активаций, то ты не предлагай его для активации». Он остаётся в списке
+    // (со своей историей), но в верхний слот не встаёт.
+    const split = splitAccounts(
+      [
+        row({
+          id: 1,
+          weekUsed: 7,
+          weekExhausted: true,
+          usedOn: '2026-11-03',
+          usedAt: '2026-11-03T06:00:00Z',
+        }),
+        row({ id: 2, usedOn: null, usedAt: null }),
+      ],
+      now,
+    );
+    expect(split.next?.id).toBe(2);
+    expect(split.activated.map((a) => a.id)).toEqual([1]);
+    expect(split.queued.map((a) => a.id)).toEqual([]);
   });
 });
 

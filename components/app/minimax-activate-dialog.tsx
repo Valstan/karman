@@ -22,7 +22,11 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { createProjectAction } from '@/lib/actions/accounts';
-import { DEFAULT_ACTIVATION_TOKENS } from '@/lib/accounts/rotation';
+import {
+  WEEKLY_ACTIVATION_LIMIT,
+  WEEKLY_ACTIVATION_POINTS,
+  pointsForIndex,
+} from '@/lib/accounts/weekly';
 import { activateAccountOnly, publishMinimaxActivated } from './minimax-activation';
 import type { AccountListItem, ProjectListItem } from '@/lib/services/accounts';
 
@@ -30,11 +34,18 @@ const NONE = '__none__';
 
 /**
  * Диалог активации: владелец СПРАШИВАЕТ, по какому проекту активируется
- * аккаунт, и сколько на это очков — и только после этого аккаунт гаснет.
+ * аккаунт, какая это по счёту активация в неделе, и сколько на это очков — и
+ * только после этого аккаунт гаснет.
  *
  * Заказ владельца 05.11: **гасит аккаунт только явная кнопка «Активировать»**,
  * копирование почты или пароля больше ничего не меняет. Поэтому диалог вызывается
  * кнопкой активации, а не копированием, и копирования он не делает.
+ *
+ * Заказ владельца 07.11: программа сама считает, какая это по счёту активация в
+ * неделе аккаунта (неделя своя — 7 дней от первого использования), и по этому
+ * номеру подставляет очки: 400, а в 4-й и 7-й — 1000. Если программа не смогла
+ * определить номер (пропущенный день сбивает счётчик), владелец уточняет его
+ * руками — и дальше программа продолжает считать от его номера.
  *
  * Отмена в диалоге ничего не активирует.
  *
@@ -81,8 +92,25 @@ function ActivateForm({
   const [project, setProject] = useState<string>(
     account.projectId === null ? NONE : String(account.projectId),
   );
-  const [tokens, setTokens] = useState(String(DEFAULT_ACTIVATION_TOKENS));
+
+  // Чек-ин за сегодня уже был? Тогда номер активации дня уже записан, и
+  // трогать его нельзя — иначе «не меняю» превратилось бы в затирку. Очки дня
+  // показываем записанные (их можно поправить руками).
+  const checkedInToday = account.weekCheckedInToday;
+  const defaultIndex = checkedInToday
+    ? (account.weekTodayIndex ?? account.week.nextIndex ?? WEEKLY_ACTIVATION_LIMIT)
+    : (account.week.nextIndex ?? WEEKLY_ACTIVATION_LIMIT);
+  const defaultTokens = checkedInToday ? account.lastTokens : pointsForIndex(defaultIndex);
+
+  const [index, setIndex] = useState(String(defaultIndex));
+  const [tokens, setTokens] = useState(String(defaultTokens));
   const [busy, setBusy] = useState(false);
+
+  /** Смена номера активации пересчитывает очки: 400, а в 4-й и 7-й — 1000. */
+  function onIndexChange(value: string) {
+    setIndex(value);
+    setTokens(String(pointsForIndex(Number(value))));
+  }
 
   async function onSubmit() {
     setBusy(true);
@@ -90,14 +118,17 @@ function ActivateForm({
       const raw = tokens.trim();
       const projectId = project === NONE ? null : Number(project);
       const tokensValue = raw === '' ? undefined : Number(raw);
+      // Номер отправляем, только когда его можно менять: если чек-ин за
+      // сегодня уже записан, номер дня не трогаем (сервер оставит прежний).
+      const activationIndex = checkedInToday ? undefined : Number(index);
 
-      const outcome = await activateAccountOnly(account.id, projectId, tokensValue);
+      const outcome = await activateAccountOnly(account.id, projectId, tokensValue, activationIndex);
       if (!outcome.ok) {
         toast.error(outcome.error);
         return;
       }
 
-      toast.success('Аккаунт активирован — погаснет на 24 часа');
+      toast.success('Аккаунт активирован — погаснет на 6 часов');
       // Другие вкладки раздела должны увидеть новое состояние (тот же канал,
       // что и у плавающего окна).
       publishMinimaxActivated(account.id);
@@ -114,7 +145,7 @@ function ActivateForm({
         <DialogTitle>Активация аккаунта</DialogTitle>
         <DialogDescription>
           «{account.title || account.email}» — на какой проект зачесть активацию? Аккаунт
-          погаснет на 24 часа с момента активации. Копирование почты или пароля аккаунт
+          погаснет на 6 часов с момента активации. Копирование почты или пароля аккаунт
           не гасит.
         </DialogDescription>
       </DialogHeader>
@@ -136,8 +167,28 @@ function ActivateForm({
           </Select>
         </div>
         <div className="flex flex-col gap-1">
+          <Label htmlFor="activate-index">Какая это по счёту активация в неделе</Label>
+          <Select value={index} onValueChange={onIndexChange} disabled={checkedInToday}>
+            <SelectTrigger id="activate-index">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {WEEKLY_ACTIVATION_POINTS.map((points, i) => (
+                <SelectItem key={i + 1} value={String(i + 1)}>
+                  {i + 1}-я активация — {points} очков
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            {checkedInToday
+              ? 'Сегодня чек-ин уже был — номер и очки дня записаны, их можно поправить только в поле очков.'
+              : `Неделя аккаунта своя: 7 дней от первой активации. Сделано ${account.week.used} из ${WEEKLY_ACTIVATION_LIMIT}, осталось ${account.week.remaining}.`}
+          </p>
+        </div>
+        <div className="flex flex-col gap-1">
           <Label htmlFor="activate-tokens">
-            Очки за активацию (по умолчанию {DEFAULT_ACTIVATION_TOKENS})
+            Очки за активацию (по умолчанию {defaultTokens})
           </Label>
           <Input
             id="activate-tokens"

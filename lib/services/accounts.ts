@@ -22,6 +22,12 @@ import {
   type AccountRotationRow,
   type ProjectUsage,
 } from '@/lib/accounts/rotation';
+import {
+  pointsForIndex,
+  weeklyQuota,
+  type WeeklyCheckIn,
+  type WeeklyQuota,
+} from '@/lib/accounts/weekly';
 import type {
   AccountActivateInput,
   AccountCreateInput,
@@ -30,12 +36,16 @@ import type {
 } from '@/lib/validation/account';
 
 /**
- * Мультиаккаунт: список аккаунтов, «тушение» на 24 часа и учёт проектов.
+ * Мультиаккаунт: список аккаунтов, «тушение» на 6 часов и учёт проектов.
  *
- * Правило владельца (04.11): активация гасит аккаунт на СВОИ 24 часа — от
- * момента активации, а не до полуночи по календарю. Каждый аккаунт отсчитывает
- * своё время, поэтому список «оживает» по мере истечения окон. Ночной задачи
- * нет: доступность считается при чтении.
+ * Правило владельца (04.11, уточнено 07.11): активация гасит аккаунт на СВОИ
+ * 6 ЧАСОВ — от момента активации, а не до полуночи по календарю. Каждый
+ * аккаунт отсчитывает своё время, поэтому список «оживает» по мере истечения
+ * окон. Ночной задачи нет: доступность считается при чтении.
+ *
+ * Неделя (заказ владельца 07.11): недельная квота аккаунта — 7 активаций, и
+ * неделя у каждого своя (7 дней от первого использования, как устроено окно
+ * MiniMax). См. `lib/accounts/weekly.ts`.
  *
  * Пароль — шифротекст AES-256-GCM с AAD от id аккаунта (нельзя переставить
  * шифротекст между строками). Ключ — тот же мастер-ключ, что у vault.
@@ -47,7 +57,7 @@ export function accountPasswordAad(accountId: number): string {
 }
 
 export type AccountListItem = AccountRotationRow & {
-  /** Израсходован ли аккаунт (окно 24 ч с момента активации не истекло) — строка гаснет. */
+  /** Израсходован ли аккаунт (окно простоя не истекло) — строка гаснет. */
   spent: boolean;
   /** Когда аккаунт снова свободен (ISO) или null — если не активировался ни разу. */
   availableAt: string | null;
@@ -57,6 +67,16 @@ export type AccountListItem = AccountRotationRow & {
   activations: number;
   /** Сколько токенов на них ушло суммарно — по всем активациям, не только за последнюю. */
   totalTokens: number;
+  /**
+   * Недельная квота аккаунта (заказ владельца 07.11): неделя у аккаунта своя —
+   * 7 дней от его ПЕРВОГО использования (окно MiniMax). По ней считается, какой
+   * номер у следующей активации и сколько очков за неё положено.
+   */
+  week: WeeklyQuota;
+  /** Был ли сегодня (по Москве) чек-ин у аккаунта — повторный очков не даёт. */
+  weekCheckedInToday: boolean;
+  /** Номер активации, записанный за сегодняшний чек-ин (если он был). */
+  weekTodayIndex: number | null;
 };
 
 export type ProjectListItem = {
@@ -77,11 +97,14 @@ const accountColumns = {
   lastTokens: accountsAccount.lastTokens,
 };
 
-/** Строка списка: аккаунт + состояние окна простоя. */
+/** Строка списка: аккаунт + состояние окна простоя + недельная квота. */
 function toListItem(
   row: AccountRotationRow,
   now: Date,
   stats?: { activations: number; tokens: number },
+  week?: WeeklyQuota,
+  weekCheckedInToday = false,
+  weekTodayIndex: number | null = null,
 ): AccountListItem {
   const free = availableAt(row.usedAt);
   return {
@@ -91,7 +114,55 @@ function toListItem(
     remainingMs: free ? Math.max(0, new Date(free).getTime() - now.getTime()) : 0,
     activations: stats?.activations ?? 0,
     totalTokens: stats?.tokens ?? 0,
+    week: week ?? weeklyQuota([], moscowToday(now)),
+    weekCheckedInToday,
+    weekTodayIndex,
   };
+}
+
+/**
+ * Чек-ины аккаунтов из журнала: московская дата и (если есть) подтверждённый
+ * владельцем номер активации.
+ *
+ * Журнал — единственный источник: у аккаунта хранится только ПОСЛЕДНЯЯ
+ * активация, а недельная квота считается по всей его истории.
+ */
+async function accountCheckIns(user: SessionUser): Promise<Map<number, WeeklyCheckIn[]>> {
+  const rows = await db
+    .select({
+      accountId: accountsUsage.accountId,
+      usedOn: accountsUsage.usedOn,
+      activationIndex: accountsUsage.activationIndex,
+    })
+    .from(accountsUsage)
+    .where(ownership(user, accountsUsage.userId));
+  const byAccount = new Map<number, WeeklyCheckIn[]>();
+  for (const row of rows) {
+    const list = byAccount.get(row.accountId) ?? [];
+    list.push({ date: row.usedOn, index: row.activationIndex });
+    byAccount.set(row.accountId, list);
+  }
+  return byAccount;
+}
+
+/**
+ * Недельная квота по аккаунтам: состояние + был ли сегодня чек-ин + номер,
+ * записанный за сегодняшний чек-ин.
+ */
+function weekStates(
+  checkIns: Map<number, WeeklyCheckIn[]>,
+  today: string,
+): Map<number, { week: WeeklyQuota; checkedInToday: boolean; todayIndex: number | null }> {
+  const states = new Map<number, { week: WeeklyQuota; checkedInToday: boolean; todayIndex: number | null }>();
+  for (const [accountId, list] of checkIns) {
+    const todayCheckIn = list.find((c) => c.date === today);
+    states.set(accountId, {
+      week: weeklyQuota(list, today),
+      checkedInToday: todayCheckIn !== undefined,
+      todayIndex: todayCheckIn?.index ?? null,
+    });
+  }
+  return states;
 }
 
 /**
@@ -124,15 +195,36 @@ async function accountUsageStats(
 
 /** Все аккаунты пользователя в порядке «доступные сверху, израсходованные снизу». */
 export async function listAccounts(user: SessionUser, now: Date = new Date()): Promise<AccountListItem[]> {
-  const [rows, stats] = await Promise.all([
+  const today = moscowToday(now);
+  const [rows, stats, checkIns] = await Promise.all([
     db
       .select(accountColumns)
       .from(accountsAccount)
       .leftJoin(accountsProject, eq(accountsAccount.usedProjectId, accountsProject.id))
       .where(ownership(user, accountsAccount.userId)),
     accountUsageStats(user),
+    accountCheckIns(user),
   ]);
-  return sortAccounts(rows, now).map((row) => toListItem(row, now, stats.get(row.id)));
+  const states = weekStates(checkIns, today);
+  const enriched = rows.map((row) => {
+    const state = states.get(row.id);
+    return {
+      ...row,
+      weekUsed: state?.week.used ?? 0,
+      weekExhausted: state?.week.exhausted ?? false,
+    };
+  });
+  return sortAccounts(enriched, now).map((row) => {
+    const state = states.get(row.id);
+    return toListItem(
+      row,
+      now,
+      stats.get(row.id),
+      state?.week,
+      state?.checkedInToday ?? false,
+      state?.todayIndex ?? null,
+    );
+  });
 }
 
 /**
@@ -144,6 +236,7 @@ export async function listAccount(
   accountId: number,
   now: Date = new Date(),
 ): Promise<AccountListItem | null> {
+  const today = moscowToday(now);
   const [row] = await db
     .select(accountColumns)
     .from(accountsAccount)
@@ -151,8 +244,19 @@ export async function listAccount(
     .where(and(eq(accountsAccount.id, accountId), ownership(user, accountsAccount.userId)))
     .limit(1);
   if (!row) return null;
-  const stats = await accountUsageStats(user, accountId);
-  return toListItem(row, now, stats.get(accountId));
+  const [stats, checkIns] = await Promise.all([
+    accountUsageStats(user, accountId),
+    accountCheckIns(user),
+  ]);
+  const state = weekStates(checkIns, today).get(accountId);
+  return toListItem(
+    { ...row, weekUsed: state?.week.used ?? 0, weekExhausted: state?.week.exhausted ?? false },
+    now,
+    stats.get(accountId),
+    state?.week,
+    state?.checkedInToday ?? false,
+    state?.todayIndex ?? null,
+  );
 }
 
 /**
@@ -234,8 +338,9 @@ export async function deleteAccount(user: SessionUser, accountId: number): Promi
 }
 
 /**
- * Активация аккаунта: гасит его на СВОИ 24 ЧАСА — от момента активации
- * (правило владельца 04.11); до истечения окна его не активируют заново.
+ * Активация аккаунта: гасит его на СВОИ 6 ЧАСОВ — от момента активации
+ * (заказ владельца 07.11; раньше было 24 часа); до истечения окна его не
+ * активируют заново.
  *
  * Вызывается ТОЛЬКО явной кнопкой «Активировать» (заказ владельца 05.11):
  * копирование почты или пароля аккаунт не гасит и в журнал не пишет.
@@ -246,8 +351,14 @@ export async function deleteAccount(user: SessionUser, accountId: number): Promi
  * статистика по проектам удваивалась бы). Новая сессия начинается, когда окно
  * истекло.
  *
- * Токены `undefined` — «не меняю» (повторная активация не должна затирать уже
- * введённое).
+ * НОМЕР АКТИВАЦИИ В НЕДЕЛЕ (заказ владельца 07.11): очки MiniMax даёт ежедневный
+ * чек-ин — 400 очков, а в 4-й и 7-й день подряд 1000. Номер считается по
+ * недельной квоте аккаунта (неделя своя: 7 дней от первого использования), а
+ * владелец может уточнить его руками — тогда очки считаются по его номеру.
+ *
+ * - `tokens` undefined — «не меняю»: у уже записанного дня очки не затираются,
+ *   у нового дня берутся по номеру активации;
+ * - `activationIndex` undefined — «определи сам» (по недельной квоте).
  */
 export async function activateAccount(
   user: SessionUser,
@@ -270,6 +381,7 @@ export async function activateAccount(
 
   const usedAt = now.toISOString();
   const tokens = input.tokens;
+  const today = moscowToday(now);
 
   await db.transaction(async (tx) => {
     const [account] = await tx
@@ -292,7 +404,11 @@ export async function activateAccount(
     const sessionUsedAt = sessionOpen ? account.usedAt! : usedAt;
 
     const [existing] = await tx
-      .select({ id: accountsUsage.id, tokens: accountsUsage.tokens })
+      .select({
+        id: accountsUsage.id,
+        tokens: accountsUsage.tokens,
+        activationIndex: accountsUsage.activationIndex,
+      })
       .from(accountsUsage)
       .where(
         and(
@@ -303,7 +419,26 @@ export async function activateAccount(
       )
       .limit(1);
 
-    const rowTokens = tokens ?? existing?.tokens ?? 0;
+    // Недельная квота аккаунта — по его журналу. Номер активации: явно
+    // заданный владельцем, иначе посчитанный по квоте.
+    const checkIns = await tx
+      .select({
+        usedOn: accountsUsage.usedOn,
+        activationIndex: accountsUsage.activationIndex,
+      })
+      .from(accountsUsage)
+      .where(and(eq(accountsUsage.accountId, input.id), ownership(user, accountsUsage.userId)));
+    const quota = weeklyQuota(
+      checkIns.map((row) => ({ date: row.usedOn, index: row.activationIndex })),
+      today,
+    );
+    const index = input.activationIndex ?? quota.nextIndex ?? null;
+
+    // Чек-ин в сутки один: строка дня уже есть → сегодняшние очки не затираем,
+    // а номер дня остаётся прежним (иначе «не меняю» превратилось бы в затирку).
+    const rowTokens = tokens ?? existing?.tokens ?? (index !== null ? pointsForIndex(index) : 0);
+    const rowIndex =
+      existing && input.activationIndex === undefined ? existing.activationIndex : index;
     // projectId: undefined — «проект не меняем»; null — «проекта нет»;
     // число — «проект такой». Различать надо: копирование пароля не должно
     // стирать проект, выбранный при копировании почты.
@@ -325,6 +460,7 @@ export async function activateAccount(
         .update(accountsUsage)
         .set({
           tokens: rowTokens,
+          activationIndex: rowIndex,
           ...(projectPatch !== undefined ? { projectId: projectPatch } : {}),
         })
         .where(eq(accountsUsage.id, existing.id));
@@ -335,6 +471,7 @@ export async function activateAccount(
         projectId: projectPatch ?? null,
         usedOn: sessionUsedOn,
         tokens: rowTokens,
+        activationIndex: rowIndex,
       });
     }
   });

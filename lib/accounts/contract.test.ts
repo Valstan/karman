@@ -235,7 +235,7 @@ describe('G54: контракт проходит все слои целиком'
     expect(rows[0]!.tokens).toBe(500);
   });
 
-  it('activate: окно активации — 24 часа от момента, и обратное чтение это видно', async () => {
+  it('activate: окно активации — 6 часов от момента, и обратное чтение это видно', async () => {
     const id = await createAccount(owner, {
       title: 'A',
       email: 'window@example.test',
@@ -250,10 +250,67 @@ describe('G54: контракт проходит все слои целиком'
     const soon = await listAccounts(owner, new Date(NOW.getTime() + 60 * 60 * 1000));
     const justNow = soon.find((r) => r.id === id)!;
     expect(justNow.spent).toBe(true);
-    expect(justNow.availableAt).toBe('2026-11-04T12:00:00.000Z');
+    expect(justNow.availableAt).toBe('2026-11-03T18:00:00.000Z');
 
-    // Через 25 часов — снова свободен.
-    const later = await listAccounts(owner, new Date(NOW.getTime() + 25 * 60 * 60 * 1000));
+    // Через 7 часов — снова свободен (окно простоя 6 часов, заказ 07.11).
+    const later = await listAccounts(owner, new Date(NOW.getTime() + 7 * 60 * 60 * 1000));
     expect(later.find((r) => r.id === id)!.spent).toBe(false);
+  });
+
+  it('activate: номер активации доезжает до БД и читается обратно (G54)', async () => {
+    const id = await createAccount(owner, {
+      title: 'A',
+      email: 'index@example.test',
+      password: 'пароль',
+    });
+
+    // Номер не задан — программа определяет его сама (первая активация).
+    const auto = accountActivateSchema.safeParse({ id });
+    expect(auto.success).toBe(true);
+    if (!auto.success) return;
+    expect(auto.data.activationIndex).toBeUndefined();
+    await activateAccount(owner, auto.data, NOW);
+
+    const [row] = await refs.current!
+      .select()
+      .from(accountsUsage)
+      .where(eq(accountsUsage.accountId, id));
+    // Первая активация недели → 1, очки по ней — 400.
+    expect(row!.activationIndex).toBe(1);
+    expect(row!.tokens).toBe(400);
+
+    // Номер задан владельцем — доезжает и он, и очки по нему (4-я → 1000).
+    const second = accountActivateSchema.safeParse({
+      id,
+      activationIndex: 4,
+      tokens: undefined,
+    });
+    expect(second.success).toBe(true);
+    if (!second.success) return;
+    expect(second.data.activationIndex).toBe(4);
+    await activateAccount(owner, second.data, new Date(NOW.getTime() + 24 * 60 * 60 * 1000));
+
+    const rows = await refs.current!
+      .select()
+      .from(accountsUsage)
+      .where(eq(accountsUsage.accountId, id));
+    expect(rows.length).toBe(2);
+    const secondRow = rows.find((r) => r.usedOn === '2026-11-04')!;
+    expect(secondRow.activationIndex).toBe(4);
+    expect(secondRow.tokens).toBe(1000);
+
+    // Обратное чтение: недельная квота аккаунта знает про подтверждённый номер.
+    const list = await listAccounts(owner, new Date(NOW.getTime() + 24 * 60 * 60 * 1000));
+    const account = list.find((r) => r.id === id)!;
+    expect(account.week.used).toBe(2);
+    expect(account.week.confirmedIndex).toBe(4);
+    expect(account.week.nextIndex).toBe(5);
+  });
+
+  it('activate: номер вне 1..7 не принимается валидатором', async () => {
+    const bad = accountActivateSchema.safeParse({ id: 1, activationIndex: 8 });
+    expect(bad.success).toBe(false);
+    const zero = accountActivateSchema.safeParse({ id: 1, activationIndex: 0 });
+    expect(zero.success).toBe(false);
   });
 });
