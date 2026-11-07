@@ -215,14 +215,26 @@ jobs:
             ssh karman "rm -rf '$TMPD'" 2>/dev/null || true
             exit "$rc"
           fi
+          # G321: `ssh host 'bash -s' ARG…` НЕ передаёт argv. ssh склеивает аргументы
+          # в одну командную строку, и её разбирает удалённый шелл: пустой аргумент
+          # при этом исчезает молча, значение с пробелом разъезжается на два, а `$`
+          # внутри значения раскрывается на боксе. Поэтому значения едут переменными
+          # окружения: `%q` кладёт их в строку так, что удалённый шелл увидит ровно
+          # то, что мы послали, а наличие каждой проверяется явно.
+          DEPLOY_SHA="${{ github.sha }}"
+          DEPLOY_SSH_CMD="SHA=$(printf '%q' "$DEPLOY_SHA") BASE=$(printf '%q' "$DEPLOY_BASE") SHA256=$(printf '%q' "$SHA256") TMPD=$(printf '%q' "$TMPD") bash -s"
           set +e
-          ssh karman 'bash -s' "${{ github.sha }}" "$DEPLOY_BASE" "$SHA256" "$TMPD" 2>/dev/null <<'REMOTE'
+          ssh karman "$DEPLOY_SSH_CMD" 2>/dev/null <<'REMOTE'
           exec 2>&1
           set -e
-          SHA="$1"
-          BASE="$2"
-          SHA256="$3"
-          TMPD="$4"
+          # SHA, BASE, SHA256, TMPD пришли переменными окружения, а не позиционными
+          # аргументами (G321). Пустое значение — стоп, а не молчаливая подстановка.
+          for v in SHA BASE SHA256 TMPD; do
+            if [ -z "${!v}" ]; then
+              echo "::error::$v не дошла до бокса — деплой остановлен"
+              exit 1
+            fi
+          done
           REL="$BASE/releases/$SHA"
           if [ -z "$TMPD" ] || [ ! -f "$TMPD/karman-app.tgz" ]; then
             echo "::error::Артефакт не найден во временном каталоге — деплой остановлен"
@@ -271,11 +283,17 @@ jobs:
           set -e
           if [ -z "$APP_PORT" ]; then echo "::error::Не задан vars.DEPLOY_APP_PORT"; exit 1; fi
           # G315 — см. комментарий в «Ship artifact + restart».
+          # G321 — тем же способом, что и в «Ship artifact + restart»: значение едет
+          # переменной окружения, а не позиционным аргументом ssh.
+          DEPLOY_SMOKE_SSH_CMD="PORT=$(printf '%q' "$APP_PORT") bash -s"
           set +e
-          ssh karman 'bash -s' "$APP_PORT" 2>/dev/null <<'REMOTE'
+          ssh karman "$DEPLOY_SMOKE_SSH_CMD" 2>/dev/null <<'REMOTE'
           exec 2>&1
           set -e
-          PORT="$1"
+          if [ -z "${PORT:-}" ]; then
+            echo "::error::порт не дошёл до бокса — смоук остановлен"
+            exit 1
+          fi
           sleep 5   # дать сервису подняться после restart
           fail=0
           check() {
