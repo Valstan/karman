@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { Copy, ExternalLink, KeyRound, LayoutList, Trash2, Zap } from 'lucide-react';
+import { Copy, KeyRound, LayoutList, Trash2, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Table,
@@ -13,7 +13,11 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { deleteAccountAction, deleteProjectAction } from '@/lib/actions/accounts';
+import {
+  deleteAccountAction,
+  deleteProjectAction,
+  nextAccountAction,
+} from '@/lib/actions/accounts';
 import {
   ACTIVATED_PREVIEW_LIMIT,
   accountPoolSummary,
@@ -210,8 +214,8 @@ export function MinimaxPanel({
    * ближайшее, что можно сделать. Имя окна одно: повторное открытие не
    * плодит окна, а поднимает уже открытое.
    */
-  function openWindow(account: AccountListItem) {
-    const params = new URLSearchParams({ accountId: String(account.id) });
+  function openWindow(accountId: number) {
+    const params = new URLSearchParams({ accountId: String(accountId) });
     const opened = window.open(
       `/minimax-window?${params.toString()}`,
       'karman-minimax-window',
@@ -222,6 +226,36 @@ export function MinimaxPanel({
       return;
     }
     opened.focus();
+  }
+
+  /**
+   * Быстрый путь к активации (заказ владельца 08.11): нажал на предложенный
+   * аккаунт — сразу открылось «быстрое окно», и почта уже в буфере.
+   *
+   * ПЕРЕД этим — проверка свежести: страница могла устареть (активация на
+   * другой машине), и тогда предложенный аккаунт уже погашен. Поэтому
+   * «кто сейчас следующий» перечитывается с сервера, и окно открывается уже
+   * для СВЕЖЕГО аккаунта — того, что дольше всех не активировался.
+   */
+  async function openNextAccountWindow() {
+    const outcome = await nextAccountAction();
+    if (!outcome.ok) {
+      toast.error(outcome.error);
+      return;
+    }
+    const fresh = outcome.data;
+    if (!fresh) {
+      toast.info('Свободных аккаунтов нет — все погашены или недели исчерпаны');
+      router.refresh();
+      return;
+    }
+    // Почта — в буфер сразу: чтобы снова не щелкать мышкой. Окно открывается и
+    // если копирование не вышло (буфер может быть недоступен) — но тогда
+    // владельцу об этом сказать надо.
+    const copied = await copyAccountSecret({ id: fresh.id, email: fresh.email }, 'email');
+    if (!copied.ok) toast.error(copied.error);
+    openWindow(fresh.id);
+    router.refresh();
   }
 
   async function removeAccount(account: AccountListItem) {
@@ -361,22 +395,27 @@ export function MinimaxPanel({
             при текущем темпе (активаций в день за эту московскую неделю).
           </p>
 
-          {/* Верхний слот: ОДИН следующий аккаунт. */}
+          {/* Верхний слот: ОДИН следующий аккаунт. Вся карточка слева — одна
+              большая кнопка (заказ владельца 08.11: «нажал в любом месте —
+              открылось быстрое окно, и почта уже в буфере»). Перед открытием
+              состояние перечитывается с сервера: страница могла устареть, и
+              тогда предложенный аккаунт уже погашен — окно откроется для
+              свежего «самого старого неактивированного». */}
           <div className="rounded-md border border-emerald-500/50 bg-emerald-500/10 p-4">
             {next ? (
               <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0">
+                <button
+                  type="button"
+                  onClick={() => void openNextAccountWindow()}
+                  title="Открыть быстрое окно: почта скопируется сама"
+                  className="min-w-0 flex-1 text-left"
+                >
                   <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     Следующий аккаунт
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => openWindow(next)}
-                    title="Открыть в отдельном окне поверх вкладок"
-                    className="mt-1 block max-w-full truncate text-left text-lg font-semibold hover:underline"
-                  >
+                  <div className="mt-1 block max-w-full truncate text-lg font-semibold hover:underline">
                     {next.title || '—'}
-                  </button>
+                  </div>
                   <div className="font-mono text-sm text-muted-foreground">{next.email}</div>
                   {/* Сводка по аккаунту (заказ 05.11): верхний слот тоже может быть
                       не новым — у него есть история активаций. */}
@@ -384,9 +423,13 @@ export function MinimaxPanel({
                     <div className="text-xs text-muted-foreground">
                       активаций: {next.activations}
                       {next.totalTokens > 0 ? ` · очков всего: ${next.totalTokens}` : ''}
+                      {next.weekUsed > 0 ? ` · на этой неделе: ${next.weekUsed} из 7` : ''}
                     </div>
                   ) : null}
-                </div>
+                  <div className="text-xs text-muted-foreground">
+                    Нажми — откроется окно, почта скопируется сама
+                  </div>
+                </button>
                 <div className="flex shrink-0 flex-wrap items-center gap-2">
                   <Button
                     title="Скопировать почту (аккаунт не гаснет)"
@@ -409,13 +452,8 @@ export function MinimaxPanel({
                   >
                     <Zap className="mr-1 h-4 w-4" /> Активировать
                   </Button>
-                  <Button
-                    variant="outline"
-                    title="Открыть в отдельном окне — копировать, не переключаясь между вкладками"
-                    onClick={() => openWindow(next)}
-                  >
-                    <ExternalLink className="mr-1 h-4 w-4" /> В окне
-                  </Button>
+                  {/* «В окне» убран 08.11: открыть окно теперь можно нажатием на
+                      саму карточку аккаунта (слева), и почта копируется сама. */}
                   <Button variant="ghost" onClick={() => handleEdit(next)}>
                     Правка
                   </Button>
@@ -468,7 +506,7 @@ export function MinimaxPanel({
                   onCopy={(kind) => handleCopy(account, kind)}
                   onEdit={() => handleEdit(account)}
                   onDelete={() => removeAccount(account)}
-                  onOpenWindow={() => openWindow(account)}
+                  onOpenWindow={() => openWindow(account.id)}
                 />
               ))}
               {activated.length > preview.length ? (
