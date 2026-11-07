@@ -23,6 +23,7 @@ import {
   updateAccount,
 } from '@/lib/services/accounts';
 import { parseAccountImport } from '@/lib/accounts/import';
+import { splitAccounts } from '@/lib/accounts/rotation';
 import { isUniqueViolation } from '@/lib/db/pg-error';
 import { currentUserOrNull, revalidateAll, requireSecretsAccess, type ActionResult } from './_internal';
 
@@ -33,6 +34,40 @@ import { currentUserOrNull, revalidateAll, requireSecretsAccess, type ActionResu
  * Показ пароля — по образцу vault: суперпользователь + step-up 2FA
  * (`requireSecretsAccess`), потому что пароль уходит в буфер обмена.
  */
+
+/**
+ * СВЕЖИЙ следующий аккаунт для активации (заказ владельца 08.11).
+ *
+ * Зачем: страница раздела могла устареть (активация на другой машине), и тогда
+ * предложенный аккаунт уже погашен. Владелец жмёт на него — и получает
+ * «быстрое окно» с аккаунтом, который БЕЗОПАСНО активировать. Поэтому перед
+ * открытием окна состояние перечитывается с сервера, а не берётся из того,
+ * что нарисовано на экране.
+ *
+ * Порядок — тот же, что на экране: тот, что дольше всех не активировался
+ * (никогда не использованный — самый первый); аккаунты с исчерпанной неделей
+ * не предлагаются (`splitAccounts`).
+ */
+export async function nextAccountAction(): Promise<
+  ActionResult<{
+    id: number;
+    email: string;
+    title: string;
+    projectId: number | null;
+  } | null>
+> {
+  const user = await currentUserOrNull();
+  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  if (!user.isSuperuser) return { ok: false, error: 'Раздел доступен только владельцу' };
+  const now = new Date();
+  const accounts = await listAccounts(user, now);
+  const { next } = splitAccounts(accounts, now);
+  if (!next) return { ok: true, data: null };
+  return {
+    ok: true,
+    data: { id: next.id, email: next.email, title: next.title, projectId: next.projectId },
+  };
+}
 
 export async function listAccountsAction(): Promise<
   ActionResult<{
