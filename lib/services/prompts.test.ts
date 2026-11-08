@@ -8,10 +8,12 @@ import {
   deletePrompt,
   listPromptSections,
   listPrompts,
+  listSectionPrompts,
   purgeArchivedPrompts,
   renamePromptProject,
   resolveOwnerAccountId,
   setPromptArchived,
+  setPromptArchivedInSection,
   summarizePromptProjects,
   syncPromptProjects,
 } from '@/lib/services/prompts';
@@ -278,5 +280,50 @@ describe('реестр разделов библиотеки', () => {
     await createPrompt(other, { project: 'Их раздел', body: 'Текст' });
     expect(await renamePromptProject(owner, 'Их раздел', 'Мой')).toBe(false);
     expect((await listPromptSections(owner, { archived: false }))).toEqual([]);
+  });
+});
+
+describe('машинный доступ раздела (проект читает и архивирует своё)', () => {
+  it('проект видит промты своего раздела и не чужие', async () => {
+    await createPrompt(owner, { project: 'MatricaRMZ', body: 'Мой промт' });
+    await createPrompt(owner, { project: 'SARAFAN', body: 'Чужой промт' });
+
+    const мои = await listSectionPrompts('MatricaRMZ', { archived: false });
+    expect(мои).toHaveLength(1);
+    expect(мои[0]!.body).toBe('Мой промт');
+
+    const чужие = await listSectionPrompts('SARAFAN', { archived: false });
+    expect(чужие).toHaveLength(1);
+    expect(чужие[0]!.body).toBe('Чужой промт');
+  });
+
+  it('архивирование в своём разделе не трогает чужой промт', async () => {
+    const мой = await createPrompt(owner, { project: 'MatricaRMZ', body: 'Мой' });
+    const чужой = await createPrompt(owner, { project: 'SARAFAN', body: 'Чужой' });
+
+    expect(await setPromptArchivedInSection('MatricaRMZ', чужой.id, true)).toBe(false);
+    expect(await setPromptArchivedInSection('SARAFAN', мой.id, true)).toBe(false);
+
+    const живые = await listSectionPrompts('MatricaRMZ', { archived: false });
+    expect(живые).toHaveLength(1);
+    expect(живые[0]!.body).toBe('Мой');
+  });
+
+  it('архив раздела скрывает промт из живых, но не удаляет его', async () => {
+    const создан = await createPrompt(owner, { project: 'MatricaRMZ', body: 'Текст' });
+    expect(await setPromptArchivedInSection('MatricaRMZ', создан.id, true)).toBe(true);
+
+    expect(await listSectionPrompts('MatricaRMZ', { archived: false })).toHaveLength(0);
+    const архив = await listSectionPrompts('MatricaRMZ', { archived: true });
+    expect(архив).toHaveLength(1);
+    expect(архив[0]!.body).toBe('Текст');
+    expect(архив[0]!.archivedAt).not.toBeNull();
+  });
+
+  it('вернуть из архива — одна операция', async () => {
+    const создан = await createPrompt(owner, { project: 'MatricaRMZ', body: 'Текст' });
+    await setPromptArchivedInSection('MatricaRMZ', создан.id, true);
+    expect(await setPromptArchivedInSection('MatricaRMZ', создан.id, false)).toBe(true);
+    expect(await listSectionPrompts('MatricaRMZ', { archived: false })).toHaveLength(1);
   });
 });
