@@ -314,3 +314,49 @@ export async function countArchivedPrompts(user: SessionUser): Promise<number> {
     .where(and(isNotNull(prompt.archivedAt), ownership(user, prompt.userId)));
   return row?.count ?? 0;
 }
+
+/**
+ * Промты РАЗДЕЛА — без фильтра по владельцу.
+ *
+ * Обычная библиотека личная (`ownership()` — «информация у каждого аккаунта
+ * видна только ему»), но машинный канал проекта устроен иначе: право на
+ * раздел даёт ТОКЕН раздела, а не сессия. Промты в разделе принадлежат
+ * владельцу аккаунта (пишет Мозг от его имени) — значит, фильтр по владельцу
+ * здесь был бы не защитой, а запретом: проект не увидел бы СВОИ промты.
+ * Защита здесь — другой раздел: `section` закреплён токеном (см.
+ * `lib/prompts/section-auth.ts`).
+ *
+ * Порядок — свежие сверху: проект забирает «новые, не в архиве».
+ */
+export async function listSectionPrompts(
+  section: string,
+  options: { archived: boolean },
+): Promise<PromptItem[]> {
+  const state = options.archived ? isNotNull(prompt.archivedAt) : isNull(prompt.archivedAt);
+  const rows = await db
+    .select()
+    .from(prompt)
+    .where(and(state, eq(prompt.project, section)))
+    .orderBy(desc(prompt.createdAt), desc(prompt.id));
+  return rows.map(toItem);
+}
+
+/**
+ * Архивирование промта РАЗДЕЛА: только свой раздел, только по id.
+ *
+ * Архив — не удаление: строка остаётся с датой архивации, вернуть можно
+ * (`archived: false`). Промт чужого раздела не архивируется — условие по
+ * `project` в WHERE, а не проверка после выборки.
+ */
+export async function setPromptArchivedInSection(
+  section: string,
+  id: number,
+  archived: boolean,
+): Promise<boolean> {
+  const [row] = await db
+    .update(prompt)
+    .set({ archivedAt: archived ? new Date().toISOString() : null })
+    .where(and(eq(prompt.id, id), eq(prompt.project, section)))
+    .returning({ id: prompt.id });
+  return Boolean(row);
+}
