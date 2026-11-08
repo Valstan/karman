@@ -18,11 +18,13 @@ import {
   MinimaxAlreadyActivatedDialog,
   type MinimaxBlockedIntent,
 } from './minimax-already-activated-dialog';
+import { MinimaxActivationPoints } from './minimax-activation-points';
 import { ACTIVATION_WINDOW_MS } from '@/lib/accounts/rotation';
 import { WEEKLY_ACTIVATION_LIMIT, pointsForIndex } from '@/lib/accounts/weekly';
 import {
   activateAccountOnly,
   copyAccountSecret,
+  correctActivationIndex,
   publishMinimaxActivated,
   type ActivateKind,
 } from './minimax-activation';
@@ -32,15 +34,19 @@ import type { AccountListItem, ProjectListItem } from '@/lib/services/accounts';
 const NONE = '__none__';
 
 /**
- * Очки за активацию — двумя кнопками, а не полем ввода (заказ владельца 07.11:
- * «чтобы не вручную набивать»). Обычная активация — 400 очков; 1000 бывает в
- * 4-й и 7-й день недели, и тогда оператор жмёт кнопку «1000 очков».
+ * Очки за активацию — НЕМЕР АКТИВАЦИИ, а семь кнопок (заказ владельца
+ * 08.11).
  *
- * КНОПКУ ПЕРЕКЛЮЧАЕТ САМА ПРОГРАММА (заказ владельца 08.11): она считает номер
- * активации в неделе аккаунта и подставляет очки по закономерности MiniMax —
- * 4-я и 7-я дают 1000, остальные 400. Владелец может переопределить кнопкой.
+ * Раньше было две кнопки («400 очков» / «1000 очков») и номер активации
+ * считался самой программой. Владелец увидел, что программа постоянно
+ * предлагает 1000, и попросил выбирать НОМЕР самому: семь кнопок, по одной на
+ * клетку недели аккаунта (1-я…7-я). Очки — производная от номера: 4-я и 7-я
+ * дают 1000, остальные 400.
+ *
+ * Программа подставляет номер по календарю недели аккаунта, но если он ошибся
+ * (а журнал начат 04.11 и настоящее окно аккаунта могло начаться раньше) —
+ * владелец жмёт нужную кнопку, и дальше программа считает от его номера.
  */
-const ACTIVATION_POINTS_CHOICES = [400, 1000] as const;
 
 /** Зелёная кнопка — «можно нажать». */
 const GREEN_BUTTON =
@@ -82,19 +88,20 @@ export function MinimaxWindow({
     initialProjectId === null ? NONE : String(initialProjectId),
   );
 
-  // Номер активации в неделе программа считает сама (неделя у аккаунта своя —
-  // 7 дней от первого использования). Окно показывает его, чтобы оператор видел
-  // счёт, но правит номер не здесь: точная правка — в диалоге на вкладке.
+  // Номер активации в неделе (клетка 1..7 панели MiniMax). Программа считает
+  // его по календарю недели аккаунта; владелец может назвать настоящий номер
+  // сам — тогда дальше программа считает от его номера (заказ 08.11).
+  //
+  // Если чек-ин за сегодня уже есть, показываем ЗАПИСАННЫЙ номер (его и надо
+  // поправить, если он неверен), а не предложение «на сегодня».
   const checkedInToday = account.weekCheckedInToday;
+  const suggestedIndex = account.week.nextIndex ?? WEEKLY_ACTIVATION_LIMIT;
   const currentIndex = checkedInToday
-    ? (account.weekTodayIndex ?? account.week.nextIndex ?? WEEKLY_ACTIVATION_LIMIT)
-    : (account.week.nextIndex ?? WEEKLY_ACTIVATION_LIMIT);
+    ? (account.weekTodayIndex ?? suggestedIndex)
+    : suggestedIndex;
 
-  // Очки по умолчанию — те, что даст MiniMax за ЭТУ активацию (программа знает
-  // номер: 4-я и 7-я — 1000, остальные — 400).
-  const defaultPoints = checkedInToday ? account.lastTokens : pointsForIndex(currentIndex);
-
-  const [tokens, setTokens] = useState<number>(defaultPoints);
+  // Очки — производная от номера: 4-я и 7-я клетки дают 1000, остальные 400.
+  const [index, setIndex] = useState<number>(currentIndex);
   /** Почта/пароль уже копировались — кнопка сереет (но остаётся нажимаемой). */
   const [copiedEmail, setCopiedEmail] = useState(false);
   const [copiedPassword, setCopiedPassword] = useState(false);
@@ -153,22 +160,43 @@ export function MinimaxWindow({
   async function activateNow() {
     setBusy(true);
     try {
-      // Очки идут ВМЕСТЕ с активацией (заказ владельца 05.11): раньше кнопка
-      // «Активировать этот аккаунт» уходила в сервер без них, и введённое
-      // число молча пропадало — не в аккаунте, не в журнале, не в статистике.
-      //
-      // Номер активации НЕ передаём: сервер считает его сам по недельной
-      // квоте (свежее, чем страница в окне), а очки приходят выбранной
-      // кнопкой.
-      const outcome = await activateAccountOnly(account.id, projectId, tokens);
+      // Номер активации уходит ВМЕСТЕ с активацией (заказ владельца 08.11):
+      // это клетка недели аккаунта на панели MiniMax (1..7), и очки — её
+      // производная (4-я и 7-я — 1000, остальные — 400). Передавать нужно
+      // ИМЕННО выбранный владельцем номер: он видел настоящую панель, а
+      // программа считает по журналу, который начат 04.11 и для части
+      // аккаунтов отстаёт от настоящего окна.
+      const outcome = await activateAccountOnly(account.id, projectId, undefined, index);
       if (!outcome.ok) {
         toast.error(outcome.error);
         return;
       }
       setActivated(true);
       publishMinimaxActivated(account.id);
-      toast.success('Аккаунт активирован на 6 часов');
+      toast.success('Аккаунт активирован на 10 часов');
       window.close();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Записать номер активации для УЖЕ активированного сегодня аккаунта.
+   *
+   * Отдельное действие, а не повторная активация: аккаунт уже погашен, окно
+   * трогать нельзя — меняется только номер клетки в журнале и очки по нему.
+   */
+  async function onSaveIndex() {
+    setBusy(true);
+    try {
+      const outcome = await correctActivationIndex(account.id, index);
+      if (!outcome.ok) {
+        toast.error(outcome.error);
+        return;
+      }
+      publishMinimaxActivated(account.id);
+      toast.success(`Записан ${index}-й номер — ${pointsForIndex(index)} очков`);
+      router.refresh();
     } finally {
       setBusy(false);
     }
@@ -238,37 +266,18 @@ export function MinimaxWindow({
         </Select>
       </div>
 
-      {/* Очки — кнопками, а не вводом числа (заказ владельца 07.11). Какую из
-          двух подсветить — решает программа по номеру активации (08.11).
-          Вид: НЕВЫБРАННАЯ — серая, ВЫБРАННАЯ — тёмная с зелёной галочкой
-          (заказ 08.11: «сейчас наоборот сделано… диссонанс из-за непонятки,
-          что в итоге выбрано»). */}
-      <div className="flex flex-col gap-1">
-        <Label>Очки за активацию</Label>
-        <div className="flex gap-2">
-          {ACTIVATION_POINTS_CHOICES.map((value) => {
-            const selected = tokens === value;
-            return (
-              <Button
-                key={value}
-                type="button"
-                variant="default"
-                className={selected ? undefined : SPENT_BUTTON}
-                disabled={busy || checkedInToday}
-                onClick={() => setTokens(value)}
-              >
-                {selected ? <Check className="mr-1 h-4 w-4 text-emerald-400" /> : null}
-                {value} очков
-              </Button>
-            );
-          })}
-        </div>
-        <p className="text-xs text-muted-foreground">
-          {checkedInToday
-            ? 'Сегодня чек-ин уже был — очки дня записаны, кнопки не меняются.'
-            : `${currentIndex}-я активация в неделе аккаунта (сделано ${account.week.used} из ${WEEKLY_ACTIVATION_LIMIT}). Программа подставила ${defaultPoints} очков: в 4-й и 7-й день недели MiniMax даёт 1000, в остальные — 400.`}
-        </p>
-      </div>
+      {/* НОМЕР АКТИВАЦИИ — семь кнопок в ряд (заказ владельца 08.11). Очки —
+          производная от номера (4-я и 7-я клетки — 1000, остальные — 400). */}
+      <MinimaxActivationPoints
+        value={index}
+        onChange={setIndex}
+        disabled={busy}
+      />
+      <p className="text-xs text-muted-foreground">
+        {checkedInToday
+          ? `Сегодня чек-ин уже был — записан ${account.weekTodayIndex ?? index}-й номер (${pointsForIndex(account.weekTodayIndex ?? index)} очков). Нажми другую кнопку, если программа ошиблась: номер и очки пересчитаются.`
+          : `${index}-я активация в неделе аккаунта (сделано ${account.week.used} из ${WEEKLY_ACTIVATION_LIMIT}) — ${pointsForIndex(index)} очков. Программа считает номер по календарю недели; если в MiniMax показано иначе — нажми нужную кнопку.`}
+      </p>
 
       <div className="flex flex-col gap-2">
         <Button
@@ -279,6 +288,20 @@ export function MinimaxWindow({
         >
           <Zap className="mr-1 h-4 w-4" /> Активировать этот аккаунт
         </Button>
+        {/* Правка номера уже ЗАПИСАННОЙ активации (заказ владельца 08.11:
+            «мало ли, если я забыл, неправильно ее поставил, или забыл вообще
+            ее поменять»). Кнопка появляется, когда владелец выбрал номер,
+            отличный от записанного. */}
+        {checkedInToday && index !== (account.weekTodayIndex ?? index) ? (
+          <Button
+            variant="default"
+            className={GREEN_BUTTON}
+            onClick={() => void onSaveIndex()}
+            disabled={busy}
+          >
+            <Check className="mr-1 h-4 w-4" /> Записать {index}-й номер
+          </Button>
+        ) : null}
         <Button
           variant="default"
           className={GREEN_BUTTON}

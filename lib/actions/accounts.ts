@@ -2,6 +2,7 @@
 
 import {
   accountActivateSchema,
+  accountActivationIndexSchema,
   accountCreateSchema,
   accountUpdateSchema,
   projectCreateSchema,
@@ -10,6 +11,7 @@ import {
   accountPassword,
   accountRating,
   activateAccount,
+  correctActivationIndex,
   createAccount,
   createProject,
   dailyUsage,
@@ -164,6 +166,31 @@ export async function activateAccountAction(values: unknown): Promise<ActionResu
 }
 
 /**
+ * Правка номера активации уже записанного дня (заказ владельца 08.11).
+ *
+ * «Мало ли, если я забыл, неправильно ее поставил, или забыл вообще ее
+ * поменять» — владелец возвращается в окно и называет настоящий номер клетки
+ * на панели MiniMax. Очки пересчитываются по номеру (4-я и 7-я — 1000).
+ */
+export async function correctActivationIndexAction(values: unknown): Promise<ActionResult> {
+  const user = await currentUserOrNull();
+  if (!user) return { ok: false, error: 'Требуется авторизация' };
+  if (!user.isSuperuser) return { ok: false, error: 'Раздел доступен только владельцу' };
+  const parsed = accountActivationIndexSchema.safeParse(values);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? 'Некорректные данные' };
+  }
+  const corrected = await correctActivationIndex(
+    user,
+    parsed.data.id,
+    parsed.data.activationIndex,
+  );
+  if (!corrected) return { ok: false, error: 'Аккаунт не найден или нечего править' };
+  revalidateAll();
+  return { ok: true };
+}
+
+/**
  * Отдаёт пароль для копирования. Step-up 2FA обязателен (как в vault): пароль
  * внешнего сервиса уходит в буфер обмена.
  */
@@ -203,7 +230,8 @@ export async function importAccountsAction(
   return { ok: true, data: { ...result, errors } };
 }
 
-export async function createProjectAction(values: unknown): Promise<ActionResult<{ id: number }>> {  const user = await currentUserOrNull();
+export async function createProjectAction(values: unknown): Promise<ActionResult<{ id: number }>> {
+  const user = await currentUserOrNull();
   if (!user) return { ok: false, error: 'Требуется авторизация' };
   if (!user.isSuperuser) return { ok: false, error: 'Раздел доступен только владельцу' };
   const parsed = projectCreateSchema.safeParse(values);

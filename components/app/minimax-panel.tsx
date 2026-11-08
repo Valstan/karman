@@ -447,7 +447,7 @@ export function MinimaxPanel({
                   {/* Активация — единственное, что гасит аккаунт (заказ 05.11). */}
                   <Button
                     variant="secondary"
-                    title="Активировать аккаунт: погаснет на 6 часов"
+                    title="Активировать аккаунт: погаснет на 10 часов"
                     onClick={() => handleActivate(next)}
                   >
                     <Zap className="mr-1 h-4 w-4" /> Активировать

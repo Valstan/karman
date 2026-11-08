@@ -38,7 +38,7 @@ export const accountUpdateSchema = z.object({
   projectId: z.coerce.number().int().positive().nullable().optional(),
 });
 
-/** Активация аккаунта: гасит его на 6 часов (только явная кнопка «Активировать»). */
+/** Активация аккаунта: гасит его на 10 часов (только явная кнопка «Активировать»). */
 export const accountActivateSchema = z.object({
   id: z.coerce.number().int().positive(),
   /** Проект, на который уходят токены этого аккаунта (может быть не указан). */
@@ -53,6 +53,21 @@ export const accountActivateSchema = z.object({
   activationIndex: z.coerce.number().int().min(1, 'Номер активации — от 1 до 7').max(7, 'Номер активации — от 1 до 7').optional(),
 });
 
+/**
+ * Правка номера активации уже записанного дня (заказ владельца 08.11).
+ *
+ * Номер — это клетка недели аккаунта на панели MiniMax (1..7). Владелец
+ * называет его руками, когда программа ошиблась; очки пересчитываются по нему.
+ */
+export const accountActivationIndexSchema = z.object({
+  id: z.coerce.number().int().positive(),
+  activationIndex: z.coerce
+    .number()
+    .int()
+    .min(1, 'Номер активации — от 1 до 7')
+    .max(7, 'Номер активации — от 1 до 7'),
+});
+
 export const projectCreateSchema = z.object({
   name: z.string().trim().min(1, 'Укажите название проекта').max(200, 'Слишком длинное название'),
 });
@@ -60,4 +75,5 @@ export const projectCreateSchema = z.object({
 export type AccountCreateInput = z.infer<typeof accountCreateSchema>;
 export type AccountUpdateInput = z.infer<typeof accountUpdateSchema>;
 export type AccountActivateInput = z.infer<typeof accountActivateSchema>;
+export type AccountActivationIndexInput = z.infer<typeof accountActivationIndexSchema>;
 export type ProjectCreateInput = z.infer<typeof projectCreateSchema>;

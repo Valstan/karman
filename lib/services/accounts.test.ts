@@ -23,7 +23,7 @@ import type { SessionUser } from '@/lib/auth/rbac';
 /**
  * Мультиаккаунт: инварианты, ради которых раздел и делался.
  *
- * 1. Активация гасит аккаунт на СВОИ 6 часов от момента активации (не до
+ * 1. Активация гасит аккаунт на СВОИ 10 часов от момента активации (не до
  *    полуночи по календарю). Гасит только явная кнопка «Активировать» —
  *    копирование почты или пароля аккаунт не трогает (заказ 05.11).
  * 2. Одна активация на окно: повторная активация, пока окно не истекло, —
@@ -79,7 +79,7 @@ afterEach(async () => {
 });
 
 const NOW = new Date('2026-11-03T12:00:00Z');
-/** Момент за 30 часов до NOW — аккаунт активирован, но его окно 6 ч истекло. */
+/** Момент за 30 часов до NOW — аккаунт активирован, но его окно 10 ч истекло. */
 const LONG_AGO = new Date('2026-11-02T06:00:00Z');
 
 describe('мультиаккаунт: создание и пароль', () => {
@@ -107,7 +107,7 @@ describe('мультиаккаунт: создание и пароль', () => {
   });
 });
 
-describe('мультиаккаунт: активация и тушение на 6 часов', () => {
+describe('мультиаккаунт: активация и тушение на 10 часов', () => {
   it('активация гасит аккаунт: он уходит вниз списка', async () => {
     const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
     const b = await createAccount(owner, { title: 'B', email: 'b@example.test', password: 'p' });
@@ -128,7 +128,7 @@ describe('мультиаккаунт: активация и тушение на 
 
   it('активированный 3 часа назад ещё израсходован (вчерашняя дата не значит «свободен»)', async () => {
     const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
-    // Окно простоя 6 часов (заказ 07.11): три часа назад — ещё занято.
+    // Окно простоя 10 часов (заказ 08.11): три часа назад — ещё занято.
     await activateAccount(
       owner,
       { id: a, projectId: null, tokens: 0 },
@@ -218,7 +218,7 @@ describe('мультиаккаунт: активация и тушение на 
   it('после истечения окна новая активация открывает новую сессию и новую строку журнала', async () => {
     const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
     await activateAccount(owner, { id: a, projectId: null, tokens: 10 }, LONG_AGO);
-    // Окно 6 ч от LONG_AGO истекло к NOW — это НОВАЯ сессия.
+    // Окно 10 ч от LONG_AGO истекло к NOW — это НОВАЯ сессия.
     await activateAccount(owner, { id: a, projectId: null, tokens: 20 }, NOW);
 
     const rows = await refs.current!.select().from(accountsUsage);
@@ -341,7 +341,7 @@ describe('мультиаккаунт: проекты и статистика', (
     const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
     const b = await createAccount(owner, { title: 'B', email: 'b@example.test', password: 'p' });
     // Первая сессия аккаунта A — за 30 часов до NOW, вторая — сейчас: между ними
-    // окно 24 ч успело истекнуть, значит это две РАЗНЫЕ активации в статистике.
+    // окно 10 ч успело истекнуть, значит это две РАЗНЫЕ активации в статистике.
     await activateAccount(owner, { id: a, projectId: p1, tokens: 100 }, LONG_AGO);
     await activateAccount(owner, { id: b, projectId: p2, tokens: 700 }, NOW);
     await activateAccount(owner, { id: a, projectId: p1, tokens: 250 }, NOW);
@@ -377,7 +377,7 @@ describe('мультиаккаунт: свод по дням и рейтинг',
       email: 'rating@example.test',
       password: 'p',
     });
-    // Две разные сессии: окно 24 ч между ними истекло.
+    // Две разные сессии: окно 10 ч между ними истекло.
     await activateAccount(owner, { id, projectId, tokens: 100 }, LONG_AGO);
     await activateAccount(owner, { id, projectId, tokens: 250 }, NOW);
 
