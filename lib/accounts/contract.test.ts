@@ -5,6 +5,7 @@ import { createTestDb, type TestDb } from '@/lib/db/test-db';
 import { accountsAccount, accountsUsage, authUser } from '@/lib/db/schema';
 import {
   activateAccount,
+  correctActivationIndex,
   createAccount,
   createProject,
   listAccounts,
@@ -12,6 +13,7 @@ import {
 } from '@/lib/services/accounts';
 import {
   accountActivateSchema,
+  accountActivationIndexSchema,
   accountCreateSchema,
   accountUpdateSchema,
 } from '@/lib/validation/account';
@@ -235,7 +237,7 @@ describe('G54: контракт проходит все слои целиком'
     expect(rows[0]!.tokens).toBe(500);
   });
 
-  it('activate: окно активации — 6 часов от момента, и обратное чтение это видно', async () => {
+  it('activate: окно активации — 10 часов от момента, и обратное чтение это видно', async () => {
     const id = await createAccount(owner, {
       title: 'A',
       email: 'window@example.test',
@@ -250,10 +252,10 @@ describe('G54: контракт проходит все слои целиком'
     const soon = await listAccounts(owner, new Date(NOW.getTime() + 60 * 60 * 1000));
     const justNow = soon.find((r) => r.id === id)!;
     expect(justNow.spent).toBe(true);
-    expect(justNow.availableAt).toBe('2026-11-03T18:00:00.000Z');
+    expect(justNow.availableAt).toBe('2026-11-03T22:00:00.000Z');
 
-    // Через 7 часов — снова свободен (окно простоя 6 часов, заказ 07.11).
-    const later = await listAccounts(owner, new Date(NOW.getTime() + 7 * 60 * 60 * 1000));
+    // Через 11 часов — снова свободен (окно простоя 10 часов, заказ 08.11).
+    const later = await listAccounts(owner, new Date(NOW.getTime() + 11 * 60 * 60 * 1000));
     expect(later.find((r) => r.id === id)!.spent).toBe(false);
   });
 
@@ -311,6 +313,56 @@ describe('G54: контракт проходит все слои целиком'
     const bad = accountActivateSchema.safeParse({ id: 1, activationIndex: 8 });
     expect(bad.success).toBe(false);
     const zero = accountActivateSchema.safeParse({ id: 1, activationIndex: 0 });
+    expect(zero.success).toBe(false);
+  });
+
+  it('правка номера активации: номер и очки пересчитываются в БД (заказ 08.11)', async () => {
+    // Владелец активировал аккаунт, потом посмотрел настоящую панель MiniMax и
+    // назвал другой номер клетки («забыл, неправильно поставил»).
+    const id = await createAccount(owner, {
+      title: 'A',
+      email: 'correct@example.test',
+      password: 'пароль',
+    });
+    const first = accountActivateSchema.safeParse({ id, activationIndex: 1 });
+    expect(first.success).toBe(true);
+    if (!first.success) return;
+    await activateAccount(owner, first.data, NOW);
+
+    const fixed = accountActivationIndexSchema.safeParse({ id, activationIndex: 4 });
+    expect(fixed.success).toBe(true);
+    if (!fixed.success) return;
+    expect(fixed.data.activationIndex).toBe(4);
+    expect(await correctActivationIndex(owner, id, fixed.data.activationIndex)).toBe(true);
+
+    // Номер и очки в журнале пересчитаны: 4-я клетка — 1000 очков.
+    const rows = await refs.current!
+      .select()
+      .from(accountsUsage)
+      .where(eq(accountsUsage.accountId, id));
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.activationIndex).toBe(4);
+    expect(rows[0]!.tokens).toBe(1000);
+
+    // Очки в строке аккаунта — те же, что в журнале.
+    const [account] = await refs.current!
+      .select()
+      .from(accountsAccount)
+      .where(eq(accountsAccount.id, id));
+    expect(account!.lastTokens).toBe(1000);
+
+    // Обратное чтение: недельная квота знает номер, названный владельцем, и
+    // дальше считает от него.
+    const list = await listAccounts(owner, NOW);
+    const row = list.find((r) => r.id === id)!;
+    expect(row.week.confirmedIndex).toBe(4);
+    expect(row.week.nextIndex).toBe(5);
+  });
+
+  it('правка номера активации: номер вне 1..7 не принимается валидатором', async () => {
+    const bad = accountActivationIndexSchema.safeParse({ id: 1, activationIndex: 8 });
+    expect(bad.success).toBe(false);
+    const zero = accountActivationIndexSchema.safeParse({ id: 1, activationIndex: 0 });
     expect(zero.success).toBe(false);
   });
 });

@@ -36,10 +36,10 @@ import type {
 } from '@/lib/validation/account';
 
 /**
- * Мультиаккаунт: список аккаунтов, «тушение» на 6 часов и учёт проектов.
+ * Мультиаккаунт: список аккаунтов, «тушение» на 10 часов и учёт проектов.
  *
- * Правило владельца (04.11, уточнено 07.11): активация гасит аккаунт на СВОИ
- * 6 ЧАСОВ — от момента активации, а не до полуночи по календарю. Каждый
+ * Правило владельца (04.11, уточнено 07.11 и 08.11): активация гасит аккаунт
+ * на СВОИ 10 ЧАСОВ — от момента активации, а не до полуночи по календарю. Каждый
  * аккаунт отсчитывает своё время, поэтому список «оживает» по мере истечения
  * окон. Ночной задачи нет: доступность считается при чтении.
  *
@@ -73,8 +73,6 @@ export type AccountListItem = AccountRotationRow & {
    * номер у следующей активации и сколько очков за неё положено.
    */
   week: WeeklyQuota;
-  /** Был ли сегодня (по Москве) чек-ин у аккаунта — повторный очков не даёт. */
-  weekCheckedInToday: boolean;
   /** Номер активации, записанный за сегодняшний чек-ин (если он был). */
   weekTodayIndex: number | null;
 };
@@ -103,7 +101,6 @@ function toListItem(
   now: Date,
   stats?: { activations: number; tokens: number },
   week?: WeeklyQuota,
-  weekCheckedInToday = false,
   weekTodayIndex: number | null = null,
 ): AccountListItem {
   const free = availableAt(row.usedAt);
@@ -115,7 +112,6 @@ function toListItem(
     activations: stats?.activations ?? 0,
     totalTokens: stats?.tokens ?? 0,
     week: week ?? weeklyQuota([], moscowToday(now)),
-    weekCheckedInToday,
     weekTodayIndex,
   };
 }
@@ -212,6 +208,9 @@ export async function listAccounts(user: SessionUser, now: Date = new Date()): P
       ...row,
       weekUsed: state?.week.used ?? 0,
       weekExhausted: state?.week.exhausted ?? false,
+      // Чек-ин за сегодня уже был → сегодняшнего бонуса у аккаунта нет, и в
+      // верхний слот он не попадает (заказ владельца 08.11).
+      weekCheckedInToday: state?.checkedInToday ?? false,
     };
   });
   return sortAccounts(enriched, now).map((row) => {
@@ -221,7 +220,6 @@ export async function listAccounts(user: SessionUser, now: Date = new Date()): P
       now,
       stats.get(row.id),
       state?.week,
-      state?.checkedInToday ?? false,
       state?.todayIndex ?? null,
     );
   });
@@ -250,11 +248,15 @@ export async function listAccount(
   ]);
   const state = weekStates(checkIns, today).get(accountId);
   return toListItem(
-    { ...row, weekUsed: state?.week.used ?? 0, weekExhausted: state?.week.exhausted ?? false },
+    {
+      ...row,
+      weekUsed: state?.week.used ?? 0,
+      weekExhausted: state?.week.exhausted ?? false,
+      weekCheckedInToday: state?.checkedInToday ?? false,
+    },
     now,
     stats.get(accountId),
     state?.week,
-    state?.checkedInToday ?? false,
     state?.todayIndex ?? null,
   );
 }
@@ -338,9 +340,9 @@ export async function deleteAccount(user: SessionUser, accountId: number): Promi
 }
 
 /**
- * Активация аккаунта: гасит его на СВОИ 6 ЧАСОВ — от момента активации
- * (заказ владельца 07.11; раньше было 24 часа); до истечения окна его не
- * активируют заново.
+ * Активация аккаунта: гасит его на СВОИ 10 ЧАСОВ — от момента активации
+ * (заказ владельца 07.11 — 6 часов, 08.11 — 10; раньше было 24 часа); до
+ * истечения окна его не активируют заново.
  *
  * Вызывается ТОЛЬКО явной кнопкой «Активировать» (заказ владельца 05.11):
  * копирование почты или пароля аккаунт не гасит и в журнал не пишет.
@@ -351,14 +353,18 @@ export async function deleteAccount(user: SessionUser, accountId: number): Promi
  * статистика по проектам удваивалась бы). Новая сессия начинается, когда окно
  * истекло.
  *
- * НОМЕР АКТИВАЦИИ В НЕДЕЛЕ (заказ владельца 07.11): очки MiniMax даёт ежедневный
- * чек-ин — 400 очков, а в 4-й и 7-й день подряд 1000. Номер считается по
- * недельной квоте аккаунта (неделя своя: 7 дней от первого использования), а
- * владелец может уточнить его руками — тогда очки считаются по его номеру.
+ * НОМЕР АКТИВАЦИИ В НЕДЕЛЕ (заказ владельца 07.11, уточнение 08.11): очки
+ * MiniMax даёт ежедневный чек-ин — 400 очков, а в 4-й и 7-й день недели 1000.
+ * Номер считается по недельной квоте аккаунта (неделя своя: 7 дней от первого
+ * использования) — это КАЛЕНДАРНАЯ позиция дня в окне, а не число строк
+ * журнала (см. `lib/accounts/weekly.ts`).
  *
- * - `tokens` undefined — «не меняю»: у уже записанного дня очки не затираются,
+ * - `tokens` undefined — «не меняю»: у уже записанного дня очки не затираются;
  *   у нового дня берутся по номеру активации;
- * - `activationIndex` undefined — «определи сам» (по недельной квоте).
+ * - `activationIndex` undefined — «определи сам» (по недельной квоте);
+ * - `activationIndex` задан — очки считаются ПО НЕМУ: 4-я и 7-я дают 1000,
+ *   остальные 400. Номер, названный владельцем, — это то, что он увидел на
+ *   панели MiniMax, и программа дальше считает от него.
  */
 export async function activateAccount(
   user: SessionUser,
@@ -420,7 +426,8 @@ export async function activateAccount(
       .limit(1);
 
     // Недельная квота аккаунта — по его журналу. Номер активации: явно
-    // заданный владельцем, иначе посчитанный по квоте.
+    // заданный владельцем (он смотрит панель MiniMax), иначе посчитанный по
+    // квоте — календарная позиция дня в неделе аккаунта.
     const checkIns = await tx
       .select({
         usedOn: accountsUsage.usedOn,
@@ -434,9 +441,17 @@ export async function activateAccount(
     );
     const index = input.activationIndex ?? quota.nextIndex ?? null;
 
+    // Очки считаются ПО НОМЕРУ АКТИВАЦИИ: 4-я и 7-я клетки — 1000, остальные
+    // 400. Номер, названный владельцем, — истина (заказ 08.11: «очки будут в
+    // зависимости от этой точки проставляться»), поэтому при заданном номере
+    // очки берутся из него, а не из присланного значения.
+    //
     // Чек-ин в сутки один: строка дня уже есть → сегодняшние очки не затираем,
     // а номер дня остаётся прежним (иначе «не меняю» превратилось бы в затирку).
-    const rowTokens = tokens ?? existing?.tokens ?? (index !== null ? pointsForIndex(index) : 0);
+    const rowTokens =
+      input.activationIndex !== undefined && index !== null
+        ? pointsForIndex(index)
+        : (tokens ?? existing?.tokens ?? (index !== null ? pointsForIndex(index) : 0));
     const rowIndex =
       existing && input.activationIndex === undefined ? existing.activationIndex : index;
     // projectId: undefined — «проект не меняем»; null — «проекта нет»;
@@ -476,6 +491,56 @@ export async function activateAccount(
     }
   });
   return true;
+}
+
+/**
+ * Правка номера активации уже записанного дня (заказ владельца 08.11).
+ *
+ * «Мало ли, если я забыл, неправильно ее поставил, или забыл вообще ее
+ * поменять» — владелец должен иметь возможность вернуться и указать настоящий
+ * номер клетки на панели MiniMax. Очки пересчитываются по новому номеру
+ * (4-я и 7-я — 1000, остальные 400), потому что очки — производная от номера.
+ *
+ * Правка идёт по последней записи журнала этого аккаунта (тот день, за который
+ * он и хочет пересчитать) — привязка к «сегодня» была бы неверна: активация
+ * могла быть вчера.
+ */
+export async function correctActivationIndex(
+  user: SessionUser,
+  accountId: number,
+  activationIndex: number,
+): Promise<boolean> {
+  if ((await ownedAccount(user, accountId)) === null) return false;
+  if (!Number.isInteger(activationIndex) || activationIndex < 1 || activationIndex > 7) {
+    return false;
+  }
+
+  return db.transaction(async (tx) => {
+    // Последняя строка журнала аккаунта — тот день, который владелец правит.
+    const [row] = await tx
+      .select({ id: accountsUsage.id, tokens: accountsUsage.tokens })
+      .from(accountsUsage)
+      .where(and(eq(accountsUsage.accountId, accountId), ownership(user, accountsUsage.userId)))
+      .orderBy(desc(accountsUsage.usedOn), desc(accountsUsage.id))
+      .limit(1);
+    if (!row) return false;
+
+    const tokens = pointsForIndex(activationIndex);
+    await tx
+      .update(accountsUsage)
+      .set({ tokens, activationIndex })
+      .where(eq(accountsUsage.id, row.id));
+
+    // У аккаунта «очки за последнюю активацию» — те же, что в строке журнала:
+    // правка номера обязана их обновить, иначе строка аккаунта разойдётся с
+    // журналом. Правка идёт по ПОСЛЕДНЕЙ строке журнала — значит, это и есть
+    // последняя активация.
+    await tx
+      .update(accountsAccount)
+      .set({ lastTokens: tokens })
+      .where(eq(accountsAccount.id, accountId));
+    return true;
+  });
 }
 
 /** Расшифровывает пароль аккаунта (по клику «копировать пароль»). */

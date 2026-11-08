@@ -1,4 +1,8 @@
-import { activateAccountAction, revealAccountPasswordAction } from '@/lib/actions/accounts';
+import {
+  activateAccountAction,
+  correctActivationIndexAction,
+  revealAccountPasswordAction,
+} from '@/lib/actions/accounts';
 
 /**
  * Активация аккаунта из браузера: копирование секрета и гашение аккаунта.
@@ -51,15 +55,15 @@ export async function copyAccountSecret(
 }
 
 /**
- * Активировать аккаунт: открыть окно простоя на 6 часов от момента и записать
- * активацию в журнал (проект и очки уходят в статистику).
+ * Активировать аккаунт: открыть окно простоя от момента и записать активацию
+ * в журнал (проект и очки уходят в статистику).
  *
  * Кнопка «Активировать этот аккаунт» в плавающем окне и «Активировать» в
  * верхнем слоте раздела — только здесь аккаунт гаснет.
  *
- * `activationIndex` — номер активации в неделе аккаунта (1..7): по нему
- * считаются очки (4-я и 7-я — 1000, остальные — 400). undefined — «определи
- * сам», по недельной квоте аккаунта.
+ * `activationIndex` — номер клетки недели аккаунта на панели MiniMax (1..7),
+ * выбранный владельцем (заказ 08.11). Очки — производная от него: 4-я и 7-я
+ * дают 1000, остальные 400. undefined — «определи сам», по недельной квоте.
  */
 export async function activateAccountOnly(
   accountId: number,
@@ -74,6 +78,21 @@ export async function activateAccountOnly(
     activationIndex,
   });
   if (!activated.ok) return { ok: false, error: activated.error };
+  return { ok: true };
+}
+
+/**
+ * Править номер активации уже записанного дня (заказ владельца 08.11).
+ *
+ * Окно простоя не трогается — меняется только номер клетки в журнале и очки
+ * по нему.
+ */
+export async function correctActivationIndex(
+  accountId: number,
+  activationIndex: number,
+): Promise<ActivationOutcome> {
+  const corrected = await correctActivationIndexAction({ id: accountId, activationIndex });
+  if (!corrected.ok) return { ok: false, error: corrected.error };
   return { ok: true };
 }
 

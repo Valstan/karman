@@ -24,9 +24,9 @@ import {
 import { createProjectAction } from '@/lib/actions/accounts';
 import {
   WEEKLY_ACTIVATION_LIMIT,
-  WEEKLY_ACTIVATION_POINTS,
   pointsForIndex,
 } from '@/lib/accounts/weekly';
+import { MinimaxActivationPoints } from './minimax-activation-points';
 import { activateAccountOnly, publishMinimaxActivated } from './minimax-activation';
 import type { AccountListItem, ProjectListItem } from '@/lib/services/accounts';
 
@@ -93,42 +93,31 @@ function ActivateForm({
     account.projectId === null ? NONE : String(account.projectId),
   );
 
-  // Чек-ин за сегодня уже был? Тогда номер активации дня уже записан, и
-  // трогать его нельзя — иначе «не меняю» превратилось бы в затирку. Очки дня
-  // показываем записанные (их можно поправить руками).
+  // Номер активации в неделе (клетка 1..7 панели MiniMax). Программа считает
+  // его по календарю недели аккаунта; владелец может назвать настоящий номер
+  // сам (заказ 08.11) — тогда дальше программа считает от его номера.
   const checkedInToday = account.weekCheckedInToday;
-  const defaultIndex = checkedInToday
-    ? (account.weekTodayIndex ?? account.week.nextIndex ?? WEEKLY_ACTIVATION_LIMIT)
-    : (account.week.nextIndex ?? WEEKLY_ACTIVATION_LIMIT);
-  const defaultTokens = checkedInToday ? account.lastTokens : pointsForIndex(defaultIndex);
+  const suggestedIndex = account.week.nextIndex ?? WEEKLY_ACTIVATION_LIMIT;
+  const currentIndex = checkedInToday
+    ? (account.weekTodayIndex ?? suggestedIndex)
+    : suggestedIndex;
 
-  const [index, setIndex] = useState(String(defaultIndex));
-  const [tokens, setTokens] = useState(String(defaultTokens));
+  const [index, setIndex] = useState<number>(currentIndex);
   const [busy, setBusy] = useState(false);
-
-  /** Смена номера активации пересчитывает очки: 400, а в 4-й и 7-й — 1000. */
-  function onIndexChange(value: string) {
-    setIndex(value);
-    setTokens(String(pointsForIndex(Number(value))));
-  }
 
   async function onSubmit() {
     setBusy(true);
     try {
-      const raw = tokens.trim();
       const projectId = project === NONE ? null : Number(project);
-      const tokensValue = raw === '' ? undefined : Number(raw);
-      // Номер отправляем, только когда его можно менять: если чек-ин за
-      // сегодня уже записан, номер дня не трогаем (сервер оставит прежний).
-      const activationIndex = checkedInToday ? undefined : Number(index);
-
-      const outcome = await activateAccountOnly(account.id, projectId, tokensValue, activationIndex);
+      // Номер активации уходит ВМЕСТЕ с активацией: очки — производная от
+      // него (4-я и 7-я клетки — 1000, остальные — 400).
+      const outcome = await activateAccountOnly(account.id, projectId, undefined, index);
       if (!outcome.ok) {
         toast.error(outcome.error);
         return;
       }
 
-      toast.success('Аккаунт активирован — погаснет на 6 часов');
+      toast.success('Аккаунт активирован — погаснет на 10 часов');
       // Другие вкладки раздела должны увидеть новое состояние (тот же канал,
       // что и у плавающего окна).
       publishMinimaxActivated(account.id);
@@ -145,7 +134,7 @@ function ActivateForm({
         <DialogTitle>Активация аккаунта</DialogTitle>
         <DialogDescription>
           «{account.title || account.email}» — на какой проект зачесть активацию? Аккаунт
-          погаснет на 6 часов с момента активации. Копирование почты или пароля аккаунт
+          погаснет на 10 часов с момента активации. Копирование почты или пароля аккаунт
           не гасит.
         </DialogDescription>
       </DialogHeader>
@@ -166,40 +155,14 @@ function ActivateForm({
             </SelectContent>
           </Select>
         </div>
-        <div className="flex flex-col gap-1">
-          <Label htmlFor="activate-index">Какая это по счёту активация в неделе</Label>
-          <Select value={index} onValueChange={onIndexChange} disabled={checkedInToday}>
-            <SelectTrigger id="activate-index">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {WEEKLY_ACTIVATION_POINTS.map((points, i) => (
-                <SelectItem key={i + 1} value={String(i + 1)}>
-                  {i + 1}-я активация — {points} очков
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-xs text-muted-foreground">
-            {checkedInToday
-              ? 'Сегодня чек-ин уже был — номер и очки дня записаны, их можно поправить только в поле очков.'
-              : `Неделя аккаунта своя: 7 дней от первой активации. Сделано ${account.week.used} из ${WEEKLY_ACTIVATION_LIMIT}, осталось ${account.week.remaining}.`}
-          </p>
-        </div>
-        <div className="flex flex-col gap-1">
-          <Label htmlFor="activate-tokens">
-            Очки за активацию (по умолчанию {defaultTokens})
-          </Label>
-          <Input
-            id="activate-tokens"
-            type="number"
-            min={0}
-            inputMode="numeric"
-            placeholder="0"
-            value={tokens}
-            onChange={(e) => setTokens(e.target.value)}
-          />
-        </div>
+        {/* НОМЕР АКТИВАЦИИ — семь кнопок в ряд (заказ владельца 08.11).
+            Очки — производная от номера: 4-я и 7-я клетки дают 1000. */}
+        <MinimaxActivationPoints value={index} onChange={setIndex} disabled={busy} />
+        <p className="text-xs text-muted-foreground">
+          {checkedInToday
+            ? `Сегодня чек-ин уже был — записан ${account.weekTodayIndex ?? index}-й номер (${pointsForIndex(account.weekTodayIndex ?? index)} очков). Нажми другую кнопку, если программа ошиблась.`
+            : `Неделя аккаунта своя: 7 дней от первой активации. Сделано ${account.week.used} из ${WEEKLY_ACTIVATION_LIMIT}, осталось ${account.week.remaining}. Программа считает номер по календарю недели — если в MiniMax показано иначе, нажми нужную кнопку.`}
+        </p>
       </div>
       <DialogFooter>
         <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
