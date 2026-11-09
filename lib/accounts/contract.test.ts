@@ -306,7 +306,9 @@ describe('G54: контракт проходит все слои целиком'
     const account = list.find((r) => r.id === id)!;
     expect(account.week.used).toBe(2);
     expect(account.week.confirmedIndex).toBe(4);
-    expect(account.week.nextIndex).toBe(5);
+    // Номер клетки считается по датам (серия дней подряд, разбор 09.11): 03.11
+    // и 04.11 — два дня подряд, значит следующая клетка третья.
+    expect(account.week.nextIndex).toBe(3);
   });
 
   it('activate: номер вне 1..7 не принимается валидатором', async () => {
@@ -351,12 +353,13 @@ describe('G54: контракт проходит все слои целиком'
       .where(eq(accountsAccount.id, id));
     expect(account!.lastTokens).toBe(1000);
 
-    // Обратное чтение: недельная квота знает номер, названный владельцем, и
-    // дальше считает от него.
+    // Обратное чтение: недельная квота знает номер, названный владельцем, а
+    // подсказку считает сама — по серии дней подряд (разбор 09.11): отмечен
+    // сегодня один день, значит следующая клетка вторая.
     const list = await listAccounts(owner, NOW);
     const row = list.find((r) => r.id === id)!;
     expect(row.week.confirmedIndex).toBe(4);
-    expect(row.week.nextIndex).toBe(5);
+    expect(row.week.nextIndex).toBe(2);
   });
 
   it('правка номера активации: номер вне 1..7 не принимается валидатором', async () => {

@@ -1,53 +1,48 @@
 /**
- * Недельная квота MiniMax: сколько активаций (чек-инов) у аккаунта осталось
- * в текущей неделе, какая это по счёту клетка недели и сколько очков за неё
- * положено.
+ * Недельная квота MiniMax: сколько активаций (чек-инов) у аккаунта осталось,
+ * какая это по счёту клетка и сколько очков за неё положено.
  *
  * ## Что сказано в документации MiniMax (проверено 08.11)
  *
- * - **Очки даёт ежедневный чек-ин**: 400 за день, а в 4-й и 7-й день недели —
- *   1000; за полную неделю — 4000 очков (документация M Plan, раздел
- *   «每日签到 / Daily Check-In»: «Daily check-ins earn 400 points, check-ins on
- *   day 4 and day 7 award 1,000 points, a full week of check-ins earns 4,000»).
- * - **Неделя — не общий календарь, а 7 дней от ПЕРВОГО использования аккаунта**
- *   (раздел «用量说明 / Usage»: «两个窗口都从首次使用时开始计时…周窗口持续 7
- *   days» — и 5-часовое, и недельное окно начинаются с первого использования).
+ * - **Очки даёт ежедневный чек-ин**: 400 за день, а в 4-й и 7-й дне — 1000;
+ *   за полную неделю — 4000 очков («每日签到»: «Daily check-ins earn 400 points…
+ *   day 4 and day 7 award 1,000… a full week of check-ins earns 4,000»).
+ * - **Окна расхода**: 5-часовое (не-видео) и недельное (7 дней, все модели).
  *
- * Второй пункт — прямой ответ на вопрос владельца (07.11): «когда сбрасывается
- * недельный лимит — в какую-то дату у всех одинаково или это зависит от даты
- * активации аккаунта». Ответ: **зависит от аккаунта**. У каждого аккаунта своя
- * неделя, и начинается она с его первой активации.
+ * ## ГЛАВНОЕ: номер клетки — это СЕРИЯ ДНЕЙ ПОДРЯД (разбор 09.11)
  *
- * ## ГЛАВНОЕ: номер активации — это КАЛЕНДАРНАЯ КЛЕТКА НЕДЕЛИ, а не число строк
+ * Разбор боевых данных 09.11 (85 аккаунтов, 306 активаций за 03–09.11) показал
+ * настоящее правило MiniMax: **номер на панели — счётчик дней подряд**.
  *
- * Недельная панель чекина MiniMax — календарь: у аккаунта есть неделя (7 дней
- * от его первого использования), и в ней у каждого дня своя клетка со своим
- * номером (1..7) и своим количеством очков (400/400/400/1000/400/400/1000).
- * Пропущенный день не сдвигает нумерацию — его клетка просто сгорает, а
- * номера следующих дней не меняются.
+ * - 08.11 (воскресенье) отработано 66 аккаунтов. 09.11 (понедельник) владелец
+ *   нажал кнопку **1** ровно у 19 аккаунтов — это в точности те, которых НЕ
+ *   было вчера (85 − 66 = 19), и кнопку **2** ровно у 20 — те, что были вчера.
+ *   Перекрёстных случаев ноль.
+ * - Значит: отмечен вчера → сегодня вторая клетка; пропущен вчера → серия
+ *   сгорела, снова первая.
+ * - Гипотеза «недельные лимиты сбрасываются ночью в понедельник» (заказ
+ *   владельца 09.11) этим **опровергается**: в воскресенье на панели были
+ *   кнопки 2, 3 и 4, а не седьмая — календарная неделя пн–вс дала бы всем одну
+ *   и ту же клетку.
  *
- * Раньше (заказ 07.11) номер считался как ЧИСЛО СТРОК журнала в неделе плюс
- * один. Это работало ровно до первого пропущенного дня — и дальше ломалось:
- * дней отработано меньше, чем прошло, значит номер меньше, и программа уезжала
- * на клетку «4-я» (1000 очков) и держалась на ней. Именно это владелец и видел:
- * «программа всё время показывает 1000 очков» (08.11). На боевых данных 08.11
- * почти все аккаунты показывали именно 1000 — потому что у них было по три
- * строки, а «три строки + один» и есть клетка 4.
+ * Раньше номер считался как «строка журнала + 1», потом — как позиция дня в
+ * неделе от первого использования. Оба варианта давали неверную подсказку:
+ * 09.11 программа предлагала клетки 4, 5 и 7, а настоящая панель показывала
+ * 1 и 2 — владельцу приходилось переопределять её почти каждый раз. Теперь
+ * номер считается по датам: серия дней подряд.
  *
- * Теперь номер = позиция КАЛЕНДАРНОГО дня в неделе аккаунта.
+ * ## Недельная квота — календарная неделя (понедельник — воскресенье)
  *
- * ## Уточнение владельца — и почему оно нужно
+ * Заказ владельца 09.11: «недельные лимиты сбрасываются ночью в понедельник,
+ * каждая новая неделя начинается с чистого листа». Значит, недельная квота
+ * считается по календарной неделе, а не по собственному циклу аккаунта:
+ * отметки прошлой недели в счёт не идут, сброс — в ночь на понедельник.
  *
- * Наша неделя считается по ЖУРНАЛУ, а журнал начат только 04.11. Аккаунты,
- * которыми владелец пользовался раньше, имеют настоящую неделю, начавшуюся
- * ДО журнала, — и наша нумерация для них сдвинута. Владелец видит настоящий
- * номер на панели MiniMax и может назвать его руками (заказ 07.11: «если не
- * получается — спроси при активации, какая это по счёту активация»; заказ
- * 08.11: семь кнопок выбора номера прямо в окне активации).
+ * ## Номер, названный владельцем
  *
- * Названный номер не просто записывается в строку журнала — он **выправляет**
- * начало нашей недели: дальше программа считает от его номера. Одно уточнение —
- * и счёт снова верный.
+ * Кнопка «Записать N-й номер» остаётся: это запись в журнал (что владелец
+ * видел на настоящей панели) и страховка, если программа ошибается. На
+ * подсказку он больше не влияет — подсказку считает сама программа по датам.
  *
  * ## Старые авто-значения в журнале — им не доверяем
  *
@@ -96,52 +91,40 @@ export type WeeklyCycle = {
 /** Состояние недельной квоты аккаунта. */
 export type WeeklyQuota = {
   /**
-   * Начало текущей недели аккаунта ('YYYY-MM-DD') или null — аккаунт ещё ни
-   * разу не активировался (тогда его неделя начнётся в день первого
-   * использования).
+   * Начало текущей серии дней подряд ('YYYY-MM-DD') или null — серия сгорела
+   * (вчера отметки не было).
    */
   anchorDate: string | null;
-  /** Текущее недельное окно. */
+  /** Длина текущей серии дней подряд (0 — вчера пропущено, серия сгорела). */
+  streak: number;
+  /**
+   * Календарная неделя (понедельник — воскресенье), в которой живёт недельная
+   * квота: лимиты обнуляются в ночь на понедельник.
+   */
   cycle: WeeklyCycle;
-  /** Сколько чек-инов уже было в текущем окне. */
+  /** Сколько чек-инов уже было в текущей календарной неделе. */
   used: number;
-  /** Сколько дней текущего окна ещё можно отметить. */
+  /** Сколько дней текущей календарной недели ещё можно отметить. */
   remaining: number;
   /**
    * Номер клетки, который получит СЛЕДУЮЩАЯ активация (1..7) или null —
    * отмечать больше нечего.
    *
-   * По умолчанию — календарная позиция дня в неделе аккаунта. Если владелец
-   * уточнял номер руками, программа считает дальше ОТ ЕГО номера.
+   * Номер — это **серия дней подряд** (разбор 09.11 по боевым данным): вчера
+   * отмечен — вторая клетка; вчера пропущено — серия сгорела, снова первая.
    */
   nextIndex: number | null;
   /** Номер активации, названный владельцем (1..7) или null — не называл. */
   confirmedIndex: number | null;
-  /** Нечего больше отметить в этом окне (все дни заняты или окно кончилось). */
+  /** Нечего больше отметить в этой неделе. */
   exhausted: boolean;
-  /** Очки, которые ещё можно получить в текущем окне. */
+  /** Очки, которые ещё можно получить в текущей неделе. */
   pointsLeft: number;
 };
 
 /**
- * Недельное окно аккаунта, начавшееся в `anchorDate`: семь московских дней.
- *
- * Неделя у аккаунта своя — это 7 дней ОТ ПЕРВОГО использования (документация
- * MiniMax), поэтому окно всегда одно и то же семь дней: `startDate` и
- * `startDate + 6`.
- */
-export function weeklyCycle(anchorDate: string): WeeklyCycle {
-  return {
-    startDate: anchorDate,
-    endDate: shiftDate(anchorDate, WEEKLY_CYCLE_DAYS - 1),
-  };
-}
-
-/**
- * Номер клетки для даты — календарная позиция в неделе аккаунта.
- *
- * Клетки нумеруются по календарю: 1,2,…,7. Пропущенный день не сдвигает
- * нумерацию — его клетка просто сгорает.
+ * Номер клетки для даты — позиция дня в цикле (по календарной неделе или по
+ * серии дней подряд).
  */
 export function cycleDayNumber(cycle: WeeklyCycle, date: string): number {
   return dayNumber(date) - dayNumber(cycle.startDate) + 1;
@@ -152,89 +135,75 @@ export function cycleDayNumber(cycle: WeeklyCycle, date: string): number {
  *
  * Два счёта, и они не одно и то же:
  *
- * - **Квота** (`used`/`remaining`/`exhausted`) — сколько дней недели аккаунт
- *   ещё может отметить: чек-ин в сутки один, неделя — 7 дней, то есть
- *   максимум семь активаций; когда отмечать больше нечего, аккаунт до
- *   следующей недели не предлагается (заказ владельца 07.11).
- * - **Номер активации** (`nextIndex`) — календарная позиция дня в неделе
- *   аккаунта. По нему идут очки: 4-я и 7-я клетки — 1000.
- *
- * Неделя аккаунта — 7 дней от первого использования: следующее использование
- * после конца окна открывает НОВОЕ окно (и счёт начинается с клетки 1).
- *
- * Уточнение владельца (он смотрит настоящую панель MiniMax) выправляет начало
- * недели: дальше программа считает от его номера.
+ * - **Квота** (`used`/`remaining`/`exhausted`) — сколько дней текущей
+ *   КАЛЕНДАРНОЙ недели (понедельник — воскресенье) аккаунт ещё может
+ *   отметить: чек-ин в сутки один, неделя — 7 дней, то есть максимум семь
+ *   активаций; когда отмечать больше нечего, аккаунт до следующей недели не
+ *   предлагается (заказ владельца 07.11). Лимиты обнуляются в ночь на
+ *   понедельник (заказ владельца 09.11), поэтому отметки прошлой недели в
+ *   счёт не идут.
+ * - **Номер активации** (`nextIndex`) — СЕРИЯ ДНЕЙ ПОДРЯД: сколько дней подряд
+ *   аккаунт отмечался (разбор 09.11 по боевым данным). По нему идут очки:
+ *   4-я и 7-я клетки — 1000.
  */
 export function weeklyQuota(checkIns: WeeklyCheckIn[], todayDate: string): WeeklyQuota {
   const sorted = [...checkIns].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const cycle = calendarWeek(todayDate);
 
-  // Никогда не активировавшийся аккаунт: его неделя начнётся в день первого
-  // использования, то есть сегодня.
-  if (sorted.length === 0) {
-    return {
-      anchorDate: null,
-      cycle: weeklyCycle(todayDate),
-      used: 0,
-      remaining: WEEKLY_ACTIVATION_LIMIT,
-      nextIndex: 1,
-      confirmedIndex: null,
-      exhausted: false,
-      pointsLeft: WEEKLY_POINTS_TOTAL,
-    };
-  }
+  // Чек-ины текущей календарной недели: прошлая неделя в счёт не идёт — лимит
+  // обнуляется в ночь на понедельник (09.11, заказ владельца).
+  const weekRows = sorted.filter((row) => row.date >= cycle.startDate && row.date <= cycle.endDate);
+  const used = weekRows.length;
 
-  // 1. Текущее окно по журналу: неделя длится 7 дней от первого использования,
-  //    а использование после конца окна открывает новое окно.
-  const windowRows = currentWindowRows(sorted);
-  const journalAnchor = windowRows[0]!.date;
+  // Серия дней подряд: считаем назад от последней отметки. Вчера пропущено —
+  // серия сгорела, и следующая отметка снова первая.
+  const lastRow = sorted[sorted.length - 1] ?? null;
+  const age = lastRow ? dayNumber(todayDate) - dayNumber(lastRow.date) : Number.POSITIVE_INFINITY;
+  const streak = age <= 1 ? streakEndingAt(sorted, lastRow!.date) : 0;
+  const anchorDate = streak > 0 ? shiftDate(lastRow!.date, -(streak - 1)) : null;
 
-  // 2. Уточнение владельца: номер, названный им САМИМ (а не посчитанный
-  //    старой сломанной формулой). Оно выправляет начало недели.
-  const lastRow = windowRows[windowRows.length - 1]!;
-  const confirmedIndex = ownerConfirmedIndex(sorted, lastRow);
-  const anchorDate =
-    confirmedIndex === null ? journalAnchor : shiftDate(lastRow.date, -(confirmedIndex - 1));
+  // Номер клетки по серии: отметка сегодня продолжает серию.
+  const nextCell = streak === 0 ? 1 : Math.min(streak + 1, WEEKLY_ACTIVATION_LIMIT);
 
-  // 3. Окно кончилось (сегодня уже за его пределами) → ближайшее использование
-  //    открывает новое окно, и счёт начинается с клетки 1.
-  let anchor = anchorDate;
-  let rows = windowRows.filter((row) => row.date >= anchor);
-  if (todayDate > shiftDate(anchor, WEEKLY_CYCLE_DAYS - 1)) {
-    anchor = todayDate;
-    rows = sorted.filter((row) => row.date >= anchor);
-  }
-
-  const cycle = weeklyCycle(anchor);
-  const claimed = new Set(rows.map((row) => row.date));
-
-  // Отметить можно каждый день окна, который ещё не прошёл и ещё не отмечен;
-  // день, прошедший без отметки, безвозвратно пропал (клетка панели сгорела).
+  // Дни недели, которые ещё можно отметить (чек-ин в сутки один).
+  const claimed = new Set(weekRows.map((row) => row.date));
   const available: string[] = [];
   for (let offset = 0; offset < WEEKLY_CYCLE_DAYS; offset += 1) {
     const date = shiftDate(cycle.startDate, offset);
     if (date < todayDate) continue;
     if (!claimed.has(date)) available.push(date);
   }
-
-  const used = rows.length;
   const remaining = available.length;
   const exhausted = remaining === 0;
-  const nextIndex = exhausted ? null : cycleDayNumber(cycle, available[0]!);
-  const pointsLeft = available.reduce(
-    (sum, date) => sum + pointsForIndex(cycleDayNumber(cycle, date)),
-    0,
-  );
+
+  // Очки за оставшиеся дни — проекция серии, если владелец не пропустит день.
+  let cell = nextCell;
+  const pointsLeft = available.reduce((sum, _date) => {
+    const value = pointsForIndex(cell);
+    cell = Math.min(cell + 1, WEEKLY_ACTIVATION_LIMIT);
+    return sum + value;
+  }, 0);
 
   return {
     anchorDate,
+    streak,
     cycle,
     used,
     remaining,
-    nextIndex,
-    confirmedIndex,
+    nextIndex: exhausted ? null : nextCell,
+    confirmedIndex: lastRow ? ownerConfirmedIndex(sorted, lastRow) : null,
     exhausted,
     pointsLeft,
   };
+}
+
+/**
+ * Календарная неделя (понедельник — воскресенье), в которой живёт недельная
+ * квота: лимиты обнуляются в ночь на понедельник.
+ */
+export function calendarWeek(todayDate: string): WeeklyCycle {
+  const startDate = moscowWeekStart(todayDate);
+  return { startDate, endDate: shiftDate(startDate, WEEKLY_CYCLE_DAYS - 1) };
 }
 
 /** Очки за активацию по её номеру в неделе (1..7). */
@@ -244,23 +213,22 @@ export function pointsForIndex(index: number): number {
 }
 
 /**
- * Строки журнала текущего недельного окна аккаунта.
+ * Длина серии дней подряд, заканчивающейся в `endDate`: считаем назад, пока
+ * дни идут подряд.
  *
- * Окно — 7 дней от первого использования. Использование позже конца окна
- * открывает новое окно, и в текущее попадают только строки последнего.
+ * Пропущенный день обрывает серию — клетка панели гаснет, и нумерация
+ * начинается заново (это и есть настоящая механика MiniMax, см. разбор
+ * 09.11 по боевым данным).
  */
-function currentWindowRows(sorted: WeeklyCheckIn[]): WeeklyCheckIn[] {
-  const rows: WeeklyCheckIn[] = [];
-  let anchor = sorted[0]!.date;
-  for (const row of sorted) {
-    if (rows.length > 0 && dayNumber(row.date) - dayNumber(anchor) >= WEEKLY_CYCLE_DAYS) {
-      // Окно кончилось — следующее использование открывает новое.
-      rows.length = 0;
-      anchor = row.date;
-    }
-    rows.push(row);
+function streakEndingAt(sorted: WeeklyCheckIn[], endDate: string): number {
+  const dates = new Set(sorted.map((row) => row.date));
+  let length = 0;
+  let cursor = endDate;
+  while (dates.has(cursor)) {
+    length += 1;
+    cursor = shiftDate(cursor, -1);
   }
-  return rows;
+  return length;
 }
 
 /**
@@ -342,7 +310,11 @@ export type WeeklyUsageDay = {
 export type WeeklyPoolStats = {
   /** Сколько активаций ещё можно сделать сегодня. */
   today: number;
-  /** Сколько активаций осталось в недельных циклах всех аккаунтов. */
+  /** Сколько из них можно сделать прямо сейчас (окно уже истекло). */
+  freeNow: number;
+  /** Сколько освободятся в ближайшие 5 часов (сброс 5-часового окна MiniMax). */
+  freesIn5h: number;
+  /** Сколько активаций осталось в текущей календарной неделе. */
   week: number;
   /** Очки за эти активации. */
   weekPoints: number;
@@ -354,6 +326,8 @@ export type WeeklyPoolStats = {
   coversWeek: boolean | null;
   /** Сколько дней осталось в текущей московской неделе, включая сегодня. */
   daysToWeekEnd: number;
+  /** Дата сброса недельных лимитов (понедельник следующей недели). */
+  weekResetsOn: string;
 };
 
 /**
@@ -376,19 +350,33 @@ export type WeeklyPoolStats = {
  *   воскресенье), усреднённо по прошедшим дням.
  * - **«≈ дней»** — на сколько дней хватит остатка при этом темпе.
  */
+/** Окно сброса лимитов MiniMax — 5 часов (собственное окно Кармана — 10 часов). */
+const FIVE_HOURS_MS = 5 * 60 * 60_000;
+
 export function weeklyPoolStats(
   accounts: WeeklyAccountInput[],
   usageByDay: WeeklyUsageDay[],
   todayDate: string,
+  nowIso: string = new Date().toISOString(),
 ): WeeklyPoolStats {
   let today = 0;
+  let freeNow = 0;
+  let freesIn5h = 0;
   let week = 0;
   let weekPoints = 0;
+  const nowMs = new Date(nowIso).getTime();
   for (const account of accounts) {
-    if (!account.quota.exhausted) {
-      week += account.quota.remaining;
-      weekPoints += account.quota.pointsLeft;
-      if (!account.checkedInToday && activatableToday(account, todayDate)) today += 1;
+    if (account.quota.exhausted) continue;
+    week += account.quota.remaining;
+    weekPoints += account.quota.pointsLeft;
+    if (!account.checkedInToday && activatableToday(account, todayDate)) {
+      today += 1;
+      if (!account.spent) {
+        freeNow += 1;
+      } else if (account.releasesAt !== null) {
+        const inMs = new Date(account.releasesAt).getTime() - nowMs;
+        if (inMs > 0 && inMs <= FIVE_HOURS_MS) freesIn5h += 1;
+      }
     }
   }
 
@@ -403,12 +391,15 @@ export function weeklyPoolStats(
   const daysLeft = perDay > 0 ? week / perDay : null;
   return {
     today,
+    freeNow,
+    freesIn5h,
     week,
     weekPoints,
     perDay,
-    daysLeft: daysLeft === null ? null : daysLeft,
+    daysLeft,
     coversWeek: daysLeft === null ? null : daysLeft >= daysToWeekEnd,
     daysToWeekEnd,
+    weekResetsOn: shiftDate(weekStart, WEEKLY_CYCLE_DAYS),
   };
 }
 
