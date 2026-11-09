@@ -34,8 +34,11 @@ export async function GET(_req: Request, ctx: Ctx) {
     return NextResponse.json({ message: 'Файл не найден' }, { status: 404 });
   }
 
+  // `readFile` уже отдаёт Buffer (подтип Uint8Array). Обёртка `new Uint8Array(buffer)`
+  // копировала файл ВТОРЫМ разом: на файле в 10 МБ это две копии в памяти сервера
+  // (аудит #057, D6). Тело отдаём самим Buffer — копия одна.
   const buffer = await readFile(absolutePathFor(found.path));
-  return new NextResponse(new Uint8Array(buffer), {
+  return new NextResponse(buffer, {
     status: 200,
     headers: {
       'Content-Type': contentTypeForPath(found.path),
