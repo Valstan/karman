@@ -23,6 +23,7 @@ import {
   type ProjectUsage,
 } from '@/lib/accounts/rotation';
 import {
+  WEEKLY_ACTIVATION_LIMIT,
   pointsForIndex,
   weeklyQuota,
   type WeeklyCheckIn,
@@ -211,6 +212,11 @@ export async function listAccounts(user: SessionUser, now: Date = new Date()): P
       // Чек-ин за сегодня уже был → сегодняшнего бонуса у аккаунта нет, и в
       // верхний слот он не попадает (заказ владельца 08.11).
       weekCheckedInToday: state?.checkedInToday ?? false,
+      // Очки следующей активации и расстояние до бонусной клетки — по ним
+      // выбирается, кого активировать (заказ владельца 11.11).
+      weekPointsNext: state?.week.pointsToday ?? 0,
+      weekDaysToBonus: state?.week.daysToBonus ?? WEEKLY_ACTIVATION_LIMIT,
+      weekStreak: state?.week.streak ?? 0,
     };
   });
   return sortAccounts(enriched, now).map((row) => {
@@ -253,6 +259,9 @@ export async function listAccount(
       weekUsed: state?.week.used ?? 0,
       weekExhausted: state?.week.exhausted ?? false,
       weekCheckedInToday: state?.checkedInToday ?? false,
+      weekPointsNext: state?.week.pointsToday ?? 0,
+      weekDaysToBonus: state?.week.daysToBonus ?? WEEKLY_ACTIVATION_LIMIT,
+      weekStreak: state?.week.streak ?? 0,
     },
     now,
     stats.get(accountId),

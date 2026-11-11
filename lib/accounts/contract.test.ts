@@ -237,7 +237,7 @@ describe('G54: контракт проходит все слои целиком'
     expect(rows[0]!.tokens).toBe(500);
   });
 
-  it('activate: окно активации — 10 часов от момента, и обратное чтение это видно', async () => {
+  it('activate: окно активации — 5 часов от момента, и обратное чтение это видно', async () => {
     const id = await createAccount(owner, {
       title: 'A',
       email: 'window@example.test',
@@ -252,10 +252,11 @@ describe('G54: контракт проходит все слои целиком'
     const soon = await listAccounts(owner, new Date(NOW.getTime() + 60 * 60 * 1000));
     const justNow = soon.find((r) => r.id === id)!;
     expect(justNow.spent).toBe(true);
-    expect(justNow.availableAt).toBe('2026-11-03T22:00:00.000Z');
+    expect(justNow.availableAt).toBe('2026-11-03T17:00:00.000Z');
 
-    // Через 11 часов — снова свободен (окно простоя 10 часов, заказ 08.11).
-    const later = await listAccounts(owner, new Date(NOW.getTime() + 11 * 60 * 60 * 1000));
+    // Через 6 часов — снова свободен: окно простоя 5 часов, столько же, сколько
+    // окно расхода у MiniMax (решение владельца 11.11).
+    const later = await listAccounts(owner, new Date(NOW.getTime() + 6 * 60 * 60 * 1000));
     expect(later.find((r) => r.id === id)!.spent).toBe(false);
   });
 

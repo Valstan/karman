@@ -59,6 +59,16 @@ export function MinimaxAccountRow({
             {account.availableAt ? ` · освободится ${formatAvailableAt(account.availableAt)}` : ''}
           </div>
         ) : null}
+        {/* Что даст ближайшая активация: клетка и очки (заказ владельца 11.11). */}
+        <div className="text-xs text-muted-foreground">
+          {account.week.pointsToday > 0
+            ? `клетка ${account.week.nextIndex ?? '—'} — ${account.week.pointsToday} очков${
+                account.week.pointsToday === 1000
+                  ? ' (бонус)'
+                  : ` · до 1000 через ${account.week.daysToBonus - 1} дн.`
+              }`
+            : 'сегодня чек-ин уже был — очков сегодня не даст'}
+        </div>
         {/* Заказ владельца 05.11: по аккаунту — на какой проект он активирован,
             сколько очков ушло и сколько раз его брали. */}
         <div className="text-xs text-muted-foreground">
