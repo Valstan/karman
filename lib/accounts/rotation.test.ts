@@ -26,11 +26,16 @@ function row(over: Partial<AccountRotationRow> & { id: number }): AccountRotatio
     weekUsed: 0,
     weekExhausted: false,
     weekCheckedInToday: false,
+    // Свежий аккаунт: серии нет, сегодняшняя активация дала бы 400 очков, до
+    // ближайшей бонусной клетки — четыре дня.
+    weekPointsNext: 400,
+    weekDaysToBonus: 4,
+    weekStreak: 0,
     ...over,
   };
 }
 
-describe('мультиаккаунт: окно активации — 10 часов с момента', () => {
+describe('мультиаккаунт: окно активации — 5 часов с момента', () => {
   it('московская дата — по UTC+3, а не по времени машины', () => {
     // 2026-11-02T21:30Z — это уже 3 ноября в Москве (UTC+3).
     expect(moscowToday(new Date('2026-11-02T21:30:00Z'))).toBe('2026-11-03');
@@ -38,23 +43,23 @@ describe('мультиаккаунт: окно активации — 10 час�
     expect(moscowToday(new Date('2026-11-02T20:59:00Z'))).toBe('2026-11-02');
   });
 
-  it('окно ровно 10 часов со момента активации', () => {
-    // Заказ владельца 08.11: 07.11 просил 6 часов, 08.11 растянул до 10 («давай
-    // до 10 часов, что ли, его растянем») — шести не хватало: аккаунт
-    // возвращался в запас слишком рано, и следующая попытка приходилась на
-    // тот же день, когда чек-ин уже был, и бонус не начислялся. Ограничителем
-    // недели остаётся недельная квота в 7 активаций (lib/accounts/weekly.ts).
-    expect(ACTIVATION_WINDOW_HOURS).toBe(10);
-    expect(ACTIVATION_WINDOW_MS).toBe(10 * 60 * 60 * 1000);
+  it('окно ровно 5 часов со момента активации', () => {
+    // Решение владельца 11.11: 5 часов — ровно столько же длится окно расхода у
+    // MiniMax (5-часовое, «all except image and video models»), поэтому наше
+    // «занят» значит то же, что у них: аккаунт снова готов к работе через пять
+    // часов после первого использования. Ограничителем недели остаётся недельная
+    // квота в 7 активаций (lib/accounts/weekly.ts).
+    expect(ACTIVATION_WINDOW_HOURS).toBe(5);
+    expect(ACTIVATION_WINDOW_MS).toBe(5 * 60 * 60 * 1000);
   });
 
-  it('через 9 часов 59 минут аккаунт ещё израсходован', () => {
+  it('через 4 часа 59 минут аккаунт ещё израсходован', () => {
     const usedAt = '2026-11-03T10:00:00Z';
     const now = new Date(new Date(usedAt).getTime() + ACTIVATION_WINDOW_MS - 60_000);
     expect(isSpent({ usedAt }, now)).toBe(true);
   });
 
-  it('на исходе 10 часов аккаунт снова свободен', () => {
+  it('на исходе 5 часов аккаунт снова свободен', () => {
     const usedAt = '2026-11-03T10:00:00Z';
     const now = new Date(new Date(usedAt).getTime() + ACTIVATION_WINDOW_MS);
     expect(isSpent({ usedAt }, now)).toBe(false);
@@ -74,7 +79,8 @@ describe('мультиаккаунт: окно активации — 10 час�
   });
 
   it('availableAt — момент освобождения аккаунта', () => {
-    expect(availableAt('2026-11-03T10:00:00Z')).toBe('2026-11-03T20:00:00.000Z');
+    // Окно 5 часов — столько же, сколько окно расхода у MiniMax.
+    expect(availableAt('2026-11-03T10:00:00Z')).toBe('2026-11-03T15:00:00.000Z');
     expect(availableAt(null)).toBeNull();
   });
 });
@@ -89,9 +95,9 @@ describe('мультиаккаунт: сводка по запасу (заказ
         row({ id: 1 }),
         // Окно истекло — свободен.
         row({ id: 2, usedOn: '2026-11-01', usedAt: '2026-11-01T06:00:00Z' }),
-        // Освободится через 10 минут (окно простоя 10 ч).
-        row({ id: 3, usedOn: '2026-11-03', usedAt: '2026-11-03T02:10:00Z' }),
-        // Освободится через 9 часов — это уже не «скоро».
+        // Освободится через 10 минут (окно простоя 5 ч).
+        row({ id: 3, usedOn: '2026-11-03', usedAt: '2026-11-03T07:10:00Z' }),
+        // Освободится через 4 часа — это уже не «скоро».
         row({ id: 4, usedOn: '2026-11-03', usedAt: '2026-11-03T11:00:00Z' }),
       ],
       now,
@@ -152,7 +158,7 @@ describe('мультиаккаунт: порядок списка', () => {
   });
 
   it('активированный 3 часа назад — ещё израсходован (вчерашняя дата не значит «свободен»)', () => {
-    // 2026-11-03T09:00Z — это 3 часа назад по окну простоя (6 ч).
+    // 2026-11-03T09:00Z — это 3 часа назад по окну простоя (5 ч).
     expect(isSpent({ usedAt: '2026-11-03T09:00:00Z' }, now)).toBe(true);
   });
 
@@ -182,6 +188,67 @@ describe('мультиаккаунт: порядок списка', () => {
     // 04.11: «чем позже активирован, тем выше он находится» — последний
     // активированный сразу под верхним слотом, а не в конце списка.
     expect(sorted.map((a) => a.id)).toEqual([3, 1, 2]);
+  });
+
+  it('порядок — по очкам: сначала активация, которая даст 1000', () => {
+    // Заказ владельца 11.11: «предлагай в первую очередь те, у которых больше
+    // всего активаций за цикл» — на практике это значит «сначала те, чья
+    // ближайшая активация даст 1000 очков (клетка 4 или 7)».
+    const sorted = sortAccounts(
+      [
+        row({ id: 1, weekPointsNext: 400, weekDaysToBonus: 2, weekStreak: 2 }),
+        row({ id: 2, weekPointsNext: 1000, weekDaysToBonus: 1, weekStreak: 3 }),
+      ],
+      now,
+    );
+    expect(sorted.map((a) => a.id)).toEqual([2, 1]);
+  });
+
+  it('при равных очках — ближе к бонусной клетке выше', () => {
+    const sorted = sortAccounts(
+      [
+        row({ id: 1, weekPointsNext: 400, weekDaysToBonus: 4, weekStreak: 0 }),
+        row({ id: 2, weekPointsNext: 400, weekDaysToBonus: 2, weekStreak: 2 }),
+        row({ id: 3, weekPointsNext: 400, weekDaysToBonus: 3, weekStreak: 1 }),
+      ],
+      now,
+    );
+    expect(sorted.map((a) => a.id)).toEqual([2, 3, 1]);
+  });
+
+  it('при равном расстоянии — длиннее серия выше', () => {
+    const sorted = sortAccounts(
+      [
+        row({ id: 1, weekPointsNext: 400, weekDaysToBonus: 2, weekStreak: 1 }),
+        row({ id: 2, weekPointsNext: 400, weekDaysToBonus: 2, weekStreak: 5 }),
+      ],
+      now,
+    );
+    expect(sorted.map((a) => a.id)).toEqual([2, 1]);
+  });
+
+  it('свежие аккаунты — в конец: новые в оборот берём по мере надобности', () => {
+    const sorted = sortAccounts(
+      [
+        row({ id: 1, usedOn: null, usedAt: null, weekPointsNext: 400, weekDaysToBonus: 4, weekStreak: 0 }),
+        row({ id: 2, usedOn: '2026-10-30', usedAt: '2026-10-30T06:00:00Z', weekPointsNext: 400, weekDaysToBonus: 2, weekStreak: 2 }),
+      ],
+      now,
+    );
+    expect(sorted.map((a) => a.id)).toEqual([2, 1]);
+  });
+
+  it('отмеченный сегодня в верхний слот не встаёт — очков сегодня всё равно 0', () => {
+    // Чек-ин в сутки один: повторная активация очков не даёт. Аккаунт остаётся
+    // в списке (он нужен для работы), но слот под него не тратится.
+    const sorted = sortAccounts(
+      [
+        row({ id: 1, weekCheckedInToday: true, weekPointsNext: 0 }),
+        row({ id: 2, weekPointsNext: 400, weekDaysToBonus: 4, weekStreak: 0 }),
+      ],
+      now,
+    );
+    expect(sorted.map((a) => a.id)).toEqual([2, 1]);
   });
 
   it('исходный массив не мутируется', () => {

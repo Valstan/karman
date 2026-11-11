@@ -4,9 +4,12 @@ import {
   WEEKLY_ACTIVATION_POINTS,
   WEEKLY_POINTS_TOTAL,
   calendarWeek,
+  cycleCell,
   cycleDayNumber,
+  daysToBonus,
   moscowWeekStart,
   pointsForIndex,
+  cohortStats,
   weeklyPoolStats,
   weeklyQuota,
   type WeeklyAccountInput,
@@ -145,10 +148,12 @@ describe('недельная квота — календарная неделя 
 
   it('очки за оставшиеся дни считаются по продолжению серии', () => {
     // Отмечен вчера (08.11, вне календарной недели) → сегодня клетка 2 (400),
-    // дальше 3 (400), 4 (1000), 5, 6, 7 (1000) и снова 7 — на панели MiniMax
-    // семь клеток, поэтому номер не растёт дальше седьмого.
+    // дальше 3 (400), 4 (1000), 5, 6, 7 (1000) и снова 1 (400): неделя чек-инов
+    // начинается заново (решение владельца 11.11). Семь дней дают ровно 4000 —
+    // столько же, сколько в документации MiniMax.
     const quota = weeklyQuota([checkIn('2026-11-08')], today);
-    expect(quota.pointsLeft).toBe(400 + 400 + 1000 + 400 + 400 + 1000 + 1000);
+    expect(quota.pointsLeft).toBe(400 + 400 + 1000 + 400 + 400 + 1000 + 400);
+    expect(quota.pointsLeft).toBe(WEEKLY_POINTS_TOTAL);
   });
 });
 
@@ -217,5 +222,134 @@ describe('сводка по запасу — строка лимитов', () =>
     expect(stats.perDay).toBe(0);
     expect(stats.daysLeft).toBeNull();
     expect(stats.coversWeek).toBeNull();
+  });
+});
+
+describe('после седьмой клетки цикл начинается заново (решение владельца 11.11)', () => {
+  // Неделя чек-инов MiniMax: семь дней подряд — 4000 очков, дальше неделя
+  // начинается заново. Значит 8-й день подряд — снова первая клетка (400), а не
+  // «седьмая» (1000). До 11.11 код потолковал клетку семью и обещал 1000.
+  const day = '2026-11-11';
+
+  it('шесть дней подряд: сегодня седьмая клетка — 1000 очков', () => {
+    const rows = ['2026-11-05', '2026-11-06', '2026-11-07', '2026-11-08', '2026-11-09', '2026-11-10']
+      .map((d) => checkIn(d));
+    const quota = weeklyQuota(rows, day);
+    expect(quota.streak).toBe(6);
+    expect(quota.nextIndex).toBe(7);
+    expect(quota.pointsToday).toBe(1000);
+    expect(quota.daysToBonus).toBe(1);
+  });
+
+  it('семь дней подряд: восьмой день — снова первая клетка и 400 очков', () => {
+    const rows = ['2026-11-05', '2026-11-06', '2026-11-07', '2026-11-08', '2026-11-09', '2026-11-10', '2026-11-11']
+      .map((d) => checkIn(d));
+    const quota = weeklyQuota(rows, '2026-11-12');
+    expect(quota.streak).toBe(7);
+    expect(quota.nextIndex).toBe(1);
+    expect(quota.pointsToday).toBe(400);
+    // До ближайшего бонуса — четыре дня (1, 2, 3, 4).
+    expect(quota.daysToBonus).toBe(4);
+  });
+
+  it('клетка циклится: восьмая серия даёт вторую клетку', () => {
+    expect(cycleCell(0)).toBe(1);
+    expect(cycleCell(5)).toBe(6);
+    expect(cycleCell(6)).toBe(7);
+    expect(cycleCell(7)).toBe(1);
+    expect(cycleCell(8)).toBe(2);
+  });
+
+  it('расстояние до ближайшей бонусной клетки', () => {
+    expect(daysToBonus(0)).toBe(4);   // свежий: 1, 2, 3, 4
+    expect(daysToBonus(2)).toBe(2);   // сегодня третья, завтра четвёртая
+    expect(daysToBonus(3)).toBe(1);   // сегодня четвёртая — 1000
+    expect(daysToBonus(5)).toBe(2);   // сегодня шестая, завтра седьмая
+    expect(daysToBonus(6)).toBe(1);   // сегодня седьмая — 1000
+  });
+
+  it('отмеченный сегодня: очков сегодня 0, номер — завтрашний', () => {
+    const rows = ['2026-11-09', '2026-11-10', '2026-11-11'].map((d) => checkIn(d));
+    const quota = weeklyQuota(rows, day);
+    expect(quota.streak).toBe(3);
+    expect(quota.pointsToday).toBe(0);
+    // Завтра аккаунт продолжит серию и получит четвёртую клетку (1000).
+    expect(quota.nextIndex).toBe(4);
+  });
+
+  it('проекция очков переходит через седьмую клетку на перезапуск', () => {
+    // Серия из шести дней, сегодня (11.11) не отмечен: впереди седьмая клетка
+    // (1000), а потом цикл начинается заново — 1 (400), 2 (400), 3 (400),
+    // 4 (1000). До конца календарной недели осталось пять дней.
+    const rows = ['2026-11-05', '2026-11-06', '2026-11-07', '2026-11-08', '2026-11-09', '2026-11-10']
+      .map((d) => checkIn(d));
+    const quota = weeklyQuota(rows, day);
+    expect(quota.nextIndex).toBe(7);
+    expect(quota.pointsLeft).toBe(1000 + 400 + 400 + 400 + 1000);
+  });
+});
+
+describe('здоровье когорты (стратегия владельца 11.11)', () => {
+  function account(id: number, dates: string[], over: Partial<WeeklyAccountInput> = {}): WeeklyAccountInput {
+    const checkIns = dates.map((d) => checkIn(d));
+    const quota = weeklyQuota(checkIns, today);
+    return {
+      id,
+      spent: false,
+      releasesAt: null,
+      checkedInToday: dates.includes(today),
+      quota,
+      ...over,
+    };
+  }
+
+  it('живая вчера и продолжена сегодня — серия цела', () => {
+    const stats = cohortStats([account(1, ['2026-11-08', '2026-11-09'])], today);
+    expect(stats.liveYesterday).toBe(1);
+    expect(stats.continuedToday).toBe(1);
+    expect(stats.atRisk).toBe(0);
+  });
+
+  it('живая вчера, но не отмечен сегодня — под риском, серия сгорит', () => {
+    // Отмечен 08.11 → серия длиной 1, следующая клетка вторая (400 очков):
+    // пропуск сегодня стоит 400 − 400 = 0.
+    const stats = cohortStats([account(1, ['2026-11-08'])], today);
+    expect(stats.liveYesterday).toBe(1);
+    expect(stats.continuedToday).toBe(0);
+    expect(stats.atRisk).toBe(1);
+    expect(stats.pointsAtRisk).toBe(400);
+    expect(stats.pointsLostIfSkipped).toBe(0);
+  });
+
+  it('клетка 4 сегодня: пропуск стоит 600 очков', () => {
+    // Отмечен 06, 07, 08.11 → серия длиной 3, следующая клетка четвёртая (1000).
+    const stats = cohortStats([account(1, ['2026-11-06', '2026-11-07', '2026-11-08'])], today);
+    expect(stats.atRisk).toBe(1);
+    expect(stats.pointsAtRisk).toBe(1000);
+    expect(stats.pointsLostIfSkipped).toBe(600);
+    // И этот же аккаунт — доступная тысячная сегодня.
+    expect(stats.bonusToday).toBe(1);
+  });
+
+  it('свежий аккаунт (первый чек-ин сегодня) в когорту не входит', () => {
+    const stats = cohortStats([account(1, ['2026-11-09'])], today);
+    expect(stats.liveYesterday).toBe(0);
+    expect(stats.continuedToday).toBe(0);
+    expect(stats.atRisk).toBe(0);
+  });
+
+  it('никогда не отмеченный — тоже вне когорты', () => {
+    const stats = cohortStats([account(1, [])], today);
+    expect(stats.liveYesterday).toBe(0);
+    expect(stats.atRisk).toBe(0);
+  });
+
+  it('тысячные считаются только по доступным сегодня аккаунтам', () => {
+    const busy = account(1, ['2026-11-06', '2026-11-07', '2026-11-08'], {
+      spent: true,
+      releasesAt: '2026-11-20T00:00:00.000Z',
+    });
+    expect(cohortStats([busy], today).bonusToday).toBe(0);
+    expect(cohortStats([account(1, ['2026-11-06', '2026-11-07', '2026-11-08'])], today).bonusToday).toBe(1);
   });
 });
