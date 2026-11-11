@@ -395,6 +395,81 @@ export type WeeklyUsageDay = {
   activations: number;
 };
 
+/**
+ * Здоровье когорты — стратегия владельца 11.11.
+ *
+ * Когорта — это аккаунты, которые активируются КАЖДЫЙ день: у них живая серия
+ * дней подряд, и только она даёт бонусные клетки (4-ю и 7-ю, по 1000 очков).
+ * Пропущенные сутки обнуляют серию, поэтому цену пропуска надо видеть каждый
+ * день — иначе когорта незаметно рассыпается, а очки падают до 400.
+ *
+ * Числа считаются по журналу чек-инов и по окну простоя, ничего не зная о
+ * MiniMax, кроме её же правил (см. docs/minimax.md).
+ */
+export type CohortStats = {
+  /** Сколько аккаунтов имели живую серию вчера (отмечены вчера). */
+  liveYesterday: number;
+  /** Сколько из них продолжены сегодня. */
+  continuedToday: number;
+  /**
+   * Сколько живых вчера ещё НЕ отмечены сегодня — их надо активировать до
+   * конца дня, иначе серия сгорит.
+   */
+  atRisk: number;
+  /** Сколько очков они дадут, если активировать сегодня. */
+  pointsAtRisk: number;
+  /** Сколько очков на них потеряется, если сегодня пропустить (то, что не 400). */
+  pointsLostIfSkipped: number;
+  /** Сколько доступных сегодня аккаунтов дадут 1000 очков (клетка 4 или 7). */
+  bonusToday: number;
+};
+
+/**
+ * Здоровье когорты по аккаунтам: сколько живых серий вчера, сколько продолжено
+ * сегодня, сколько под риском и сколько это стоит.
+ *
+ * Считается по тому же журналу, что и недельная квота, поэтому числа в строке
+ * статистики и в этом своде не могут разойтись.
+ */
+export function cohortStats(accounts: WeeklyAccountInput[], todayDate: string): CohortStats {
+  let liveYesterday = 0;
+  let continuedToday = 0;
+  let atRisk = 0;
+  let pointsAtRisk = 0;
+  let bonusToday = 0;
+
+  for (const account of accounts) {
+    const { streak, nextIndex, pointsToday, exhausted } = account.quota;
+    const aliveYesterday = account.checkedInToday ? streak >= 2 : streak >= 1;
+    if (aliveYesterday) liveYesterday += 1;
+
+    // Сегодня доступны тысячные — цель на день. Считаем и для тех, кто в зоне
+    // риска: если активировать сегодня, бонус будет.
+    if (!exhausted && pointsToday === 1000 && activatableToday(account, todayDate)) {
+      bonusToday += 1;
+    }
+
+    if (account.checkedInToday && streak >= 2) {
+      // Живая вчера и продолжена сегодня — серия цела.
+      continuedToday += 1;
+    } else if (!account.checkedInToday && streak >= 1) {
+      // Живая вчера, но сегодня ещё не отмечен: серия держится на волоске —
+      // если не активировать сегодня, она сгорит.
+      atRisk += 1;
+      if (nextIndex !== null) pointsAtRisk += pointsForIndex(nextIndex);
+    }
+  }
+
+  return {
+    liveYesterday,
+    continuedToday,
+    atRisk,
+    pointsAtRisk,
+    pointsLostIfSkipped: pointsAtRisk - 400 * atRisk,
+    bonusToday,
+  };
+}
+
 /** Сводка по недельному запасу — то, что стоит в строке статистики. */
 export type WeeklyPoolStats = {
   /** Сколько активаций ещё можно сделать сегодня. */

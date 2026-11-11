@@ -25,7 +25,7 @@ import {
   moscowToday,
   splitAccounts,
 } from '@/lib/accounts/rotation';
-import { weeklyPoolStats } from '@/lib/accounts/weekly';
+import { cohortStats, weeklyPoolStats } from '@/lib/accounts/weekly';
 import { MinimaxFormDialog } from './minimax-form-dialog';
 import { MinimaxActivateDialog } from './minimax-activate-dialog';
 import {
@@ -130,6 +130,23 @@ export function MinimaxPanel({
         moscowToday(new Date(clockMs)),
       ),
     [accounts, usageByDay, clockMs],
+  );
+
+  // Здоровье когорты (стратегия владельца 11.11): живые серии вчера, сколько
+  // продолжено сегодня, сколько под риском и сколько это стоит в очках.
+  const cohort = useMemo(
+    () =>
+      cohortStats(
+        accounts.map((account) => ({
+          id: account.id,
+          spent: account.spent,
+          releasesAt: account.availableAt,
+          checkedInToday: account.weekCheckedInToday,
+          quota: account.week,
+        })),
+        moscowToday(new Date(clockMs)),
+      ),
+    [accounts, clockMs],
   );
 
   // Активация — только явной кнопкой (заказ владельца 05.11). Копирование
@@ -390,6 +407,16 @@ export function MinimaxPanel({
                 ? ' (до конца недели хватит)'
                 : ' (до конца недели не хватит)'}
           </div>
+          {cohort.liveYesterday > 0 ? (
+            <div className="-mt-3 text-sm font-medium text-muted-foreground">
+              Живых серий вчера — {cohort.liveYesterday}, продолжено сегодня —
+              {cohort.continuedToday}, не отмечены сегодня — {cohort.atRisk}
+              {cohort.atRisk > 0
+                ? ` (если пропустить — минус ${cohort.pointsLostIfSkipped} очков)`
+                : ''}
+              {cohort.bonusToday > 0 ? ` · сегодня доступно тысячных: ${cohort.bonusToday}` : ''}
+            </div>
+          ) : null}
           <p className="-mt-4 text-xs text-muted-foreground">
             Номер активации — серия дней подряд: отмечен вчера — вторая клетка, пропущен
             вчера — серия сгорела, снова первая. Недельная квота — календарная неделя

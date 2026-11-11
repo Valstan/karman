@@ -9,6 +9,7 @@ import {
   daysToBonus,
   moscowWeekStart,
   pointsForIndex,
+  cohortStats,
   weeklyPoolStats,
   weeklyQuota,
   type WeeklyAccountInput,
@@ -285,5 +286,70 @@ describe('после седьмой клетки цикл начинается �
     const quota = weeklyQuota(rows, day);
     expect(quota.nextIndex).toBe(7);
     expect(quota.pointsLeft).toBe(1000 + 400 + 400 + 400 + 1000);
+  });
+});
+
+describe('здоровье когорты (стратегия владельца 11.11)', () => {
+  function account(id: number, dates: string[], over: Partial<WeeklyAccountInput> = {}): WeeklyAccountInput {
+    const checkIns = dates.map((d) => checkIn(d));
+    const quota = weeklyQuota(checkIns, today);
+    return {
+      id,
+      spent: false,
+      releasesAt: null,
+      checkedInToday: dates.includes(today),
+      quota,
+      ...over,
+    };
+  }
+
+  it('живая вчера и продолжена сегодня — серия цела', () => {
+    const stats = cohortStats([account(1, ['2026-11-08', '2026-11-09'])], today);
+    expect(stats.liveYesterday).toBe(1);
+    expect(stats.continuedToday).toBe(1);
+    expect(stats.atRisk).toBe(0);
+  });
+
+  it('живая вчера, но не отмечен сегодня — под риском, серия сгорит', () => {
+    // Отмечен 08.11 → серия длиной 1, следующая клетка вторая (400 очков):
+    // пропуск сегодня стоит 400 − 400 = 0.
+    const stats = cohortStats([account(1, ['2026-11-08'])], today);
+    expect(stats.liveYesterday).toBe(1);
+    expect(stats.continuedToday).toBe(0);
+    expect(stats.atRisk).toBe(1);
+    expect(stats.pointsAtRisk).toBe(400);
+    expect(stats.pointsLostIfSkipped).toBe(0);
+  });
+
+  it('клетка 4 сегодня: пропуск стоит 600 очков', () => {
+    // Отмечен 06, 07, 08.11 → серия длиной 3, следующая клетка четвёртая (1000).
+    const stats = cohortStats([account(1, ['2026-11-06', '2026-11-07', '2026-11-08'])], today);
+    expect(stats.atRisk).toBe(1);
+    expect(stats.pointsAtRisk).toBe(1000);
+    expect(stats.pointsLostIfSkipped).toBe(600);
+    // И этот же аккаунт — доступная тысячная сегодня.
+    expect(stats.bonusToday).toBe(1);
+  });
+
+  it('свежий аккаунт (первый чек-ин сегодня) в когорту не входит', () => {
+    const stats = cohortStats([account(1, ['2026-11-09'])], today);
+    expect(stats.liveYesterday).toBe(0);
+    expect(stats.continuedToday).toBe(0);
+    expect(stats.atRisk).toBe(0);
+  });
+
+  it('никогда не отмеченный — тоже вне когорты', () => {
+    const stats = cohortStats([account(1, [])], today);
+    expect(stats.liveYesterday).toBe(0);
+    expect(stats.atRisk).toBe(0);
+  });
+
+  it('тысячные считаются только по доступным сегодня аккаунтам', () => {
+    const busy = account(1, ['2026-11-06', '2026-11-07', '2026-11-08'], {
+      spent: true,
+      releasesAt: '2026-11-20T00:00:00.000Z',
+    });
+    expect(cohortStats([busy], today).bonusToday).toBe(0);
+    expect(cohortStats([account(1, ['2026-11-06', '2026-11-07', '2026-11-08'])], today).bonusToday).toBe(1);
   });
 });
