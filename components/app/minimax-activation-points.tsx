@@ -25,7 +25,9 @@ import { WEEKLY_ACTIVATION_POINTS, pointsForIndex } from '@/lib/accounts/weekly'
  *
  * Ряд горизонтальный (заказ владельца 08.11: «эти кнопочки выбираю просто в
  * ряд, ну, как в ряд, горизонтальный»), каждая кнопка подписана своим
- * номером и очками, которые за ним стоят.
+ * номером и очками, которые за ним стоят. Кнопки КВАДРАТНЫЕ и крупные (заказ
+ * владельца 12.11: «сделай квадратными, покрупнее, так легче мышкой
+ * попадать») — попасть в клетку при быстрой активации надо с одного клика.
  */
 export function MinimaxActivationPoints({
   value,
@@ -43,7 +45,7 @@ export function MinimaxActivationPoints({
   return (
     <div className="flex flex-col gap-1">
       <span className="text-sm font-medium leading-none">{label}</span>
-      <div className="flex flex-wrap gap-1">
+      <div className="flex flex-wrap gap-1.5">
         {WEEKLY_ACTIVATION_POINTS.map((points, i) => {
           const index = i + 1;
           const selected = value === index;
@@ -56,14 +58,19 @@ export function MinimaxActivationPoints({
               disabled={disabled}
               aria-pressed={selected}
               title={`${index}-я активация в неделе — ${points} очков`}
-              className="h-auto min-w-[3.25rem] flex-col gap-0 px-1.5 py-1"
+              // Квадратные и крупные (заказ владельца 12.11: «сделай квадратными,
+              // покрупнее, так легче мышкой попадать»). Галочка выбранной клетки —
+              // в углу, чтобы не сдвигать цифры и не ломать квадрат.
+              className="relative aspect-square h-auto w-[3.4rem] flex-col gap-0 px-1 py-1"
               onClick={() => onChange(index)}
             >
-              <span className="text-xs leading-tight">{index}-я</span>
-              <span className="text-[10px] leading-tight font-normal opacity-80">
+              <span className="text-sm leading-tight">{index}-я</span>
+              <span className="text-[11px] leading-tight font-normal opacity-80">
                 {points}
               </span>
-              {selected ? <Check className="h-3 w-3 text-emerald-400" /> : null}
+              {selected ? (
+                <Check className="absolute right-1 top-1 h-3 w-3 text-emerald-400" />
+              ) : null}
             </Button>
           );
         })}
