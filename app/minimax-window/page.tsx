@@ -21,7 +21,7 @@ export const dynamic = 'force-dynamic';
 export default async function MinimaxWindowPage({
   searchParams,
 }: {
-  searchParams: Promise<{ accountId?: string; projectId?: string }>;
+  searchParams: Promise<{ accountId?: string; projectId?: string; copied?: string }>;
 }) {
   const user = await requireUser();
   if (!user.isSuperuser) notFound();
@@ -54,6 +54,7 @@ export default async function MinimaxWindowPage({
       account={account}
       projects={orderedProjects}
       initialProjectId={initialProjectId}
+      emailCopied={params.copied === 'email'}
     />
   );
 }

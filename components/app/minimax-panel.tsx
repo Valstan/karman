@@ -26,6 +26,7 @@ import {
   splitAccounts,
 } from '@/lib/accounts/rotation';
 import { cohortStats, weeklyPoolStats } from '@/lib/accounts/weekly';
+import { centeredWindowFeatures } from '@/lib/accounts/window-features';
 import { MinimaxFormDialog } from './minimax-form-dialog';
 import { MinimaxActivateDialog } from './minimax-activate-dialog';
 import {
@@ -230,13 +231,29 @@ export function MinimaxPanel({
    * Браузер не умеет «держать окно поверх вкладок» — отдельное окно ОС и есть
    * ближайшее, что можно сделать. Имя окна одно: повторное открытие не
    * плодит окна, а поднимает уже открытое.
+   *
+   * Окно открывается ПО ЦЕНТРУ экрана (заказ владельца 12.11) — считать
+   * приходится вручную: браузер центрирует только «в пределах экрана», а на
+   * втором мониторе окно уехало бы на основной. Геометрия — в
+   * `lib/accounts/window-features.ts` (с гейтом).
+   *
+   * `emailCopied` — почта уже в буфере (быстрый путь копирует её ДО открытия
+   * окна). Окно покажет кнопку «Скопировать почту» посеревшей, чтобы не
+   * путать: второй раз нажимать незачем (заказ владельца 12.11).
    */
-  function openWindow(accountId: number) {
+  function openWindow(accountId: number, options?: { emailCopied?: boolean }) {
     const params = new URLSearchParams({ accountId: String(accountId) });
+    if (options?.emailCopied) params.set('copied', 'email');
+    const features = centeredWindowFeatures({
+      x: window.screenX,
+      y: window.screenY,
+      width: window.outerWidth,
+      height: window.outerHeight,
+    });
     const opened = window.open(
       `/minimax-window?${params.toString()}`,
       'karman-minimax-window',
-      'popup=yes,width=460,height=620,resizable=yes,scrollbars=yes',
+      features,
     );
     if (!opened) {
       toast.error('Браузер заблокировал всплывающее окно — разрешите окна для этого сайта');
@@ -271,7 +288,10 @@ export function MinimaxPanel({
     // владельцу об этом сказать надо.
     const copied = await copyAccountSecret({ id: fresh.id, email: fresh.email }, 'email');
     if (!copied.ok) toast.error(copied.error);
-    openWindow(fresh.id);
+    // Почта уже в буфере — окно покажет кнопку «Скопировать почту» посеревшей
+    // (заказ владельца 12.11). Если копирование не вышло — кнопка остаётся
+    // зелёной: иначе окно соврёт, что почта уже скопирована.
+    openWindow(fresh.id, { emailCopied: copied.ok });
     router.refresh();
   }
 
