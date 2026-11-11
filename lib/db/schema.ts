@@ -42,6 +42,28 @@ export type PaymentType = 'annuity' | 'differentiated' | 'other';
 /** ISO-таймштамп для JS-side дефолтов (в БД нет DEFAULT now()). */
 const isoNow = () => new Date().toISOString();
 
+// --- Журнал миграций (служебная; миграция 0030) ------------------------------
+/**
+ * Что применено на этой БД — состояние, а не дельта коммита. По нему шаг
+ * деплоя спрашивает ПРОД перед выкладкой кода: каждый файл
+ * `lib/db/migrations/*.sql` обязан быть здесь, иначе стоп (гвард миграций,
+ * R1). Прежний предохранитель смотрел на diff последнего коммита и защищал
+ * ровно один push — дыра описана мозгу 28.07.
+ *
+ * Пишет журнал один путь — воркфлоу `apply-migration.yml` (после применения
+ * файла). Строки с `baseline = true` внесены миграцией 0030 для миграций
+ * 0001–0029: они применялись до появления журнала, и это утверждение о
+ * прошлом, а не наблюдение.
+ */
+export const schemaMigrations = pgTable('schema_migrations', {
+  version: text('version').primaryKey(),
+  name: text('name').notNull().unique(),
+  baseline: boolean('baseline').notNull().default(false),
+  appliedAt: timestamp('applied_at', { withTimezone: true, mode: 'string' })
+    .notNull()
+    .$defaultFn(isoNow),
+});
+
 // --- Пользователи (Django auth_user; id — integer identity) -----------------
 export const authUser = pgTable('auth_user', {
   id: serial('id').primaryKey(),
