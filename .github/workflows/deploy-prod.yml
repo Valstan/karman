@@ -73,66 +73,19 @@ jobs:
         with:
           fetch-depth: 2
 
-      # Предохранитель миграций: standalone-бандл не несёт drizzle-kit, поэтому
-      # миграции применяет разработчик вручную на проде ДО деплоя (psql/db:migrate
-      # с машины разработчика). CI лишь проверяет, что коммит не вносит новых
-      # .sql-миграций. workflow_dispatch = «уже применил» → guard пропускается.
-      - name: Migration guard
-        if: github.event_name != 'workflow_dispatch'
-        run: |
-          set -e
-          NEW=$(git diff --name-only --diff-filter=A HEAD~1 HEAD -- 'lib/db/migrations/*.sql' || true)
-          if [ -n "$NEW" ]; then
-            echo "::error::Коммит вносит новые миграции. Примени их на проде вручную, затем запусти деплой через workflow_dispatch."
-            echo "$NEW"
-            exit 1
-          fi
-          echo "Новых миграций в коммите нет — деплой продолжается."
-
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: npm
 
-      - run: npm ci
-
-      - name: Build (standalone)
-        env:
-          # build не ходит в БД (страницы динамические, пул ленивый) — заглушки
-          # на случай чтения env на уровне модулей (как в ci.yml).
-          DATABASE_URL: postgres://ci:ci@127.0.0.1:5432/ci_dummy
-          SESSION_SECRET: ci-dummy-secret-not-used-in-prod
-        run: npm run build
-
-      - name: Assemble standalone bundle
-        run: |
-          set -e
-          if [ ! -f .next/standalone/server.js ]; then
-            echo "::error::server.js не найден в .next/standalone"
-            find .next/standalone -maxdepth 3 -name server.js || true
-            exit 1
-          fi
-          cp -r .next/static .next/standalone/.next/static
-          if [ -d public ]; then cp -r public .next/standalone/public; fi
-          # Воркер напоминаний (тонкое реле, без зависимостей) едет рядом с server.js;
-          # его запускает karman-reminders.service из current/. См. docs/telegram-reminders.md.
-          cp scripts/reminders-worker.mjs .next/standalone/reminders-worker.mjs
-          # Операционные скрипты едут вместе с артефактом. Без этого каталог scripts/
-          # на проде — РУЧНАЯ копия, и она расходится молча: 2026-08-25 обнаружено, что
-          # прод крутит backup_vault.sh от 11 июля, то есть правка от 10 августа
-          # (добавить secrets_grant / secrets_bootstrap / passport_* в дамп vault'а)
-          # так и не доехала — реестр личностей и карта grant'ов не бэкапились вовсе.
-          mkdir -p .next/standalone/scripts
-          cp scripts/*.sh .next/standalone/scripts/
-          tar czf karman-app.tgz -C .next/standalone .
-          echo "bundle: $(du -h karman-app.tgz | cut -f1)"
-
+      # Setup SSH вынесен ВЫШЕ гварда: гварду нужен доступ к боевой БД, а сама
+      # настройка ключа от неё не зависит. Настройка — копия шага из
+      # apply-migration.yml: тот же ключ, тот же запиненный known_hosts.
       - name: Setup SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          # Recon-чувствительное — в secrets, а НЕ в vars: раннер печатает блок `env:`
-          # с раскрытыми значениями, и у публичного репо этот лог публичен (находка
-          # Калинино, письмо brain 08-29). Маскируется только заведённое как secrets.
+          # Recon-чувствительное — в secrets, а НЕ в vars: раннер печатает блок `env:` шага с раскрытыми значениями, и у публичного репо этот
+          # лог публичен (находка Калинино, письмо brain 08-29). Маскируется только заведённое как secrets.
           DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
           DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
           DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
@@ -176,6 +129,70 @@ jobs:
             ServerAliveInterval 30
           CFG
           chmod 600 ~/.ssh/config
+
+      # Гвард миграций ПО СОСТОЯНИЮ, а не по дельте коммита (R1).
+      #
+      # Прежний вариант спрашивал git: «принёс ли ЭТОТ коммит миграцию» — и
+      # защищал ровно один push. Окно между «миграция смержена» и «миграция
+      # применена» держалось на памяти разработчика, и 12.10 оно уронило прод.
+      # Теперь спрашиваем ПРОД: журнал `schema_migrations` против списка файлов
+      # репозитория. Пока схема не применена — стоп на ЛЮБОЙ коммит, а не
+      # только на коммит с миграцией.
+      #
+      # Ручного обхода через workflow_dispatch больше НЕТ — он и был дырой:
+      # после применения миграции деплой проходит сам, потому что журнал полон.
+      # Пропуск гварда был возможен только потому, что состояние спрашивать
+      # было негде.
+      - name: Migration guard (журнал схемы)
+        run: |
+          set -euo pipefail
+          JOURNAL="$RUNNER_TEMP/migration-journal.tsv"
+          scp -q scripts/migration_journal.sh karman:/tmp/karman-migration-journal.sh
+          set +e
+          ssh karman 'bash /tmp/karman-migration-journal.sh list' > "$JOURNAL" 2>/dev/null
+          rc=$?
+          set -e
+          ssh karman 'rm -f /tmp/karman-migration-journal.sh' 2>/dev/null || true
+          if [ "$rc" != "0" ]; then
+            echo "::error::Журнал миграций на проде недоступен (код $rc). Ответ сервиса:"
+            cat "$JOURNAL"
+            echo "::error::Сначала примените миграции: gh workflow run apply-migration.yml --ref main -f migration=<файл>"
+            exit 1
+          fi
+          node scripts/migration_guard.mjs --migrations lib/db/migrations --journal "$JOURNAL"
+
+      - run: npm ci
+
+      - name: Build (standalone)
+        env:
+          # build не ходит в БД (страницы динамические, пул ленивый) — заглушки
+          # на случай чтения env на уровне модулей (как в ci.yml).
+          DATABASE_URL: postgres://ci:ci@127.0.0.1:5432/ci_dummy
+          SESSION_SECRET: ci-dummy-secret-not-used-in-prod
+        run: npm run build
+
+      - name: Assemble standalone bundle
+        run: |
+          set -e
+          if [ ! -f .next/standalone/server.js ]; then
+            echo "::error::server.js не найден в .next/standalone"
+            find .next/standalone -maxdepth 3 -name server.js || true
+            exit 1
+          fi
+          cp -r .next/static .next/standalone/.next/static
+          if [ -d public ]; then cp -r public .next/standalone/public; fi
+          # Воркер напоминаний (тонкое реле, без зависимостей) едет рядом с server.js;
+          # его запускает karman-reminders.service из current/. См. docs/telegram-reminders.md.
+          cp scripts/reminders-worker.mjs .next/standalone/reminders-worker.mjs
+          # Операционные скрипты едут вместе с артефактом. Без этого каталог scripts/
+          # на проде — РУЧНАЯ копия, и она расходится молча: 2026-08-25 обнаружено, что
+          # прод крутит backup_vault.sh от 11 июля, то есть правка от 10 августа
+          # (добавить secrets_grant / secrets_bootstrap / passport_* в дамп vault'а)
+          # так и не доехала — реестр личностей и карта grant'ов не бэкапились вовсе.
+          mkdir -p .next/standalone/scripts
+          cp scripts/*.sh .next/standalone/scripts/
+          tar czf karman-app.tgz -C .next/standalone .
+          echo "bundle: $(du -h karman-app.tgz | cut -f1)"
 
       - name: Ship artifact + restart
         env:

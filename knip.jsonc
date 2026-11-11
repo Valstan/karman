@@ -23,5 +23,7 @@
 
   // Прод-воркер напоминаний: запускается systemd (`karman-reminders`), а не из
   // package.json — knip сам этот вход не видит.
-  "entry": ["scripts/reminders-worker.mjs"]
+  // `migration_guard.mjs` — тоже: его запускает шаг деплоя в
+  // `.github/workflows/deploy-prod.yml`, а knip воркфлоу не читает.
+  "entry": ["scripts/reminders-worker.mjs", "scripts/migration_guard.mjs"]
 }

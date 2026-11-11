@@ -97,7 +97,7 @@
 | `scripts/cloudflare/karman-tg.js` (Cloudflare Worker) | в нашу БД **не пишет**: реле к `api.telegram.org` (обход RKN), allowlist методов | `X-Relay-Secret` без переменной — 503 (fail-closed); деплоит владелец руками |
 | cron `scripts/backup_vault.sh` (03:30) | `vault.sql` (перечень таблиц явный), `media.tar.gz`, `MANIFEST.txt`, зашифрованные на Диск | pg_dump из env сервиса; права на бэкап — у юнита |
 | cron `scripts/health_watch.sh` (каждые 10 мин) | кэш `chat_id` на диск, сообщение в Telegram **только при смене состояния** | `curl /api/health` + токен бота |
-| `lib/db/migrations/*.sql` | схема | psql вручную; `Migration guard` в `deploy-prod.yml` не даёт коду уехать раньше схемы |
+| `lib/db/migrations/*.sql` | схема + журнал `schema_migrations` | воркфлоу `apply-migration.yml` (psql + запись в журнал одним шагом); `Migration guard (журнал схемы)` в `deploy-prod.yml` не даёт коду уехать раньше схемы — сверка по состоянию БД, а не по дельте коммита |
 | Ручные `psql` по мандату владельца (#025) | любые строки | подтверждение владельца **в том же ходе**; операция обязана оставить след в аудите (`token_revoked`, актор `system`, происхождение в `detail` — образец 02.10) |
 | Синк ЕСА | `auth_oidc_identity`: при входе — автосвязка по почте (`lib/services/oidc-login.ts:86,126`), при привязке — `lib/services/esa-link.ts` | вход — по подписи провайдера + `state`; привязка — сессия + 2FA + явное подтверждение личности человеком |
 

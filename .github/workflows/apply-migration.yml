@@ -103,43 +103,23 @@ jobs:
       - name: Применить миграцию на проде
         run: |
           set -e
-          scp -q "lib/db/migrations/${{ inputs.migration }}" karman:/tmp/karman-migration.sql
+          # Файл миграции едет на бокс под СВОИМ именем: версия и имя
+          # берутся из имени файла (scripts/migration_journal.sh apply), и
+          # подменять их нечем — иначе в журнал попадёт не то, что применено.
+          scp -q "lib/db/migrations/${{ inputs.migration }}" "karman:/tmp/${{ inputs.migration }}"
+          scp -q scripts/migration_journal.sh karman:/tmp/karman-migration-journal.sh
           # stderr самого ssh НЕ печатаем: при обрыве связи ssh печатает хост и
           # порт отдельными словами, а это координаты боевой машины (D-038).
+          # Диагностика скрипта едет в stdout (в нём `exec 2>&1`).
           ssh karman 'bash -s' 2>/dev/null <<'REMOTE'
           set -euo pipefail
           exec 2>&1
-
-          ENV_FILE="$(systemctl show karman -p EnvironmentFiles --value 2>/dev/null \
-            | tr ' ' '\n' | grep -v '^(' | head -1 | sed 's/^-//' || true)"
-          if [ -z "$ENV_FILE" ] || [ ! -r "$ENV_FILE" ]; then
-            echo "::error::env-файл сервиса не найден (systemd karman)"
-            exit 1
-          fi
-          set -a; . "$ENV_FILE"; set +a
-
-          # Каталог скриптов берём из cron (там боевой путь), с запасным вариантом.
-          SCRIPTS_DIR=""
-          CRON_SCRIPT="$(crontab -l 2>/dev/null | grep -oE '[^ ]*backup_vault\.sh' | head -1 || true)"
-          if [ -n "$CRON_SCRIPT" ] && [ -r "$CRON_SCRIPT" ]; then
-            SCRIPTS_DIR="$(dirname "$CRON_SCRIPT")"
-          fi
-          if [ -z "$SCRIPTS_DIR" ] || [ ! -r "$SCRIPTS_DIR/pg-connect.sh" ]; then
-            SCRIPTS_DIR="$HOME/karman/scripts"
-          fi
-          if [ ! -r "$SCRIPTS_DIR/pg-connect.sh" ]; then
-            echo "::error::Не найден pg-connect.sh ($SCRIPTS_DIR) — пароль ушёл бы в argv"
-            exit 1
-          fi
-
-          WORK="$(mktemp -d)"
-          trap 'rm -rf "$WORK"' EXIT
-          # . "$SCRIPTS_DIR/pg-connect.sh" — тот же приём, что в backup_vault.sh:
-          # пароль роли уходит в .pgpass (600), в argv остаётся URI без пароля.
-          . "$SCRIPTS_DIR/pg-connect.sh"
-          pg_setup_pgpass "$WORK"
-
-          psql "$PG_DSN_NOPASS" -v ON_ERROR_STOP=1 -f /tmp/karman-migration.sql
-          rm -f /tmp/karman-migration.sql
+          # Скрипт делает ВСЁ: проверяет, не применена ли миграция уже;
+          # гонит файл через psql с ON_ERROR_STOP=1 (пароль роли — в .pgpass, не
+          # в argv); и СРАЗУ записывает миграцию в журнал schema_migrations.
+          # Запись в журнал — часть применения, а не отдельный шаг: разорвать
+          # их нельзя, иначе вернётся та дыра, ради которой всё затевалось.
+          bash /tmp/karman-migration-journal.sh apply "/tmp/${{ inputs.migration }}"
+          rm -f "/tmp/${{ inputs.migration }}" /tmp/karman-migration-journal.sh
           echo "миграция применена"
           REMOTE
