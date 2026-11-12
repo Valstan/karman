@@ -55,7 +55,18 @@ case "$KEEP" in
 esac
 
 BASE="${DEPLOY_BASE:-$HOME/karman}"
-LOG_DIR="${OWN_LOG_DIR:-$HOME/backups}"
+# Каталог наших логов. Cron пишет их рядом с базой (…/karman и …/backups —
+# один домашний каталог владельца). Если логин деплоя не совпадает с
+# владельцем, $HOME/backups не существует — тогда берём соседний каталог базы.
+# Молча «логов не нашлось» — это ровно тот тихий no-op, из-за которого
+# протечка и не закрывается: скрипт отработал, а лог растёт дальше.
+if [ -n "${OWN_LOG_DIR:-}" ]; then
+  LOG_DIR="$OWN_LOG_DIR"
+elif [ -d "$HOME/backups" ]; then
+  LOG_DIR="$HOME/backups"
+else
+  LOG_DIR="$(dirname -- "$BASE")/backups"
+fi
 
 say() { echo "prune_own_class.sh: $*"; }
 
@@ -134,6 +145,9 @@ done
 # ── 3. Логи cron без TTL ─────────────────────────────────────────────────────
 # Обрезаем, сохраняя хвост: лог нужен для разбора, но расти вечно не должен.
 LOG_MAX_BYTES="${LOG_MAX_BYTES:-1048576}"
+if [ ! -d "$LOG_DIR" ]; then
+  say "каталог логов не найден: $LOG_DIR — ротация наших логов пропущена"
+fi
 for name in health-watch.log vault-backup.log; do
   f="$LOG_DIR/$name"
   [ -f "$f" ] || continue

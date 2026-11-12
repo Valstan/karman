@@ -123,5 +123,17 @@ fi
 echo "$out" | grep -q 'неизвестный аргумент' || fail "неизвестный флаг отверг не тем сообщением: $out"
 step "разбор аргументов: --keep N, --keep=N, мусор отвергнут"
 
-echo "prune_own_class.test.sh: OK — 6 сценариев"
+# ── Сценарий 7: каталог логов ищется рядом с базой ─────────────────────────
+# Логин деплоя может не совпадать с владельцем: тогда $HOME/backups нет, а
+# логи лежат в соседнем каталоге базы (…/karman и …/backups — один дом).
+# Ротация не должна молча пропускаться: именно на этих логах жила протечка.
+BASE4="$WORK/karman4"; mkdir -p "$BASE4/releases" "$WORK/backups" "$WORK/nohome"
+LOGS4="$WORK/backups"
+dd if=/dev/zero of="$LOGS4/health-watch.log" bs=1024 count=300 2>/dev/null
+out="$(HOME="$WORK/nohome" DEPLOY_BASE="$BASE4" LOG_MAX_BYTES=1024 KEEP_RELEASES=1 bash "$SCRIPT" --apply 2>&1)"
+size4="$(stat -c %s "$LOGS4/health-watch.log" 2>/dev/null || echo 0)"
+[ "$size4" -le 1024 ] || fail "лог в соседнем с базой каталоге не обрезан ($size4 Б) — ротация молча пропущена"
+step "каталог логов найден рядом с базой (без \$HOME/backups)"
+
+echo "prune_own_class.test.sh: OK — 7 сценариев"
 exit 0

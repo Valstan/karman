@@ -287,7 +287,11 @@ jobs:
           # scripts/prune_own_class.sh: он исключает живой релиз по разрешённому
           # пути и каталоги, занятые процессом (WorkingDirectory юнита / чей-то cwd).
           if [ -r "$BASE/scripts/prune_own_class.sh" ]; then
-            bash "$BASE/scripts/prune_own_class.sh" --apply --keep 5
+            # DEPLOY_BASE передаём явно: скрипт иначе берёт базу из $HOME/karman,
+            # а логин деплоя может не совпадать с владельцем — тогда уборка
+            # молча не нашла бы ни релизов, ни логов. Каталог логов скрипт
+            # достраивает сам (сосед базы), если $HOME/backups нет.
+            DEPLOY_BASE="$BASE" bash "$BASE/scripts/prune_own_class.sh" --apply --keep 5
           else
             echo "::warning::prune_own_class.sh не найден — релизы не трогаю (живой цел)"
           fi

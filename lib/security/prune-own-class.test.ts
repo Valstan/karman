@@ -51,7 +51,7 @@ describe('уборка своего класса: живой релиз не с�
     expect(existsSync(SCRIPT)).toBe(true);
   });
 
-  it('живой прогон: 5 сценариев уборки проходят', () => {
+  it('живой прогон: 7 сценариев уборки проходят', () => {
     const bash = findBash();
     expect(
       bash,
@@ -108,5 +108,17 @@ describe('уборка своего класса: живой релиз не с�
     expect(src).toContain('DRY_RUN=1');
     expect(src).toContain('--apply');
     expect(src).toContain('dry-run: ничего не удалено');
+  });
+
+  it('логи находятся и без $HOME/backups, а деплой передаёт базу явно', () => {
+    const src = script();
+    // Логин деплоя может отличаться от логина владельца: тогда $HOME/backups
+    // не существует, а логи лежат рядом с базой. Без этой ветки скрипт отработал
+    // бы вхолостую — и лог продолжил бы расти (тихий no-op).
+    expect(src).toContain('dirname -- "$BASE"');
+    expect(src).toContain('каталог логов не найден');
+    // Деплой обязан отдать скрипту базу явно — иначе тот возьмёт $HOME/karman.
+    const workflow = readFileSync(join(ROOT, '.github', 'workflows', 'deploy-prod.yml'), 'utf8');
+    expect(workflow).toContain('DEPLOY_BASE="$BASE" bash "$BASE/scripts/prune_own_class.sh" --apply --keep 5');
   });
 });
