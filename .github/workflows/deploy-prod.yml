@@ -280,8 +280,21 @@ jobs:
           # с 30 августа: три деплоя прошли мимо него, и ничто об этом не сообщало.
           # Правка reminders-worker.mjs выглядела бы задеплоенной и не была бы ею.
           sudo systemctl restart karman-reminders
-          # держим последние 5 релизов
-          ls -1dt "$BASE"/releases/*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf
+          # держим последние 5 релизов — правилом, которое НЕ СНОСИТ ЖИВОЙ (G589).
+          # Прежде здесь было `ls -1dt … | tail -n +6 | rm -rf`: «N свежих по mtime»
+          # без исключения симлинка `current` сносит релиз, из которого запущено
+          # приложение (а из `current` работает и воркер напоминаний). Теперь чистит
+          # scripts/prune_own_class.sh: он исключает живой релиз по разрешённому
+          # пути и каталоги, занятые процессом (WorkingDirectory юнита / чей-то cwd).
+          if [ -r "$BASE/scripts/prune_own_class.sh" ]; then
+            # DEPLOY_BASE передаём явно: скрипт иначе берёт базу из $HOME/karman,
+            # а логин деплоя может не совпадать с владельцем — тогда уборка
+            # молча не нашла бы ни релизов, ни логов. Каталог логов скрипт
+            # достраивает сам (сосед базы), если $HOME/backups нет.
+            DEPLOY_BASE="$BASE" bash "$BASE/scripts/prune_own_class.sh" --apply --keep 5
+          else
+            echo "::warning::prune_own_class.sh не найден — релизы не трогаю (живой цел)"
+          fi
           echo "deployed $SHA"
           REMOTE
           rc=$?
