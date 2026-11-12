@@ -63,8 +63,8 @@ out="$(DEPLOY_BASE="$BASE" OWN_LOG_DIR="$LOGS" LOG_MAX_BYTES=1024 KEEP_RELEASES=
 step "--apply: живой релиз выжил, лишний удалён"
 
 # ── Сценарий 3: живой релиз — САМЫЙ СВЕЖИЙ, а удалять надо старый ────────
-# KEEP=1: из трёх релизов живой (r3) всегда остаётся, r2 — «свежий» (оставляем),
-# r1 — лишний (удаляем).
+# KEEP=1: из трёх релизов живой (r3) входит в пятёрку и остаётся, r2 и r1 —
+# лишние (удаляются).
 BASE2="$WORK/karman2"; mkdir -p "$BASE2/releases"
 mkdir -p "$BASE2/releases/r1" "$BASE2/releases/r2" "$BASE2/releases/r3"
 touch -d '2026-01-01 00:00' "$BASE2/releases/r1"
@@ -73,9 +73,20 @@ touch -d '2026-11-01 00:00' "$BASE2/releases/r3"
 ln -s "$BASE2/releases/r3" "$BASE2/current"
 DEPLOY_BASE="$BASE2" OWN_LOG_DIR="$LOGS" KEEP_RELEASES=1 bash "$SCRIPT" --apply >/dev/null 2>&1
 [ -d "$BASE2/releases/r3" ] || fail "--apply снёс живой релиз, когда он самый свежий"
-[ -d "$BASE2/releases/r2" ] || fail "--apply удалил релиз, который должен был остаться (KEEP=1)"
-[ -d "$BASE2/releases/r1" ] && fail "--apply не удалил лишний старый релиз r1 (KEEP=1)"
-step "живой среди самых свежих — тоже выжил, лишний удалён"
+[ -d "$BASE2/releases/r2" ] && fail "--apply оставил лишний релиз r2 (KEEP=1)"
+[ -d "$BASE2/releases/r1" ] && fail "--apply оставил лишний релиз r1 (KEEP=1)"
+step "живой среди самых свежих — выжил, лишние удалены"
+
+# ── Сценарий 3b: живой релиз САМЫЙ СТАРЫЙ — тоже выжил (G589) ─────────────
+BASE3="$WORK/karman3"; mkdir -p "$BASE3/releases"
+mkdir -p "$BASE3/releases/s1" "$BASE3/releases/s2" "$BASE3/releases/s3"
+touch -d '2026-01-01 00:00' "$BASE3/releases/s1"
+touch -d '2026-05-01 00:00' "$BASE3/releases/s2"
+touch -d '2026-11-01 00:00' "$BASE3/releases/s3"
+ln -s "$BASE3/releases/s1" "$BASE3/current"   # живой — самый старый
+DEPLOY_BASE="$BASE3" OWN_LOG_DIR="$LOGS" KEEP_RELEASES=1 bash "$SCRIPT" --apply >/dev/null 2>&1
+[ -d "$BASE3/releases/s1" ] || fail "--apply снёс живой релиз, когда он самый старый (G589)"
+step "живой самый старый — выжил (G589: живой не сносится никогда)"
 
 # ── Сценарий 4: media не трогается ─────────────────────────────────────────
 mkdir -p "$BASE/media/documents/1"

@@ -103,14 +103,19 @@ keep_count=0
 for d in "${candidates[@]:-}"; do
   [ -n "$d" ] || continue
   resolved="$(readlink -f "$d" 2>/dev/null || echo "$d")"
-  if [ -n "$live" ] && [ "$resolved" = "$live" ]; then
-    # Живой релиз не считается в KEEP: он и так остаётся (G589).
-    say "ЖИВОЙ — не трогаю: $resolved"
-    continue
-  fi
   keep_count=$((keep_count + 1))
   if [ "$keep_count" -le "$KEEP" ]; then
-    say "оставляю (свежие): $resolved"
+    if [ -n "$live" ] && [ "$resolved" = "$live" ]; then
+      say "ЖИВОЙ — не трогаю (и в пятёрку входит): $resolved"
+    else
+      say "оставляю (свежие): $resolved"
+    fi
+    continue
+  fi
+  # Живой релиз не сносим НИКОГДА, даже если он старше пятёрки (G589) —
+  # из него запущено приложение.
+  if [ -n "$live" ] && [ "$resolved" = "$live" ]; then
+    say "ЖИВОЙ (старше пятёрки) — не трогаю: $resolved"
     continue
   fi
   # Перестраховка от G589: если на каталог указывает WorkingDirectory юнита
