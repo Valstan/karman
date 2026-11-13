@@ -124,15 +124,15 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     await makeCheckIn(thousand, '2026-11-12', 3);
     await makeCheckIn(four, '2026-11-12', 2);
 
-    const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', NOW);
+    const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.offer.account?.id).toBe(four);
     expect(result.offer.tier).toBe('points_400');
     expect(result.offer.account?.points_next).toBe(400);
-    // Пароль доезжает расшифрованным — иначе проект не сможет активировать аккаунт.
-    expect(result.offer.account?.password).toBe(PASSWORD);
     expect(result.offer.account?.email).toBe('four@example.test');
+    // Пароля в ответе нет: Сарафан работает по почте, секрет наружу не выносим.
+    expect('password' in (result.offer.account ?? {})).toBe(false);
   });
 
   it('тысячник отдаётся, когда свободных четырёхсотых не осталось', async () => {
@@ -142,7 +142,7 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     await makeCheckIn(thousand, '2026-11-11', 2);
     await makeCheckIn(thousand, '2026-11-12', 3);
 
-    const result = await issueAccount(OTHER_ROOM_TOKEN, '127.0.0.1', NOW);
+    const result = await issueAccount(OTHER_ROOM_TOKEN, '127.0.0.1', {}, NOW);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.offer.account?.id).toBe(thousand);
@@ -163,10 +163,33 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
       tokenHash: hashToken(roToken),
       canWrite: false,
     });
-    const result = await issueAccount(roToken, '127.0.0.1', NOW);
+    const result = await issueAccount(roToken, '127.0.0.1', {}, NOW);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.status).toBe(403);
+  });
+
+  it('exclude — проект может пропустить неподошедший аккаунт', async () => {
+    const first = await makeAccount('Первый', 'first@example.test', null, null);
+    const second = await makeAccount('Второй', 'second@example.test', null, null);
+    await makeCheckIn(first, '2026-11-12', 2);
+    await makeCheckIn(second, '2026-11-12', 2);
+
+    const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', { excludeIds: [first] }, NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.offer.account?.id).toBe(second);
+  });
+
+  it('emails — проект получает только аккаунты из своего списка почт', async () => {
+    const mine = await makeAccount('Мой', 'mine@example.test', null, null);
+    await makeAccount('Чужой', 'alien@example.test', null, null);
+    await makeCheckIn(mine, '2026-11-12', 2);
+
+    const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', { emails: ['mine@example.test'] }, NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.offer.account?.id).toBe(mine);
   });
 });
 
@@ -218,6 +241,12 @@ describe('пул MiniMax: запись активации', () => {
     expect(result.record.activation_index).toBe(4);
     expect(result.record.points).toBe(1000);
     expect(result.record.mismatch).toBe(true);
+    // Расхождения по клетке и по очкам — по отдельности (письмо brain 13.11).
+    expect(result.record.cell_mismatch).toBe(true);
+    expect(result.record.points_mismatch).toBe(true);
+    // Ожидали клетку 3 — от числа, названного владельцем за вчера (2 + 1);
+    // модель по датам сказала бы 2, но панель — истина.
+    expect(result.record.cell_expected).toBe(3);
     expect(result.record.source).toBe('client_index');
   });
 

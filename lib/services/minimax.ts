@@ -11,13 +11,15 @@ import {
 import type { SessionUser } from '@/lib/auth/rbac';
 import { resolveApiToken } from '@/lib/services/secrets/token';
 import { logAudit } from '@/lib/services/secrets/internal';
-import { accountPassword, activateAccount, listAccounts } from '@/lib/services/accounts';
+import { activateAccount, listAccounts } from '@/lib/services/accounts';
 import { isSpent, moscowToday } from '@/lib/accounts/rotation';
 import { weeklyQuota } from '@/lib/accounts/weekly';
 import {
   buildOffer,
+  hintFor,
   pickPoolAccount,
   resolveActivation,
+  type PoolFilters,
   type PoolOffer,
 } from '@/lib/accounts/pool';
 
@@ -178,8 +180,17 @@ async function resolveCaller(
 }
 
 /**
- * «Дай аккаунт» — один лучший по нашим правилам, с учётными данными и подсказкой
- * по очкам.
+ * «Дай аккаунт» — один лучший по нашим правилам, с подсказкой по очкам.
+ *
+ * **Пароля в ответе нет.** Сарафан (13.11, линия «Телефона»): «мы берём аккаунт по
+ * ПОЧТЕ… программного логина по паролю у MiniMax нет (grant_type=password → 400),
+ * поэтому пароль из ответа нам не нужен, учётные данные не храним и в лог не берём».
+ * Значит отдавать пароль — значит выносить секрет из vault в чужое окружение без
+ * причины. Не выносим.
+ *
+ * **Фильтры запроса** (то, о чём просили: «нужен способ его пропустить»):
+ * - `excludeIds` — id аккаунтов, которые проекту не подходят (он их уже пробовал);
+ * - `emails` — почты, которые у проекта есть: отдаём только такие аккаунты.
  *
  * Ответ без аккаунта — честная пустота (`reason: no_free_accounts`), а не 404 и не 500:
  * «сегодня аккаунтов нет» и «сервис сломался» — разные вещи, и проект должен различать
@@ -188,6 +199,7 @@ async function resolveCaller(
 export async function issueAccount(
   rawToken: string,
   ip: string | null,
+  filters: PoolFilters = {},
   now: Date = new Date(),
 ): Promise<{ ok: true; offer: PoolOffer } | { ok: false; error: PoolCallError }> {
   const callerResult = await resolveCaller(rawToken, ip);
@@ -195,7 +207,7 @@ export async function issueAccount(
   const caller = callerResult.caller;
 
   const accounts = await listAccounts(caller.owner, now);
-  const picked = pickPoolAccount(accounts, now);
+  const picked = pickPoolAccount(accounts, now, filters);
   const today = moscowToday(now);
 
   if (!picked.account) {
@@ -203,15 +215,15 @@ export async function issueAccount(
       caller.roomId,
       caller.tokenId,
       'minimax_no_accounts',
-      `свободных аккаунтов нет (свободно ${picked.free}, скоро освободятся ${picked.soon})`,
+      `свободных аккаунтов нет (свободно ${picked.free}, скоро освободятся ${picked.soon}${
+        filters.excludeIds?.length ? `, исключено ${filters.excludeIds.length}` : ''
+      })`,
       ip,
       caller.actor,
     );
     return {
       ok: true,
       offer: buildOffer(picked, {
-        password: null,
-        quota: null,
         project: caller.projectName,
         today,
       }),
@@ -219,11 +231,7 @@ export async function issueAccount(
   }
 
   const account = picked.account;
-  const full = accounts.find((row) => row.id === account.id) ?? null;
-  const password = await accountPassword(caller.owner, account.id);
   const offer = buildOffer(picked, {
-    password,
-    quota: full?.week ?? null,
     project: caller.projectName,
     today,
   });
@@ -233,7 +241,9 @@ export async function issueAccount(
     caller.roomId,
     caller.tokenId,
     'minimax_account_issued',
-    `выдан аккаунт #${account.id} «${account.title}»: клетка ${offer.account?.activation_index ?? '-'}, очки ${offer.account?.points_next ?? '-'}`,
+    `выдан аккаунт #${account.id} «${account.title}»: класс ${picked.tier ?? '-'}, клетка ${
+      offer.account?.activation_index ?? '-'
+    }, очки ${offer.account?.points_next ?? '-'}`,
     ip,
     caller.actor,
   );
@@ -241,7 +251,7 @@ export async function issueAccount(
   return { ok: true, offer };
 }
 
-/** Что записать по ответу проекта и что получилось. */
+/** Что записано по ответу проекта и что получилось. */
 export type ActivationRecord = {
   account_id: number;
   used_on: string;
@@ -251,6 +261,12 @@ export type ActivationRecord = {
   points: number;
   /** Очки, которые мы предсказывали в раздаче (для сверки). */
   points_expected: number | null;
+  /** Клетка, которую мы предсказывали. */
+  cell_expected: number | null;
+  /** Разошлась ли КЛЕТКА с нашим предсказанием (письмо brain 13.11). */
+  cell_mismatch: boolean;
+  /** Разошлись ли ОЧКИ с нашим предсказанием. */
+  points_mismatch: boolean;
   /** Разошёлся ли факт с предсказанием — сигнал, а не ошибка. */
   mismatch: boolean;
   /** Откуда взялись очки: назвал проект / прислал проект / посчитали сами. */
@@ -364,13 +380,30 @@ export async function recordActivation(
   );
 
   // Наше предсказание ДО записи: во что мы ждали очков и какую клетку.
+  // Считаем его ТОЙ ЖЕ подсказкой, что отдаём в раздаче (включая число, названное
+  // владельцем на панели) — иначе «ожидали» и «отдавали» разошлись бы.
   // При повторе от того же проекта предсказание — то, что уже записано: иначе
   // квота уже учла сегодняшний чек-ин и «предсказала» бы следующую клетку.
+  const hint = hintFor({
+    id: input.accountId,
+    title: '',
+    email: '',
+    usedOn: account.usedOn,
+    usedAt: account.usedAt,
+    projectId: null,
+    projectName: null,
+    lastTokens: 0,
+    weekUsed: quota.used,
+    weekExhausted: quota.exhausted,
+    weekCheckedInToday: checkIns.some((row) => row.usedOn === today),
+    weekPointsNext: quota.pointsToday,
+    weekDaysToBonus: quota.daysToBonus,
+    weekStreak: quota.streak,
+    week: quota,
+  });
   const expectedPrediction = existing
     ? { points: existing.tokens, index: existing.activationIndex }
-    : quota.nextIndex !== null
-      ? { points: quota.pointsToday, index: quota.nextIndex }
-      : { points: null, index: null };
+    : { points: hint.points, index: hint.index };
 
   const resolution = resolveActivation(input, quota, expectedPrediction);
 
@@ -415,14 +448,15 @@ export async function recordActivation(
   const points = row?.tokens ?? resolution.points;
   const index = row?.activationIndex ?? resolution.index;
   const expectedPoints = expectedPrediction.points;
-  // Расхождение с предсказанием — сигнал (независимое показание по клетке), а не
-  // ошибка: модель клетки отсюда не меняется.
-  const mismatch =
-    resolution.mismatch ||
-    (expectedPoints !== null && expectedPoints !== points) ||
-    (resolution.source === 'client_index' &&
-      expectedPrediction.index !== null &&
-      expectedPrediction.index !== resolution.index);
+  // Расхождения — по отдельности: клетка и очки могут разойтись независимо.
+  // Это сигнал (независимое показание по клетке), а не ошибка: модель клетки отсюда
+  // не меняется.
+  const cellMismatch =
+    resolution.source === 'client_index' &&
+    expectedPrediction.index !== null &&
+    expectedPrediction.index !== resolution.index;
+  const pointsMismatch = expectedPoints !== null && expectedPoints !== points;
+  const mismatch = cellMismatch || pointsMismatch || resolution.mismatch;
 
   await logAudit(
     caller.roomId,
@@ -441,6 +475,9 @@ export async function recordActivation(
       activation_index: index,
       points,
       points_expected: expectedPoints,
+      cell_expected: expectedPrediction.index,
+      cell_mismatch: cellMismatch,
+      points_mismatch: pointsMismatch,
       mismatch,
       source: resolution.source,
       updated: existing !== undefined,
