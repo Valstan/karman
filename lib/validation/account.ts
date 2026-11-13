@@ -72,8 +72,28 @@ export const projectCreateSchema = z.object({
   name: z.string().trim().min(1, 'Укажите название проекта').max(200, 'Слишком длинное название'),
 });
 
+/**
+ * Запись активации от проекта (машинный доступ к пулу MiniMax, 13.11).
+ *
+ * - `account_id` — какой аккаунт отработан;
+ * - `points` — фактические очки с панели MiniMax (необязательно: если не прислали,
+ *   считаем по клетке сами);
+ * - `activation_index` — номер клетки, который ПРОЕКТ увидел на панели (1..7).
+ *   Это независимое показание: при расхождении с нашим предсказанием оно попадает в
+ *   журнал как истина, а расхождение помечается.
+ *
+ * Проекта и даты в теле нет: проект — это токен, кто звал, а дата — московская дата
+ * сервера. Клиентский клок не авторитет.
+ */
+export const minimaxActivationSchema = z.object({
+  account_id: z.coerce.number().int().positive(),
+  points: z.coerce.number().int().min(0, 'Очки не могут быть отрицательными').max(100_000_000).optional(),
+  activation_index: z.coerce.number().int().min(1, 'Номер активации — от 1 до 7').max(7, 'Номер активации — от 1 до 7').optional(),
+});
+
 export type AccountCreateInput = z.infer<typeof accountCreateSchema>;
 export type AccountUpdateInput = z.infer<typeof accountUpdateSchema>;
 export type AccountActivateInput = z.infer<typeof accountActivateSchema>;
 export type AccountActivationIndexInput = z.infer<typeof accountActivationIndexSchema>;
 export type ProjectCreateInput = z.infer<typeof projectCreateSchema>;
+export type MinimaxActivationInput = z.infer<typeof minimaxActivationSchema>;
