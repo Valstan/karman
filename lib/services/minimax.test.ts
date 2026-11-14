@@ -13,8 +13,8 @@ import {
 import { hashToken } from '@/lib/secrets/token';
 import { encryptSecret } from '@/lib/secrets/crypto';
 import { accountPasswordAad } from '@/lib/services/accounts';
-import { accountTokenAad, handoverAccessToken } from '@/lib/services/account-tokens';
-import { issueAccount, recordActivation } from '@/lib/services/minimax';
+import { accountTokenAad } from '@/lib/services/account-tokens';
+import { issueAccount, recordObservation } from '@/lib/services/minimax';
 
 /**
  * Гейт машинного доступа к пулу MiniMax (заказ владельца 13.11).
@@ -314,9 +314,11 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     expect(row!.source).toBe('owner');
   });
 
-  it('класс очков по запросу: тысячные для десктоп-панели', async () => {
-    // Десктоп-панель MiniMax Code (программирование владельца на ПК) просит тысячные
-    // явно — запрос brain, 14.11. Без запроса мы отдаём 400 первыми (Сарафан).
+  it('класс очков — по потребителю: Сарафану 400 первыми, панели программирования 1000', async () => {
+    // Мандат владельца (14.11, 00:30 МСК): «Сарафану в приоритете предлагать 400
+    // очковые токены, если нету то 1000-е предлагать, а панели программирования
+    // предлагать в приоритете 1000 токены, а если нет то 400 очковые». Потребитель
+    // ничего не задаёт — выбор делаем мы.
     const thousand = await makeAccount('Тысячник', 'thousand@example.test', null, null);
     await makeCheckIn(thousand, '2026-11-10', 1);
     await makeCheckIn(thousand, '2026-11-11', 2);
@@ -326,39 +328,41 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     await makeCheckIn(four, '2026-11-12', 1);
     await makeTokenPair(four);
 
-    const byDefault = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
-    expect(byDefault.ok).toBe(true);
-    if (!byDefault.ok) return;
-    expect(byDefault.offer.tier).toBe('points_400');
+    // Комната Сарафана (setka) — четырёхсотовые первыми.
+    const sarafan = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(sarafan.ok).toBe(true);
+    if (!sarafan.ok) return;
+    expect(sarafan.offer.tier).toBe('points_400');
 
-    const wanted = await issueAccount(ROOM_TOKEN, '127.0.0.1', { tier: 'points_1000' }, NOW);
-    expect(wanted.ok).toBe(true);
-    if (!wanted.ok) return;
-    expect(wanted.offer.tier).toBe('points_1000');
-    expect(wanted.offer.account?.points_next).toBe(1000);
+    // Панель программирования (brain) — тысячные первыми.
+    await makeRoom('brain', 'brain', OTHER_ROOM_TOKEN);
+    const forPanel = await issueAccount(OTHER_ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(forPanel.ok).toBe(true);
+    if (!forPanel.ok) return;
+    expect(forPanel.offer.tier).toBe('points_1000');
+    expect(forPanel.offer.account?.points_next).toBe(1000);
   });
 
-  it('пара наружу не отдаётся, пока потребитель не попросил её явно', async () => {
+  it('пара наружу не отдаётся НИКОГДА: цепочка токенов наша', async () => {
     const accountId = await makeAccount('С парой', 'pair@example.test', null, null);
     await makeCheckIn(accountId, '2026-11-12', 2);
     await makeTokenPair(accountId);
 
-    const without = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
-    expect(without.ok).toBe(true);
-    if (!without.ok) return;
-    expect(without.offer.access_token).toBe('ACCESS-1');
-    expect(without.offer.refresh_token).toBeUndefined();
+    const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.offer.access_token).toBe('ACCESS-1');
+    // Refresh в ответе нет: мандат владельца — «отдавай ему только по одному токену».
+    expect('refresh_token' in result.offer).toBe(false);
+  });
 
-    // Явная просьба (X-MiniMax-Refresh: 1) — потребитель сам продлевает сессию и
-    // возвращает обновлённую пару.
-    const second = await makeAccount('С парой 2', 'pair2@example.test', null, null);
-    await makeCheckIn(second, '2026-11-12', 2);
-    await makeTokenPair(second, 'ACCESS-2', 'REFRESH-2');
-    const withPair = await issueAccount(ROOM_TOKEN, '127.0.0.1', { withRefresh: true }, NOW);
-    expect(withPair.ok).toBe(true);
-    if (!withPair.ok) return;
-    expect(withPair.offer.access_token).toBe('ACCESS-2');
-    expect(withPair.offer.refresh_token).toBe('REFRESH-2');
+  it('без добытой пары токенов аккаунт не отдаётся: причина «токены не готовы»', async () => {
+    await makeAccount('Без токена', 'notoken@example.test', null, null);
+    const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.offer.account).toBeNull();
+    expect(result.offer.reason).toBe('no_tokens_ready');
   });
 
   it('аккаунт с ПРОТУХШЕЙ парой в раздачу не идёт — отдать сломанный вход хуже, чем ничего', async () => {
@@ -384,31 +388,38 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
   });
 });
 
-describe('пул MiniMax: запись активации', () => {
-  it('пишет журнал: день, очки по клетке, проект = комната', async () => {
-    const accountId = await makeAccount('Для записи', 'write@example.test', null, null);
-    await makeCheckIn(accountId, '2026-11-12', 2);
 
-    const result = await recordActivation(
+describe('пул MiniMax: наблюдение потребителя', () => {
+  it('факт очков ложится в журнал, расхождение с предсказанием возвращается', async () => {
+    // Заказ владельца 14.11: потребитель присылает, сколько очков было на токене, —
+    // чтобы мы подтвердили предсказание или подкорректировали свои числа.
+    const accountId = await makeAccount('Наблюдаемый', 'obs@example.test', null, null);
+    await makeCheckIn(accountId, '2026-11-12', 2); // серия 1 → клетка 2 → 400 очков
+    await makeTokenPair(accountId);
+    const issued = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(issued.ok).toBe(true);
+
+    const result = await recordObservation(
       ROOM_TOKEN,
       '127.0.0.1',
-      { accountId, points: null, activationIndex: null },
+      { accountId, points: 1000 },
       NOW,
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.record.used_on).toBe(TODAY);
-    // Серия 1 → клетка 2 → 400 очков.
-    expect(result.record.activation_index).toBe(2);
-    expect(result.record.points).toBe(400);
-    expect(result.record.updated).toBe(false);
+    // Факт — истина; предсказание и расхождение видны.
+    expect(result.record.points).toBe(1000);
+    expect(result.record.points_expected).toBe(400);
+    expect(result.record.points_mismatch).toBe(true);
+    expect(result.record.source).toBe('client_points');
 
+    // В журнале теперь факт. Проект и метка — наши, наблюдение их не переписало.
     const [row] = await refs.current!
       .select()
       .from(accountsUsage)
       .where(and(eq(accountsUsage.accountId, accountId), eq(accountsUsage.usedOn, TODAY)));
-    expect(row!.usedOn).toBe(TODAY);
-    expect(row!.tokens).toBe(400);
+    expect(row!.tokens).toBe(1000);
+    expect(row!.source).toBe('api');
     const [project] = await refs.current!
       .select()
       .from(accountsProject)
@@ -416,220 +427,23 @@ describe('пул MiniMax: запись активации', () => {
     expect(project!.name).toBe('SARAFAN');
   });
 
-  it('строка журнала помечена как расход по запросу проекта (source = api)', async () => {
-    // Заказ владельца 14.11: расход аккаунтов на волны проектов (Сарафан — посты ВК)
-    // надо считать ОТДЕЛЬНО от его расхода на программирование. По названию проекта
-    // не различить («САРАФАН» кириллицей и «SARAFAN» латиницей) — поэтому метка.
-    const accountId = await makeAccount('По API', 'api@example.test', null, null);
-    await makeCheckIn(accountId, '2026-11-12', 2);
-
-    const result = await recordActivation(
+  it('по аккаунту, который мы сегодня не выдавали, — 404', async () => {
+    const accountId = await makeAccount('Невыданный', 'unissued@example.test', null, null);
+    const result = await recordObservation(
       ROOM_TOKEN,
       '127.0.0.1',
-      { accountId, points: null, activationIndex: null },
-      NOW,
-    );
-    expect(result.ok).toBe(true);
-
-    const [row] = await refs.current!
-      .select()
-      .from(accountsUsage)
-      .where(and(eq(accountsUsage.accountId, accountId), eq(accountsUsage.usedOn, TODAY)));
-    expect(row!.source).toBe('api');
-  });
-
-  it('номер клетки от проекта — истина, расхождение помечается', async () => {
-    const accountId = await makeAccount('С показанием', 'signal@example.test', null, null);
-    await makeCheckIn(accountId, '2026-11-12', 2);
-
-    const result = await recordActivation(
-      ROOM_TOKEN,
-      '127.0.0.1',
-      { accountId, points: null, activationIndex: 4 },
-      NOW,
-    );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    // Проект увидел на панели 4-ю клетку → 1000 очков; мы ждали 2-ю → расхождение.
-    expect(result.record.activation_index).toBe(4);
-    expect(result.record.points).toBe(1000);
-    expect(result.record.mismatch).toBe(true);
-    // Расхождения по клетке и по очкам — по отдельности (письмо brain 13.11).
-    expect(result.record.cell_mismatch).toBe(true);
-    expect(result.record.points_mismatch).toBe(true);
-    // Ожидали клетку 3 — от числа, названного владельцем за вчера (2 + 1);
-    // модель по датам сказала бы 2, но панель — истина.
-    expect(result.record.cell_expected).toBe(3);
-    expect(result.record.source).toBe('client_index');
-  });
-
-  it('email вместо внутреннего id — аккаунт находится по почте', async () => {
-    // Просьба Сарафана (14.11): проект не должен знать наши внутренние id.
-    const accountId = await makeAccount('По почте', 'by-mail@example.test', null, null);
-    await makeCheckIn(accountId, '2026-11-12', 2);
-
-    const result = await recordActivation(
-      ROOM_TOKEN,
-      '127.0.0.1',
-      { accountId: undefined, email: 'BY-MAIL@example.test', points: null, activationIndex: null },
-      NOW,
-    );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.record.account_id).toBe(accountId);
-    expect(result.record.used_on).toBe(TODAY);
-  });
-
-  it('id и email на разные аккаунты — 400, а не запись не туда', async () => {
-    const first = await makeAccount('Первый', 'one@example.test', null, null);
-    const second = await makeAccount('Второй', 'two@example.test', null, null);
-    await makeCheckIn(first, '2026-11-12', 2);
-    await makeCheckIn(second, '2026-11-12', 2);
-
-    const result = await recordActivation(
-      ROOM_TOKEN,
-      '127.0.0.1',
-      { accountId: first, email: 'two@example.test', points: null, activationIndex: null },
+      { accountId, points: 400 },
       NOW,
     );
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error.status).toBe(400);
+    expect(result.error.status).toBe(404);
   });
 
-  it('ни id, ни почты — 400: нечем опознать аккаунт', async () => {
-    await makeAccount('Лишний', 'extra@example.test', null, null);
-    const result = await recordActivation(
-      ROOM_TOKEN,
-      '127.0.0.1',
-      { accountId: undefined, email: undefined, points: null, activationIndex: null },
-      NOW,
-    );
+  it('без account_id и email — 400', async () => {
+    const result = await recordObservation(ROOM_TOKEN, '127.0.0.1', {}, NOW);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.status).toBe(400);
-  });
-
-  it('повтор от другого проекта — 409: одна правда об аккаунте в сутки', async () => {
-    await makeRoom('gonba', 'GONBA', OTHER_ROOM_TOKEN);
-    const accountId = await makeAccount('Гонка', 'race@example.test', null, null);
-    const first = await recordActivation(
-      ROOM_TOKEN,
-      '127.0.0.1',
-      { accountId, points: null, activationIndex: null },
-      NOW,
-    );
-    expect(first.ok).toBe(true);
-
-    const second = await recordActivation(
-      OTHER_ROOM_TOKEN,
-      '127.0.0.1',
-      { accountId, points: null, activationIndex: null },
-      NOW,
-    );
-    expect(second.ok).toBe(false);
-    if (second.ok) return;
-    expect(second.error.status).toBe(409);
-  });
-
-  it('повтор от того же проекта — обновление, а не вторая строка', async () => {
-    const accountId = await makeAccount('Повтор', 'retry@example.test', null, null);
-    await makeCheckIn(accountId, '2026-11-12', 2);
-    await recordActivation(ROOM_TOKEN, '127.0.0.1', { accountId, points: null, activationIndex: null }, NOW);
-    const again = await recordActivation(
-      ROOM_TOKEN,
-      '127.0.0.1',
-      { accountId, points: 1000, activationIndex: null },
-      NOW,
-    );
-    expect(again.ok).toBe(true);
-    if (!again.ok) return;
-    expect(again.record.updated).toBe(true);
-
-    const rows = await refs.current!
-      .select()
-      .from(accountsUsage)
-      .where(eq(accountsUsage.accountId, accountId));
-    const today = rows.filter((row) => row.usedOn === TODAY);
-    expect(today).toHaveLength(1);
-    expect(today[0]!.tokens).toBe(1000);
-  });
-
-  it('пара отдаётся вместе с аккаунтом — и второй раз уже не отдаётся', async () => {
-    const accountId = await makeAccount('С токеном', 'withtoken@example.test', null, null);
-    await makeCheckIn(accountId, '2026-11-12', 2);
-    const enc = encryptSecret(
-      JSON.stringify({ access: 'ACCESS-1', refresh: 'REFRESH-1' }),
-      accountTokenAad(accountId),
-    );
-    await refs.current!.insert(accountToken).values({
-      userId: OWNER_ID,
-      accountId,
-      ciphertext: enc.ciphertext,
-      iv: enc.iv,
-      authTag: enc.authTag,
-      expiresAt: new Date(NOW.getTime() + 3_600_000).toISOString(),
-    });
-
-    const first = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
-    expect(first.ok).toBe(true);
-    if (!first.ok) return;
-    expect(first.offer.account?.id).toBe(accountId);
-    expect(first.offer.access_token).toBe('ACCESS-1');
-    // Пара целиком не отдаётся (мандат владельца 14.11) — только один токен.
-    expect((first.offer as { refresh_token?: string }).refresh_token).toBeUndefined();
-
-    // Access отдан — второй раз ту же пару отдавать нельзя.
-    const second = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
-    expect(second.ok).toBe(true);
-    if (!second.ok) return;
-    expect(second.offer.access_token).toBeUndefined();
-  });
-
-  it('без добытой пары токенов аккаунт не отдаётся: причина «токены не готовы»', async () => {
-    await makeAccount('Без токена', 'notoken@example.test', null, null);
-    const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.offer.account).toBeNull();
-    expect(result.offer.reason).toBe('no_tokens_ready');
-  });
-
-  it('обновлённая пара сохраняется, даже если запись активации конфликтует', async () => {
-    // Цепочка одна: если проект прислал обновлённую пару, а мы её не сохранили
-    // из-за 409 — аккаунт выбыл бы навсегда. Пара важнее записи активации.
-    await makeRoom('gonba', 'GONBA', OTHER_ROOM_TOKEN);
-    const accountId = await makeAccount('Конфликтный', 'conflict@example.test', null, null);
-    await makeCheckIn(accountId, '2026-11-12', 2);
-
-    const first = await recordActivation(
-      OTHER_ROOM_TOKEN,
-      '127.0.0.1',
-      { accountId, points: null, activationIndex: null },
-      NOW,
-    );
-    expect(first.ok).toBe(true);
-
-    const conflict = await recordActivation(
-      ROOM_TOKEN,
-      '127.0.0.1',
-      {
-        accountId,
-        points: null,
-        activationIndex: null,
-        accessToken: 'ACCESS-NEW',
-        refreshToken: 'REFRESH-NEW',
-      },
-      NOW,
-    );
-    expect(conflict.ok).toBe(false);
-    if (conflict.ok) return;
-    expect(conflict.error.status).toBe(409);
-
-    // Пара сохранена — аккаунт снова готов к выдаче. Время — то же, что у выдачи:
-    // access живёт 12 часов, и протухший в раздачу не отдаём.
-    const handover = await handoverAccessToken(accountId, NOW);
-    expect(handover?.access_token).toBe('ACCESS-NEW');
-    expect(handover).not.toHaveProperty('refresh_token');
   });
 });

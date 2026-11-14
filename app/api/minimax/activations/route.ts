@@ -2,30 +2,33 @@ import { NextResponse } from 'next/server';
 import { bearerToken } from '@/lib/api/request';
 import { clientIp } from '@/lib/api/client-ip';
 import { rateLimit } from '@/lib/secrets/rate-limit';
-import { minimaxActivationSchema } from '@/lib/validation/account';
-import { recordActivation } from '@/lib/services/minimax';
+import { minimaxObservationSchema } from '@/lib/validation/account';
+import { recordObservation } from '@/lib/services/minimax';
 
-// Запись в журнал активаций идёт через node:crypto (AAD пароля) — Node runtime.
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /**
- * «Активация сделана» — запись факта от проекта (машинный доступ к пулу, 13.11).
+ * **Наблюдение потребителя: сколько очков было на выданном токене.**
  *
  *   POST /api/minimax/activations
- *     { account_id, points?, activation_index? }
+ *     { account_id | email, points?, activation_index? }
  *     → { account_id, used_on, activation_index, points, points_expected,
- *         mismatch, source, updated, project }
+ *         cell_expected, cell_mismatch, points_mismatch, mismatch, source, project }
  *
- * Идемпотентность по `(account_id, день)`: повтор от ТОГО ЖЕ проекта обновляет строку
- * дня. Повтор от ДРУГОГО проекта — **409**: аккаунт уже отработан сегодня, бери
- * другой (правило одной правды: «аккаунт, активированный в одном проекте, не должен
- * предлагаться в те же сутки другому»). Аккаунт в окне 5 часов — тоже 409.
+ * Заказ владельца (14.11, 01:10 МСК): «принимай от панели программирования и от сарафана
+ * ответки о том сколько они очков на токене только что полученном активировали чекнули,
+ * ну чтобы ты подтверждал свою статистику предсказание по очкам или подкорректировал ее
+ * если у тебя неправильно предсказано было по токену».
  *
- * `activation_index` — клетка, которую проект увидел на панели MiniMax. Она ложится в
- * журнал как истина (тем же полем, что и номер владельца), но расхождение с нашим
- * предсказанием только помечается (`mismatch`): правило клетки не меняется по одному
- * чужому показанию.
+ * Что это НЕ: потребитель не пишет в наш учёт. Активацию, окно простоя, проект и метку
+ * ведём мы при выдаче (см. `GET /api/minimax/accounts/available`). Сюда приходит только
+ * **факт**, который потребитель видел на панели MiniMax: сколько очков было на токене (и,
+ * если знает, номер клетки). Факт ложится в журнал как истина, а расхождение с нашим
+ * предсказанием возвращается флагом — это второй, независимый источник по вопросу о
+ * клетке после пропущенного дня (аккаунт 3@).
+ *
+ * Цепочка токенов неприкосновенна: refresh не принимается (и не отдаётся).
  *
  * Авторизация: `Authorization: Bearer skm_…` — токен комнаты с правом записи.
  */
@@ -40,7 +43,7 @@ export async function POST(req: Request) {
   }
 
   const body = await req.json().catch(() => null);
-  const parsed = minimaxActivationSchema.safeParse(body);
+  const parsed = minimaxObservationSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
       { error: parsed.error.issues[0]?.message ?? 'Некорректное тело запроса' },
@@ -48,13 +51,11 @@ export async function POST(req: Request) {
     );
   }
 
-  const result = await recordActivation(token, ip, {
+  const result = await recordObservation(token, ip, {
     accountId: parsed.data.account_id ?? null,
     email: parsed.data.email ?? null,
     points: parsed.data.points ?? null,
     activationIndex: parsed.data.activation_index ?? null,
-    accessToken: parsed.data.access_token ?? null,
-    refreshToken: parsed.data.refresh_token ?? null,
   });
   if (!result.ok) {
     return NextResponse.json({ error: result.error.error }, { status: result.error.status });

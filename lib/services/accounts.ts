@@ -476,7 +476,22 @@ export async function activateAccount(
     // projectId: undefined — «проект не меняем»; null — «проекта нет»;
     // число — «проект такой». Различать надо: копирование пароля не должно
     // стирать проект, выбранный при копировании почты.
-    const projectPatch = input.projectId === undefined ? undefined : projectId;
+
+    // Метка «кто потратил аккаунт» (миграция 0033) ставится ТОЛЬКО при создании
+    // строки: существующая строка сохраняет свою метку. Иначе выдача аккаунта,
+    // отмеченного сегодня владельцем, переписала бы его запись (проект и очки) на
+    // проектную — и 400 очков владельца исчезли бы из его статистики.
+    const newSource = input.source ?? 'owner';
+    const source = existing?.source ?? newSource;
+
+    // Проект строки — тоже не переписывается, если строка принадлежит другому
+    // источнику: запись по запросу проекта (source = 'api') остаётся своей, и
+    // программирование владельца не забирает её себе (и наоборот). Внутри одной
+    // транзакции — гонки не бывает: «владелец активировал, тут же выдали» решается
+    // тем, кто записал строку первым.
+    const sameSource = !existing || existing.source === newSource;
+    const projectPatch =
+      input.projectId === undefined || !sameSource ? undefined : projectId;
 
     await tx
       .update(accountsAccount)
@@ -488,12 +503,6 @@ export async function activateAccount(
         updatedAt: usedAt,
       })
       .where(eq(accountsAccount.id, input.id));
-
-    // Метка «кто потратил аккаунт» (миграция 0033) ставится ТОЛЬКО при создании
-    // строки: существующая строка сохраняет свою метку. Иначе выдача аккаунта,
-    // отмеченного сегодня владельцем, переписала бы его запись (проект и очки) на
-    // проектный — и 400 очков владельца исчезли бы из его статистики.
-    const source = existing?.source ?? input.source ?? 'owner';
 
     if (existing) {
       await tx

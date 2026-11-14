@@ -12,16 +12,16 @@ import type { SessionUser } from '@/lib/auth/rbac';
 import { resolveApiToken } from '@/lib/services/secrets/token';
 import { logAudit } from '@/lib/services/secrets/internal';
 import { activateAccount, listAccounts } from '@/lib/services/accounts';
-import { acceptRefreshedPair, handoverAccessToken, tokenReadyAccountIds } from '@/lib/services/account-tokens';
-import { isSpent, moscowToday } from '@/lib/accounts/rotation';
-import { weeklyQuota } from '@/lib/accounts/weekly';
+import { handoverAccessToken, tokenReadyAccountIds } from '@/lib/services/account-tokens';
+import { moscowToday } from '@/lib/accounts/rotation';
+import { pointsForIndex, weeklyQuota } from '@/lib/accounts/weekly';
 import {
   buildOffer,
-  hintFor,
   pickPoolAccount,
   resolveActivation,
   type PoolFilters,
   type PoolOffer,
+  type PoolTier,
 } from '@/lib/accounts/pool';
 
 /**
@@ -181,6 +181,211 @@ async function resolveCaller(
 }
 
 /**
+ * Приоритет класса очков по потребителю.
+ *
+ * Мандат владельца (14.11, 00:30 МСК): «Сарафану в приоритете предлагать 400 очковые
+ * токены, если нету то 1000-е предлагать, а панели программирования предлагать в
+ * приоритете 1000 токоны, а если нет то 400 очковые». Ключ — slug комнаты-потребителя.
+ *
+ * Кто спрашивает — не решает: выбор класса делаем мы (учёт и ротация — наши), поэтому
+ * потребитель никакого параметра не передаёт.
+ */
+const TIER_PREFERENCE: Record<string, PoolTier> = {
+  /** Сарафан (фильтрация постов ВК): сначала четырёхсотовые. */
+  setka: 'points_400',
+  /** Панель программирования (Мозг): сначала тысячные. */
+  brain: 'points_1000',
+};
+
+/** Приоритет по умолчанию (проекты вообще): четырёхсотовые — как решил владелец 13.11. */
+const DEFAULT_TIER_PREFERENCE: PoolTier = 'points_400';
+
+/**
+ * Наблюдение потребителя: сколько очков было на выданном токене.
+ *
+ * Заказ владельца (14.11, 01:10 МСК): «принимай от панели программирования и от сарафана
+ * ответки о том сколько они очков на токене только что полученном активировали чекнули,
+ * ну чтобы ты подтверждал свою статистику предсказание по очкам или подкорректировал ее
+ * если у тебя неправильно предсказано было по токену».
+ *
+ * Что это НЕ: потребитель не пишет в наш учёт. Активацию, окно и статистику ведём мы —
+ * он присылает только **факт**, который видел на панели MiniMax: сколько очков было на
+ * токене (и, если знает, номер клетки). Факт ложится в журнал как истина, расхождение с
+ * нашим предсказанием возвращается ему флагом (это второй источник по вопросу о клетке
+ * после пропущенного дня).
+ *
+ * Цепочка токенов при этом неприкосновенна: refresh не принимается и не отдаётся.
+ */
+export async function recordObservation(
+  rawToken: string,
+  ip: string | null,
+  input: {
+    accountId?: number | null;
+    email?: string | null;
+    points?: number | null;
+    activationIndex?: number | null;
+  },
+  now: Date = new Date(),
+): Promise<{ ok: true; record: ObservationRecord } | { ok: false; error: PoolCallError }> {
+  const callerResult = await resolveCaller(rawToken, ip);
+  if (!callerResult.ok) return callerResult;
+  const caller = callerResult.caller;
+  const today = moscowToday(now);
+
+  if ((input.accountId === undefined || input.accountId === null) && !input.email) {
+    return {
+      ok: false,
+      error: { status: 400, error: 'Нужен account_id или email аккаунта' },
+    };
+  }
+
+  // Аккаунт по id ИЛИ по почте: проект не обязан знать наши внутренние id.
+  const [byId] = input.accountId
+    ? await db
+        .select({ id: accountsAccount.id })
+        .from(accountsAccount)
+        .where(
+          and(
+            eq(accountsAccount.id, input.accountId),
+            eq(accountsAccount.userId, caller.owner.id),
+          ),
+        )
+        .limit(1)
+    : [];
+  const [byEmail] = input.email
+    ? await db
+        .select({ id: accountsAccount.id })
+        .from(accountsAccount)
+        .where(
+          and(
+            sql`lower(${accountsAccount.email}) = lower(${input.email})`,
+            eq(accountsAccount.userId, caller.owner.id),
+          ),
+        )
+        .limit(1)
+    : [];
+  const account = byId ?? byEmail;
+  if (!account) {
+    await logAudit(
+      caller.roomId,
+      caller.tokenId,
+      'minimax_denied',
+      `аккаунт ${input.accountId ?? input.email ?? '?'} в пуле не найден`,
+      ip,
+      caller.actor,
+    );
+    return { ok: false, error: { status: 404, error: 'Аккаунт не найден в пуле' } };
+  }
+  const accountId = account.id;
+
+  // Строку дня записывали МЫ при выдаче. Если её нет — мы этот аккаунт сегодня проекту
+  // не выдавали, и наблюдать тут нечего.
+  const [row] = await db
+    .select({
+      id: accountsUsage.id,
+      tokens: accountsUsage.tokens,
+      activationIndex: accountsUsage.activationIndex,
+    })
+    .from(accountsUsage)
+    .where(
+      and(
+        eq(accountsUsage.accountId, accountId),
+        eq(accountsUsage.usedOn, today),
+        eq(accountsUsage.userId, caller.owner.id),
+      ),
+    )
+    .limit(1);
+  if (!row) {
+    return {
+      ok: false,
+      error: { status: 404, error: 'Активация за сегодня не найдена — мы его не выдавали' },
+    };
+  }
+
+  // Наше предсказание ДО наблюдения: по нему видно, разошёлся ли факт с моделью.
+  const checkIns = await db
+    .select({ usedOn: accountsUsage.usedOn, activationIndex: accountsUsage.activationIndex })
+    .from(accountsUsage)
+    .where(
+      and(
+        eq(accountsUsage.accountId, accountId),
+        eq(accountsUsage.userId, caller.owner.id),
+      ),
+    );
+  const quota = weeklyQuota(
+    checkIns.map((r) => ({ date: r.usedOn, index: r.activationIndex })),
+    today,
+  );
+  const expectedIndex = quota.nextIndex ?? null;
+  const expectedPoints = expectedIndex !== null ? pointsForIndex(expectedIndex) : null;
+  const resolution = resolveActivation(
+    { points: input.points ?? null, activationIndex: input.activationIndex ?? null },
+    quota,
+    { points: expectedPoints, index: expectedIndex },
+  );
+
+  // Факт — истина: правим свои числа (очки и клетку). Проект, метка и окно — наши.
+  await db
+    .update(accountsUsage)
+    .set({ tokens: resolution.points, activationIndex: resolution.index })
+    .where(eq(accountsUsage.id, row.id));
+  await db
+    .update(accountsAccount)
+    .set({ lastTokens: resolution.points })
+    .where(eq(accountsAccount.id, accountId));
+
+  const cellMismatch =
+    expectedIndex !== null &&
+    resolution.index !== null &&
+    expectedIndex !== resolution.index;
+  const pointsMismatch =
+    expectedPoints !== null && expectedPoints !== resolution.points;
+
+  await logAudit(
+    caller.roomId,
+    caller.tokenId,
+    'minimax_observed',
+    `наблюдение по аккаунту #${accountId}: очки ${resolution.points}, клетка ${
+      resolution.index ?? '-'
+    }${cellMismatch || pointsMismatch ? ' — расходится с предсказанием' : ''}`,
+    ip,
+    caller.actor,
+  );
+
+  return {
+    ok: true,
+    record: {
+      account_id: accountId,
+      used_on: today,
+      activation_index: resolution.index,
+      points: resolution.points,
+      points_expected: expectedPoints,
+      cell_expected: expectedIndex,
+      cell_mismatch: cellMismatch,
+      points_mismatch: pointsMismatch,
+      mismatch: cellMismatch || pointsMismatch,
+      source: resolution.source,
+      project: caller.projectName,
+    },
+  };
+}
+
+/** Что прислал потребитель и что из этого вышло. */
+export type ObservationRecord = {
+  account_id: number;
+  used_on: string;
+  activation_index: number | null;
+  points: number;
+  points_expected: number | null;
+  cell_expected: number | null;
+  cell_mismatch: boolean;
+  points_mismatch: boolean;
+  mismatch: boolean;
+  source: 'client_index' | 'client_points' | 'computed';
+  project: string;
+};
+
+/**
  * «Дай аккаунт» — один лучший по нашим правилам, с подсказкой по очкам.
  *
  * **Пароля в ответе нет.** Сарафан (13.11, линия «Телефона»): «мы берём аккаунт по
@@ -213,8 +418,12 @@ export async function issueAccount(
   // нет), а проект работает с нашей парой — аккаунт без токена ему бесполезен, а с
   // мёртвым токеном (access живёт 12 часов) — тем более.
   const tokenReady = await tokenReadyAccountIds(now);
+  // Класс очков выбираем МЫ — по потребителю (см. TIER_PREFERENCE); потребитель в
+  // этом не участвует и никаких параметров не задаёт.
+  const preferredTier = TIER_PREFERENCE[caller.roomSlug] ?? DEFAULT_TIER_PREFERENCE;
   const picked = pickPoolAccount(accounts, now, {
     ...filters,
+    tier: preferredTier,
     tokenReadyIds: tokenReady,
   });
   const today = moscowToday(now);
@@ -256,11 +465,9 @@ export async function issueAccount(
   //
   // **Если у аккаунта уже есть строка за сегодня** (её записал владелец под своё
   // программирование или сам проект раньше) — мы её НЕ переписываем: чужая запись
-  // остаётся (проект, очки, метка). Такой аккаунт даёт проекту ноль очков (чек-ин в
-  // сутки один) — и это честно видно в ответе (`points_next: 0`).
-  //
-  // Порядок именно такой: сначала запись, потом выдача токена. Если запись не
-  // удалась — токен не отдаём (иначе проект получил бы вход, которого нет в учёте).
+  // остаётся (проект, очки, метка). Проверяется это ВНУТРИ транзакции записи
+  // (`activateAccount`), а не снаружи: иначе гонка «владелец активировал аккаунт, и
+  // тут же его отдали Сарафану» переписала бы проект строки.
   const [existingToday] = await db
     .select({ id: accountsUsage.id })
     .from(accountsUsage)
@@ -274,9 +481,7 @@ export async function issueAccount(
     .limit(1);
   const activated = await activateAccount(
     caller.owner,
-    existingToday
-      ? { id: account.id } // проект и метка — не трогаем
-      : { id: account.id, projectId: caller.projectId, source: 'api' },
+    { id: account.id, projectId: caller.projectId, source: 'api' },
     now,
   );
   if (!activated) {
@@ -298,14 +503,13 @@ export async function issueAccount(
 
   // Токен агента — отдаём ТОЛЬКО access (мандат владельца 14.11: «отдавай ему только
   // по одному токену»). Refresh остаётся у нас: он одноразовый, и второй раз отдать
-  // его проект не должен. ИСКЛЮЧЕНИЕ — явная просьба потребителя (`X-MiniMax-Refresh: 1`):
-  // десктоп-панель MiniMax Code сама продлевает сессию и возвращает обновлённую пару.
-  // Время — то же, что у подбора: протухший access (он жил 12 часов) не отдаём.
-  const handover = await handoverAccessToken(account.id, now, filters.withRefresh === true);
+  // его проект не должен. Цепочка токенов — наша, её продлением занимаемся мы, а не
+  // потребитель. Время — то же, что у подбора: протухший access (он жил 12 часов)
+  // не отдаём.
+  const handover = await handoverAccessToken(account.id, now);
   if (handover) {
     offer.access_token = handover.access_token;
     offer.expires_at_ms = handover.expires_at_ms;
-    if (handover.refresh_token) offer.refresh_token = handover.refresh_token;
   }
 
   // В аудит — без токена: что за аккаунт, кому, с каким прогнозом очков.
@@ -318,332 +522,11 @@ export async function issueAccount(
     }, очки ${offer.account?.points_next ?? '-'}${handover ? ', access отдан' : ''}, ${
       existingToday ? 'активация за сегодня уже была' : 'активация записана'
     }${filters.area ? `, область ${filters.area}` : ''}${
-      filters.tier ? `, запрошен класс ${filters.tier}` : ''
-    }`,
+      filters.project ? `, проект ${filters.project}` : ''
+    }, приоритет ${preferredTier}`,
     ip,
     caller.actor,
   );
 
   return { ok: true, offer };
-}
-
-/** Что записано по ответу проекта и что получилось. */
-export type ActivationRecord = {
-  account_id: number;
-  used_on: string;
-  /** Клетка в журнале после записи. */
-  activation_index: number | null;
-  /** Очки в журнале после записи. */
-  points: number;
-  /** Очки, которые мы предсказывали в раздаче (для сверки). */
-  points_expected: number | null;
-  /** Клетка, которую мы предсказывали. */
-  cell_expected: number | null;
-  /** Разошлась ли КЛЕТКА с нашим предсказанием (письмо brain 13.11). */
-  cell_mismatch: boolean;
-  /** Разошлись ли ОЧКИ с нашим предсказанием. */
-  points_mismatch: boolean;
-  /** Разошёлся ли факт с предсказанием — сигнал, а не ошибка. */
-  mismatch: boolean;
-  /** Откуда взялись очки: назвал проект / прислал проект / посчитали сами. */
-  source: 'client_index' | 'client_points' | 'computed';
-  /** Обновили ли уже существующую строку дня (повтор от того же проекта). */
-  updated: boolean;
-  /** Сохранили ли обновлённую пару токенов, присланную проектом. */
-  token_stored: boolean;
-  project: string;
-};
-
-/**
- * «Активация сделана» — запись факта от проекта.
- *
- * - повтор от ТОГО ЖЕ проекта → обновление строки дня (идемпотентно);
- * - повтор от ДРУГОГО проекта → **409**: аккаунт уже отработан сегодня, бери другой;
- * - аккаунт в окне (5 ч после прошлой активации) → **409**: он сейчас в работе.
- *
- * Правило клетки при этом НЕ трогается: номер, названный проектом, ложится в журнал
- * тем же полем, что и номер владельца («названный панелью»), а модель (номер по датам)
- * остаётся прежней. Расхождение с нашим предсказанием — сигнал для разбора (аккаунт
- * 3@), а не повод молча «поправить» счёт.
- */
-export async function recordActivation(
-  rawToken: string,
-  ip: string | null,
-  input: {
-    accountId?: number | null;
-    email?: string | null;
-    points?: number | null;
-    activationIndex?: number | null;
-    /** Обновлённая пара токенов от проекта (он обновил refresh сам). */
-    accessToken?: string | null;
-    refreshToken?: string | null;
-  },
-  now: Date = new Date(),
-): Promise<{ ok: true; record: ActivationRecord } | { ok: false; error: PoolCallError }> {
-  const callerResult = await resolveCaller(rawToken, ip);
-  if (!callerResult.ok) return callerResult;
-  const caller = callerResult.caller;
-  const today = moscowToday(now);
-
-  // Аккаунт ищем по id ИЛИ по почте: проект не обязан знать наши внутренние id
-  // (просьба Сарафана 14.11). Если заданы оба — они должны указывать на один аккаунт.
-  if (
-    (input.accountId === undefined || input.accountId === null) &&
-    !input.email
-  ) {
-    return {
-      ok: false,
-      error: { status: 400, error: 'Нужен account_id или email аккаунта' },
-    };
-  }
-  const byId =
-    input.accountId !== undefined && input.accountId !== null
-      ? (
-          await db
-            .select({
-              id: accountsAccount.id,
-              email: accountsAccount.email,
-              usedOn: accountsAccount.usedOn,
-              usedAt: accountsAccount.usedAt,
-            })
-            .from(accountsAccount)
-            .where(
-              and(
-                eq(accountsAccount.id, input.accountId),
-                eq(accountsAccount.userId, caller.owner.id),
-              ),
-            )
-            .limit(1)
-        )[0]
-      : undefined;
-  const byEmail =
-    input.email
-      ? (
-          await db
-            .select({
-              id: accountsAccount.id,
-              email: accountsAccount.email,
-              usedOn: accountsAccount.usedOn,
-              usedAt: accountsAccount.usedAt,
-            })
-            .from(accountsAccount)
-            .where(
-              and(
-                sql`lower(${accountsAccount.email}) = lower(${input.email})`,
-                eq(accountsAccount.userId, caller.owner.id),
-              ),
-            )
-            .limit(1)
-        )[0]
-      : undefined;
-
-  if (byId && byEmail && byId.id !== byEmail.id) {
-    return {
-      ok: false,
-      error: { status: 400, error: 'account_id и email указывают на разные аккаунты' },
-    };
-  }
-  const account = byId ?? byEmail;
-  if (!account) {
-    await logAudit(
-      caller.roomId,
-      caller.tokenId,
-      'minimax_denied',
-      `аккаунт ${input.accountId ?? input.email ?? '?'} в пуле не найден`,
-      ip,
-      caller.actor,
-    );
-    return { ok: false, error: { status: 404, error: 'Аккаунт не найден в пуле' } };
-  }
-  const accountId = account.id;
-
-  // Обновлённая пара токенов от проекта принимается **ДО** проверки конфликта.
-  // Refresh у MiniMax одноразовый: если проект прислал пару, а мы её не сохранили
-  // из-за 409 — цепочка умерла и аккаунт выбыл навсегда. Пара важнее записи активации:
-  // сохраняем всегда, а конфликт по активации показываем отдельно.
-  const tokenStored =
-    input.accessToken && input.refreshToken
-      ? await acceptRefreshedPair(
-          caller.owner.id,
-          accountId,
-          {
-            accessToken: input.accessToken,
-            refreshToken: input.refreshToken,
-          },
-          now,
-        )
-      : false;
-
-  const [existing] = await db
-    .select({
-      id: accountsUsage.id,
-      projectId: accountsUsage.projectId,
-      tokens: accountsUsage.tokens,
-      activationIndex: accountsUsage.activationIndex,
-    })
-    .from(accountsUsage)
-    .where(
-      and(
-        eq(accountsUsage.accountId, accountId),
-        eq(accountsUsage.usedOn, today),
-        eq(accountsUsage.userId, caller.owner.id),
-      ),
-    )
-    .limit(1);
-
-  const sameProject = existing !== undefined && existing.projectId === caller.projectId;
-  if (existing && !sameProject) {
-    await logAudit(
-      caller.roomId,
-      caller.tokenId,
-      'minimax_conflict',
-      `аккаунт #${accountId} за ${today} уже записан за другим проектом`,
-      ip,
-      caller.actor,
-    );
-    return {
-      ok: false,
-      error: {
-        status: 409,
-        error: 'Аккаунт уже активирован сегодня другим проектом — возьми другой',
-      },
-    };
-  }
-
-  // Аккаунт в окне (5 ч после прошлой активации) — он сейчас в работе; отдать его
-  // другому проекту нельзя. Повтор от того же проекта — не отказ (идемпотентность).
-  if (!sameProject && isSpent({ usedAt: account.usedAt }, now)) {
-    await logAudit(
-      caller.roomId,
-      caller.tokenId,
-      'minimax_conflict',
-      `аккаунт #${accountId} занят окном (активирован ${account.usedAt ?? '-'})`,
-      ip,
-      caller.actor,
-    );
-    return { ok: false, error: { status: 409, error: 'Аккаунт сейчас занят (окно 5 часов)' } };
-  }
-
-  const checkIns = await db
-    .select({ usedOn: accountsUsage.usedOn, activationIndex: accountsUsage.activationIndex })
-    .from(accountsUsage)
-    .where(and(eq(accountsUsage.accountId, accountId), eq(accountsUsage.userId, caller.owner.id)));
-  const quota = weeklyQuota(
-    checkIns.map((row) => ({ date: row.usedOn, index: row.activationIndex })),
-    today,
-  );
-
-  // Наше предсказание ДО записи: во что мы ждали очков и какую клетку.
-  // Считаем его ТОЙ ЖЕ подсказкой, что отдаём в раздаче (включая число, названное
-  // владельцем на панели) — иначе «ожидали» и «отдавали» разошлись бы.
-  // При повторе от того же проекта предсказание — то, что уже записано: иначе
-  // квота уже учла сегодняшний чек-ин и «предсказала» бы следующую клетку.
-  const hint = hintFor({
-    id: accountId,
-    title: '',
-    email: '',
-    usedOn: account.usedOn,
-    usedAt: account.usedAt,
-    projectId: null,
-    projectName: null,
-    lastTokens: 0,
-    weekUsed: quota.used,
-    weekExhausted: quota.exhausted,
-    weekCheckedInToday: checkIns.some((row) => row.usedOn === today),
-    weekPointsNext: quota.pointsToday,
-    weekDaysToBonus: quota.daysToBonus,
-    weekStreak: quota.streak,
-    week: quota,
-  });
-  const expectedPrediction = existing
-    ? { points: existing.tokens, index: existing.activationIndex }
-    : { points: hint.points, index: hint.index };
-
-  const resolution = resolveActivation(input, quota, expectedPrediction);
-
-  // Запись — тем же путём, что и кнопка «Активировать» у владельца:
-  //   • назван номер клетки → очки считаются по нему (4-я и 7-я — 1000);
-  //   • присланы очки → пишем их (факт панели), клетку считаем сами;
-  //   • ничего → считаем сами по недельной квоте (пустые поля = «не меняю»).
-  const written = await activateAccount(
-    caller.owner,
-    {
-      id: accountId,
-      projectId: caller.projectId,
-      // Метка «расход по запросу проекта»: её требует владелец — считать отдельно
-      // от его собственного расхода на программирование (миграция 0033). По названию
-      // проекта не различить: «САРАФАН» (кириллица, программирование) и «SARAFAN»
-      // (латиница, комната) отличаются одним символом.
-      source: 'api',
-      ...(resolution.source === 'client_index'
-        ? { activationIndex: resolution.index ?? undefined }
-        : resolution.source === 'client_points'
-          ? { tokens: resolution.points }
-          : {}),
-    },
-    now,
-  );
-  if (!written) {
-    return { ok: false, error: { status: 404, error: 'Аккаунт не найден в пуле' } };
-  }
-
-  // Что записалось на самом деле — читаем журнал, а не доверяем расчёту.
-  const [row] = await db
-    .select({
-      usedOn: accountsUsage.usedOn,
-      tokens: accountsUsage.tokens,
-      activationIndex: accountsUsage.activationIndex,
-    })
-    .from(accountsUsage)
-    .where(
-      and(
-        eq(accountsUsage.accountId, accountId),
-        eq(accountsUsage.usedOn, today),
-        eq(accountsUsage.userId, caller.owner.id),
-      ),
-    )
-    .limit(1);
-
-  const points = row?.tokens ?? resolution.points;
-  const index = row?.activationIndex ?? resolution.index;
-  const expectedPoints = expectedPrediction.points;
-
-  // Расхождения — по отдельности: клетка и очки могут разойтись независимо.
-  // Это сигнал (независимое показание по клетке), а не ошибка: модель клетки отсюда
-  // не меняется.
-  const cellMismatch =
-    resolution.source === 'client_index' &&
-    expectedPrediction.index !== null &&
-    expectedPrediction.index !== resolution.index;
-  const pointsMismatch = expectedPoints !== null && expectedPoints !== points;
-  const mismatch = cellMismatch || pointsMismatch || resolution.mismatch;
-
-  await logAudit(
-    caller.roomId,
-    caller.tokenId,
-    'minimax_activation_recorded',
-    `аккаунт #${accountId}: клетка ${index ?? '-'}, очки ${points}${mismatch ? ' (расходится с предсказанием)' : ''}`,
-    ip,
-    caller.actor,
-  );
-
-  return {
-    ok: true,
-    record: {
-      account_id: accountId,
-      used_on: row?.usedOn ?? today,
-      activation_index: index,
-      points,
-      points_expected: expectedPoints,
-      cell_expected: expectedPrediction.index,
-      cell_mismatch: cellMismatch,
-      points_mismatch: pointsMismatch,
-      mismatch,
-      source: resolution.source,
-      updated: existing !== undefined,
-      /** Сохранили ли обновлённую пару токенов от проекта. */
-      token_stored: tokenStored,
-      project: caller.projectName,
-    },
-  };
 }

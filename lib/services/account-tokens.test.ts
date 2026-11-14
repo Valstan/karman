@@ -40,7 +40,6 @@ vi.mock('@/lib/db/client', () => ({
 }));
 
 import {
-  acceptRefreshedPair,
   claimToken,
   handoverAccessToken,
   startNextTokenFlow,
@@ -352,23 +351,19 @@ describe('выдача токена проекту', () => {
     expect(progress.rows.find((row) => row.account_id === accountId)?.state).toBe('handed_over');
   });
 
-  it('обновлённая пара от проекта сохраняется — и access отдаётся снова', async () => {
+  it('access наружу не уходит второй раз: цепочка наша, потребитель в ней не участвует', async () => {
     const accountId = await makeAccount('Обновляемый', 'refresh@example.test');
     const started = await startNextTokenFlow(owner);
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     await claimToken(owner, started.flow.flow_id);
-    await handoverAccessToken(accountId);
+
+    const first = await handoverAccessToken(accountId);
+    expect(first?.access_token).toBe('ACCESS-1');
+    // Refresh наружу не отдаётся никогда (мандат владельца 14.11) — цепочка наша.
+    expect(first).not.toHaveProperty('refresh_token');
+
+    // Второй раз access того же аккаунта не отдаётся: отданный access одноразовый.
     expect(await handoverAccessToken(accountId)).toBeNull();
-
-    const accepted = await acceptRefreshedPair(1, accountId, {
-      accessToken: 'ACCESS-2',
-      refreshToken: 'REFRESH-2',
-    });
-    expect(accepted).toBe(true);
-
-    const again = await handoverAccessToken(accountId);
-    expect(again?.access_token).toBe('ACCESS-2');
-    expect(again).not.toHaveProperty('refresh_token');
   });
 });
