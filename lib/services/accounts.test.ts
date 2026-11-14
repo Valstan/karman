@@ -7,6 +7,7 @@ import {
   accountPassword,
   accountRating,
   activateAccount,
+  apiUsageByDay,
   createAccount,
   createProject,
   dailyUsage,
@@ -359,6 +360,70 @@ describe('мультиаккаунт: проекты и статистика', (
       activations: 2,
       tokens: 350,
     });
+  });
+});
+
+/**
+ * Расход по запросам проектов — отдельно от расхода владельца (заказ 14.11).
+ *
+ * Различать по названию проекта нельзя: у владельца «САРАФАН» (кириллица —
+ * программирование), у комнаты «SARAFAN» (латиница) — разница в один символ.
+ * Поэтому в журнале живёт МЕТКА `source` ('owner' | 'api'), и статистика по дням
+ * считает расход проектов по ней.
+ */
+describe('мультиаккаунт: расход по запросам проектов отдельно от своего', () => {
+  it('активация проектом помечена как расход по API, кнопка владельца — как свой', async () => {
+    const p1 = await createProject(owner, { name: 'САРАФАН' });
+    const p2 = await createProject(owner, { name: 'SARAFAN' });
+    const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+    const b = await createAccount(owner, { title: 'B', email: 'b@example.test', password: 'p' });
+
+    await activateAccount(owner, { id: a, projectId: p1 }, NOW);
+    await activateAccount(owner, { id: b, projectId: p2, source: 'api' }, NOW);
+
+    const [ownerRow] = await refs.current!
+      .select()
+      .from(accountsUsage)
+      .where(eq(accountsUsage.accountId, a));
+    const [apiRow] = await refs.current!
+      .select()
+      .from(accountsUsage)
+      .where(eq(accountsUsage.accountId, b));
+    expect(ownerRow!.source).toBe('owner');
+    expect(apiRow!.source).toBe('api');
+
+    // По дням: расход проектов — отдельно, с проектом внутри дня.
+    const apiUsage = await apiUsageByDay(owner);
+    expect(apiUsage.length).toBe(1);
+    expect(apiUsage[0]!.activations).toBe(1);
+    expect(apiUsage[0]!.tokens).toBe(400);
+    expect(apiUsage[0]!.projects).toEqual([
+      { projectId: p2, projectName: 'SARAFAN', activations: 1, tokens: 400 },
+    ]);
+  });
+
+  it('метка API не стирается, когда владелец переписал строку дня', async () => {
+    const p = await createProject(owner, { name: 'SARAFAN' });
+    const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+
+    await activateAccount(owner, { id: a, projectId: p, source: 'api' }, NOW);
+    // Владелец поправил номер клетки в тот же день — расход проекта обязан остаться.
+    await activateAccount(owner, { id: a, projectId: p, activationIndex: 3 }, NOW);
+
+    const [row] = await refs.current!
+      .select()
+      .from(accountsUsage)
+      .where(eq(accountsUsage.accountId, a));
+    expect(row!.source).toBe('api');
+    expect(row!.activationIndex).toBe(3);
+  });
+
+  it('чужой не видит расход по запросам проектов', async () => {
+    const p = await createProject(owner, { name: 'SARAFAN' });
+    const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+    await activateAccount(owner, { id: a, projectId: p, source: 'api' }, NOW);
+
+    expect(await apiUsageByDay(stranger)).toEqual([]);
   });
 });
 

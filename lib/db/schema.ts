@@ -953,6 +953,18 @@ export const accountsUsage = pgTable('accounts_usage', {
    * остальные — 400) и остаток недельной квоты. null = считаем по числу строк.
    */
   activationIndex: smallint('activation_index'),
+  /**
+   * Кто инициировал активацию: 'owner' — кнопка владельца в панели; 'api' — запрос
+   * проекта по HTTP (`POST /api/minimax/activations`, например Сарафан на волне ВК).
+   *
+   * Расход аккаунтов проектом надо считать ОТДЕЛЬНО от расхода владельца на
+   * программирование (заказ владельца 14.11). По имени проекта не различить: у
+   * владельца «САРАФАН» (кириллица, программирование), у комнаты — «SARAFAN»
+   * (латиница); разница в одном символе — ловушка, а не различие.
+   *
+   * Миграция `0033_account_usage_source.sql`.
+   */
+  source: varchar('source', { length: 16 }).notNull().default('owner'),
   createdAt: tstz('created_at').notNull().defaultNow(),
 });
 

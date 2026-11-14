@@ -511,6 +511,11 @@ export async function recordActivation(
     {
       id: accountId,
       projectId: caller.projectId,
+      // Метка «расход по запросу проекта»: её требует владелец — считать отдельно
+      // от его собственного расхода на программирование (миграция 0033). По названию
+      // проекта не различить: «САРАФАН» (кириллица, программирование) и «SARAFAN»
+      // (латиница, комната) отличаются одним символом.
+      source: 'api',
       ...(resolution.source === 'client_index'
         ? { activationIndex: resolution.index ?? undefined }
         : resolution.source === 'client_points'

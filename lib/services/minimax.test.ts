@@ -274,6 +274,28 @@ describe('пул MiniMax: запись активации', () => {
     expect(project!.name).toBe('SARAFAN');
   });
 
+  it('строка журнала помечена как расход по запросу проекта (source = api)', async () => {
+    // Заказ владельца 14.11: расход аккаунтов на волны проектов (Сарафан — посты ВК)
+    // надо считать ОТДЕЛЬНО от его расхода на программирование. По названию проекта
+    // не различить («САРАФАН» кириллицей и «SARAFAN» латиницей) — поэтому метка.
+    const accountId = await makeAccount('По API', 'api@example.test', null, null);
+    await makeCheckIn(accountId, '2026-11-12', 2);
+
+    const result = await recordActivation(
+      ROOM_TOKEN,
+      '127.0.0.1',
+      { accountId, points: null, activationIndex: null },
+      NOW,
+    );
+    expect(result.ok).toBe(true);
+
+    const [row] = await refs.current!
+      .select()
+      .from(accountsUsage)
+      .where(and(eq(accountsUsage.accountId, accountId), eq(accountsUsage.usedOn, TODAY)));
+    expect(row!.source).toBe('api');
+  });
+
   it('номер клетки от проекта — истина, расхождение помечается', async () => {
     const accountId = await makeAccount('С показанием', 'signal@example.test', null, null);
     await makeCheckIn(accountId, '2026-11-12', 2);

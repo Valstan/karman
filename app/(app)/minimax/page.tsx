@@ -5,6 +5,7 @@ import { requireUser } from '@/lib/auth/current-user';
 import { Button } from '@/components/ui/button';
 import {
   accountRating,
+  apiUsageByDay,
   dailyUsage,
   listAccounts,
   listProjects,
@@ -32,13 +33,14 @@ export default async function MinimaxPage() {
   // Один момент на весь список: иначе «свободен через …» в разных строках
   // считалось бы по разным часам, а список мог бы разъехаться при гидрации.
   const now = new Date();
-  const [accounts, projects, usage, usageByDay, daily, rating] = await Promise.all([
+  const [accounts, projects, usage, usageByDay, daily, rating, apiUsage] = await Promise.all([
     listAccounts(user, now),
     listProjects(user),
     projectUsage(user),
     projectUsageByDay(user),
     dailyUsage(user),
     accountRating(user),
+    apiUsageByDay(user),
   ]);
 
   return (
@@ -69,6 +71,7 @@ export default async function MinimaxPage() {
         usageByDay={usageByDay}
         daily={daily}
         rating={rating}
+        apiUsage={apiUsage}
         serverNow={now.toISOString()}
       />
     </div>

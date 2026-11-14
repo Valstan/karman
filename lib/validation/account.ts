@@ -117,7 +117,28 @@ export const minimaxActivationSchema = z
 
 export type AccountCreateInput = z.infer<typeof accountCreateSchema>;
 export type AccountUpdateInput = z.infer<typeof accountUpdateSchema>;
-export type AccountActivateInput = z.infer<typeof accountActivateSchema>;
+
+/**
+ * Кто инициировал активацию аккаунта.
+ *
+ * - `owner` — владелец нажал кнопку «Активировать» в панели (свой расход на
+ *   программирование);
+ * - `api` — проект запросил активацию по HTTP (`POST /api/minimax/activations`),
+ *   например Сарафан на волне постов ВК.
+ *
+ * Метка живёт в журнале (`accounts_usage.source`, миграция 0033): по имени проекта
+ * расход не разделить — у владельца «САРАФАН» (кириллица), у комнаты «SARAFAN»
+ * (латиница), разница в один символ.
+ */
+export type AccountUsageSource = 'owner' | 'api';
+
+export type AccountActivateInput = z.infer<typeof accountActivateSchema> & {
+  /**
+   * Инициатор активации. В UI владельца это всегда `owner` (кнопка), а `api` ставит
+   * только сервис машинного доступа — из браузера метку не подделать.
+   */
+  source?: AccountUsageSource;
+};
 export type AccountActivationIndexInput = z.infer<typeof accountActivationIndexSchema>;
 export type ProjectCreateInput = z.infer<typeof projectCreateSchema>;
 export type MinimaxActivationInput = z.infer<typeof minimaxActivationSchema>;
