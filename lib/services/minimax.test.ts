@@ -243,6 +243,40 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     expect(second.offer.access_token).toBeUndefined();
   });
 
+  it('выдача САМА пишет активацию — проект ничего отправлять не должен', async () => {
+    // Мандат владельца 14.11: «Сарафан не должен сам записывать активацию нам в
+    // карман… ты сам его гасишь, и сам их ротируешь, и в статистику добавляешь».
+    const accountId = await makeAccount('Выдаваемый', 'issued@example.test', null, null);
+    await makeCheckIn(accountId, '2026-11-12', 2);
+    await makeTokenPair(accountId);
+
+    const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Журнал: строка дня записана, проект = комната, метка — расход по запросу.
+    const [row] = await refs.current!
+      .select()
+      .from(accountsUsage)
+      .where(and(eq(accountsUsage.accountId, accountId), eq(accountsUsage.usedOn, TODAY)));
+    expect(row).toBeDefined();
+    expect(row!.source).toBe('api');
+    expect(row!.tokens).toBe(400);
+    const [project] = await refs.current!
+      .select()
+      .from(accountsProject)
+      .where(eq(accountsProject.id, row!.projectId!));
+    expect(project!.name).toBe('SARAFAN');
+
+    // Аккаунт погас (used_on = сегодня) и в счётчике свободных его больше нет.
+    const [account] = await refs.current!
+      .select()
+      .from(accountsAccount)
+      .where(eq(accountsAccount.id, accountId));
+    expect(account!.usedOn).toBe(TODAY);
+    expect(result.offer.free).toBe(0);
+  });
+
   it('аккаунт с ПРОТУХШЕЙ парой в раздачу не идёт — отдать сломанный вход хуже, чем ничего', async () => {
     // Access-токен MiniMax живёт 12 часов; протухшая пара проекту бесполезна, а наш
     // refresh мы не крутим (цепочка одна). Значит такой аккаунт в выдаче — тихая
