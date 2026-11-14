@@ -223,6 +223,39 @@ describe('добыча токенов: кому пара пригодится с
     expect(progress.rows.find((row) => row.account_id === burned)?.today_status).toBe('burned');
     expect(progress.rows.find((row) => row.account_id === fresh)?.today_status).toBe('free');
   });
+
+  it('добыча берёт четырёхсотовый аккаунт в первую очередь', async () => {
+    // Мандат владельца 14.11: Сарафану — аккаунты на 400 очков, тысячные владелец
+    // оставляет себе под программирование. Значит и ДОБЫВАТЬ (это подготовка для
+    // Сарафана) надо сначала те, чья следующая активация даст 400.
+    const daysAgo = (days: number) =>
+      moscowToday(new Date(Date.now() - days * 24 * 60 * 60 * 1000));
+    // Три отметки подряд → следующая клетка 4 → 1000 очков (владельцу).
+    const thousand = await makeAccount('Тысячник', 'thousand@example.test');
+    await refs.current!.insert(accountsUsage).values([
+      { userId: owner.id, accountId: thousand, usedOn: daysAgo(3), tokens: 400, activationIndex: 1 },
+      { userId: owner.id, accountId: thousand, usedOn: daysAgo(2), tokens: 400, activationIndex: 2 },
+      { userId: owner.id, accountId: thousand, usedOn: daysAgo(1), tokens: 400, activationIndex: 3 },
+    ]);
+    // Одна отметка → клетка 2 → 400 очков (Сарафану).
+    const four = await makeAccount('Четырёхсотый', 'four@example.test');
+    await refs.current!.insert(accountsUsage).values({
+      userId: owner.id,
+      accountId: four,
+      usedOn: daysAgo(1),
+      tokens: 400,
+      activationIndex: 1,
+    });
+
+    const progress = await tokenProgress(owner);
+    expect(progress.rows.find((row) => row.account_id === thousand)?.points_next).toBe(1000);
+    expect(progress.rows.find((row) => row.account_id === four)?.points_next).toBe(400);
+
+    const started = await startNextTokenFlow(owner);
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    expect(started.flow.account_id).toBe(four);
+  });
 });
 
 describe('добыча токенов: протухшая пара', () => {

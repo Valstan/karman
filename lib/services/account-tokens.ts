@@ -68,6 +68,8 @@ export type AccountTokenRow = {
   used_on: string | null;
   /** Годится ли пара проекту сегодня: очки не сожжены, аккаунт не занят, неделя не кончилась. */
   today_status: TokenTodayStatus;
+  /** Очки, которые даст следующая активация этого аккаунта (400 или 1000). */
+  points_next: number;
 };
 
 /**
@@ -157,6 +159,7 @@ export async function tokenProgress(
       handed_over_at: token?.handedOverAt ?? null,
       used_on: account.usedOn,
       today_status: todayStatus(account),
+      points_next: account.weekPointsNext,
     };
   });
 
@@ -284,10 +287,15 @@ export async function startNextTokenFlow(
   const candidates = progress.rows.filter(
     (row) => row.state === 'none' || row.state === 'expired',
   );
-  // Сначала — аккаунты, у которых очки сегодня ещё не сожжены: именно их пара
-  // пригодится проекту сегодня же. Остальные — только если таких не осталось.
-  // «expired» — пара протухла и её никто не забрал: аккаунт надо добыть заново.
-  const next = candidates.find((row) => row.today_status === 'free') ?? candidates[0];
+  // Порядок — по мандату владельца 14.11: **Сарафану четырехсотовые аккаунты в первую
+  // очередь** (тысячные владелец оставляет себе под программирование), и очки у них
+  // сегодня ещё не сожжены. Дальше — любые свободные, в конце — протухшие.
+  // «expired» — access умер и его никто не забрал: аккаунт надо добыть заново.
+  const next =
+    candidates.find((row) => row.today_status === 'free' && row.points_next === 400) ??
+    candidates.find((row) => row.today_status === 'free') ??
+    candidates.find((row) => row.points_next === 400) ??
+    candidates[0];
   if (!next) {
     return { ok: false, error: 'complete' };
   }

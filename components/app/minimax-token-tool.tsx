@@ -320,6 +320,7 @@ export function MinimaxTokenTool({ progress }: { progress: TokenProgress }) {
               <th className="p-2">Аккаунт</th>
               <th className="p-2">Почта</th>
               <th className="p-2">Сегодня</th>
+              <th className="p-2">Очки</th>
               <th className="p-2">Состояние</th>
             </tr>
           </thead>
@@ -332,6 +333,7 @@ export function MinimaxTokenTool({ progress }: { progress: TokenProgress }) {
                 <td className="p-2 text-muted-foreground">
                   {TODAY_LABEL[row.today_status] ?? row.today_status}
                 </td>
+                <td className="p-2 text-muted-foreground">{row.points_next || '—'}</td>
                 <td className="p-2">{STATE_LABEL[row.state] ?? row.state}</td>
               </tr>
             ))}
