@@ -61,9 +61,10 @@ export async function GET(req: Request) {
   const result = await issueAccount(token, ip, {
     excludeIds: parseIdList(params.get('exclude')),
     emails: parseList(params.get('emails')),
-    // Область потребителя — в аудит: кто и под что брал. Класс очков потребитель не
+    // Разметка потребителя — в аудит (кто и под что брал). Класс очков потребитель не
     // задаёт: мы решаем сами, кому что предлагать (см. TIER_PREFERENCE в сервисе).
     area: headerValue(req, 'x-minimax-area'),
+    project: headerValue(req, 'x-minimax-project'),
   });
   if (!result.ok) {
     return NextResponse.json({ error: result.error.error }, { status: result.error.status });

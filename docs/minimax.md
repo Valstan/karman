@@ -791,7 +791,8 @@ MiniMax. Очки — производная от номера.
 ```
 GET  /api/minimax/accounts/available[?exclude=67,68][&emails=a@b.c,d@e.f]
      Authorization: Bearer <токен комнаты с правом записи>
-     X-MiniMax-Area: <область>        (опционально — попадает в аудит)
+     X-MiniMax-Area: <область>        (опционально — разметка потребителя, в аудит)
+     X-MiniMax-Project: <проект>      (опционально — разметка потребителя, в аудит)
      → { account: { id, title, email, activation_index, points_next, streak,
                     next_bonus_in_days, used_on, quota_exhausted, unverified,
                     hint_source },

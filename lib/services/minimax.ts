@@ -521,7 +521,9 @@ export async function issueAccount(
       offer.account?.activation_index ?? '-'
     }, очки ${offer.account?.points_next ?? '-'}${handover ? ', access отдан' : ''}, ${
       existingToday ? 'активация за сегодня уже была' : 'активация записана'
-    }${filters.area ? `, область ${filters.area}` : ''}, приоритет ${preferredTier}`,
+    }${filters.area ? `, область ${filters.area}` : ''}${
+      filters.project ? `, проект ${filters.project}` : ''
+    }, приоритет ${preferredTier}`,
     ip,
     caller.actor,
   );
