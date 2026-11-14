@@ -118,6 +118,12 @@ export type PoolOffer = {
    * 12 часов). `expires_at_ms` — честный срок от MiniMax.
    */
   access_token?: string;
+  /**
+   * Refresh — только когда потребитель явно попросил пару (заголовок
+   * `X-MiniMax-Refresh: 1`): десктоп-панель сама продлевает сессию и возвращает
+   * обновлённую пару. По умолчанию пара наружу не отдаётся (мандат владельца).
+   */
+  refresh_token?: string;
   expires_at_ms?: number;
 };
 
@@ -208,14 +214,41 @@ export type PoolFilters = {
    * иначе проект упрётся в «нет токена» на живом аккаунте.
    */
   tokenReadyIds?: number[];
+  /**
+   * Запрошенный класс очков (`points_400` или `points_1000`).
+   *
+   * Правило владельца 13.11 (и 14.11): проекту — аккаунты на 400 очков, владельцу под
+   * программирование — на 1000. Но у потребителя бывает свой приоритет: десктоп-панель
+   * MiniMax Code (программирование на ПК владельца) просит тысячные явно. Поэтому класс
+   * можно задать запросом — а если таких не осталось, берём оставшиеся (правило
+   * владельца: «если кончились — предлагай оставшиеся»).
+   */
+  tier?: PoolTier | null;
+  /**
+   * Область потребителя (заголовок `X-MiniMax-Area`) — в аудит: кто и под что брал.
+   * В журнал не пишется: журнальный проект — это ПОТРЕБИТЕЛЬ (комната, из которой
+   * пришёл запрос), а область — его внутренняя разметка.
+   */
+  area?: string | null;
+  /**
+   * Отдать пару (access + refresh), а не один access.
+   *
+   * По умолчанию — нет (мандат владельца 14.11: «отдавай ему только по одному токену»).
+   * Явная просьба нужна десктоп-панели MiniMax Code: она сама продлевает сессию и
+   * возвращает нам обновлённую пару.
+   */
+  withRefresh?: boolean;
 };
 
 /**
  * Верхний слот пула — тот же, что показывается владельцу наверху списка, но с
  * фильтром по очкам (правило владельца 13.11): проекту отдаётся аккаунт на **400**
- * очков; аккаунт на **1000** — только если свободных четырёхсотых не осталось;
- * уже отмеченные сегодня (0 очков) — последним резервом; аккаунт под вопросом — в
- * самом конце.
+ * очков; аккаунт на **1000** — только если свободных четырёхсотых не осталось.
+ * Аккаунты, отмеченные СЕГОДНЯ (0 очков), **не выдаются вовсе** (просьба Сарафана
+ * 14.11, id 146: «мы их всё равно пропускаем, и пул уменьшается зря» — чек-ин в сутки
+ * один, очки у такого аккаунта уже сожжены); аккаунт под вопросом — в самом конце.
+ *
+ * Класс очков можно задать запросом (`filters.tier`) — см. `PoolFilters.tier`.
  *
  * Правило выбора внутри класса — прежнее, из `rotation.ts`: сначала активация, которая
  * даст 1000 (клетка 4 или 7), потом та, до бонуса которой ближе всего, потом длинная
@@ -254,33 +287,24 @@ export function pickPoolAccount<T extends PoolRow>(
   const pick = (tier: PoolTier): T | null =>
     usable.find((account) => tierOf(account) === tier) ?? null;
 
-  const four = pick('points_400');
-  if (four) {
-    return { account: four, free: summary.free, soon: summary.soon, tier: 'points_400', reason: null };
-  }
-  const thousand = pick('points_1000');
-  if (thousand) {
-    return {
-      account: thousand,
-      free: summary.free,
-      soon: summary.soon,
-      tier: 'points_1000',
-      reason: null,
-    };
-  }
-  const zero = pick('points_0');
-  if (zero) {
-    return { account: zero, free: summary.free, soon: summary.soon, tier: 'points_0', reason: null };
-  }
-  const unverified = pick('unverified');
-  if (unverified) {
-    return {
-      account: unverified,
-      free: summary.free,
-      soon: summary.soon,
-      tier: 'unverified',
-      reason: null,
-    };
+  // Порядок классов: запрошенный — первым, потом обычный (400 → 1000 → под вопросом).
+  // Класс «отмечен сегодня» (0 очков) в выдачу не входит вовсе (просьба Сарафана,
+  // id 146): очки у такого аккаунта уже сожжены — отдать его значит потратить вход
+  // впустую.
+  const order: PoolTier[] = filters.tier
+    ? [
+        filters.tier,
+        ...(['points_400', 'points_1000', 'unverified'] as PoolTier[]).filter(
+          (tier) => tier !== filters.tier,
+        ),
+      ]
+    : ['points_400', 'points_1000', 'unverified'];
+
+  for (const tier of order) {
+    const account = pick(tier);
+    if (account) {
+      return { account, free: summary.free, soon: summary.soon, tier, reason: null };
+    }
   }
   return {
     account: null,

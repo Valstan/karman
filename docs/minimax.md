@@ -789,16 +789,18 @@ MiniMax. Очки — производная от номера.
 Два ручки, токен комнаты, никакой отдельной математики:
 
 ```
-GET  /api/minimax/accounts/available[?exclude=67,68][&emails=a@b.c,d@e.f]
+GET  /api/minimax/accounts/available[?exclude=67,68][&emails=a@b.c,d@e.f][&tier=points_1000]
      Authorization: Bearer <токен комнаты с правом записи>
+     X-MiniMax-Area: <область>        (опционально — попадает в аудит)
+     X-MiniMax-Refresh: 1             (опционально — отдать ПАРУ, см. ниже)
      → { account: { id, title, email, activation_index, points_next, streak,
                     next_bonus_in_days, used_on, quota_exhausted, unverified,
                     hint_source },
-         tier: 'points_400' | 'points_1000' | 'points_0' | 'unverified' | null,
+         tier: 'points_400' | 'points_1000' | 'unverified' | null,
          reason: null | 'no_free_accounts' | 'no_tokens_ready',
          recommended: true, why: "…",
          free, soon, project, today,
-         access_token?, expires_at_ms? }   ← ТОЛЬКО access (мандат владельца 14.11)
+         access_token?, expires_at_ms?, refresh_token? }
 
 POST /api/minimax/activations
      Authorization: Bearer <токен комнаты с правом записи>
@@ -832,6 +834,17 @@ no_tokens_ready` (в отличие от `no_free_accounts` — «свободн
 - **Активацию пишем мы, в момент выдачи.** Запросил аккаунт — он уже погашен (окно 5 ч),
   очки записаны в журнал проекта с меткой `source = 'api'`. Проекту писать ничего не
   нужно: `POST /api/minimax/activations` стал необязательным.
+- **Отмеченные сегодня аккаунты не выдаются вовсе** (просьба Сарафана, линия id 146:
+  «мы их всё равно пропускаем, и пул уменьшается зря» — чек-ин в сутки один, очки у такого
+  аккаунта уже сожжены). Класс «0 очков» из выдачи убран; пустая выдача с готовыми, но
+  сожжёнными аккаунтами отвечает `reason: no_tokens_ready`.
+- **Класс очков можно задать запросом** `?tier=points_1000|points_400` (десктоп-панель
+  MiniMax Code — программирование владельца — просит тысячные; по умолчанию 400 первыми,
+  как решил владелец). Если запрошенного класса не осталось — берём оставшиеся.
+- **Пара (access + refresh) — только по явной просьбе** заголовком `X-MiniMax-Refresh: 1`:
+  десктоп-панель сама продлевает сессию и возвращает обновлённую пару. По умолчанию
+  наружу уходит один access (мандат владельца 14.11).
+- **Область потребителя** (`X-MiniMax-Area`) попадает в аудит: кто и под что брал.
 - **Аккаунт один и он «самый подходящий» по нашим правилам** — тот же порядок, что и
   верхний слот в интерфейсе владельца (`lib/accounts/rotation.ts`). Подбор и учёт не
   переписаны: запись идёт тем же `activateAccount`, что и кнопка владельца.
