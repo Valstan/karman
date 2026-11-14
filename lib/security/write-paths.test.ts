@@ -185,8 +185,8 @@ describe('таблица путей записи (docs/write-paths.md) опис�
     expect(routes.length, 'роутов').toBe(30);
     expect(handlers.length, 'обработчиков').toBe(42);
     expect(writes.length, 'пишущих обработчиков').toBe(24);
-    expect(modules.length, 'модулей действий').toBe(17);
-    expect(actions.length, 'действий').toBe(85);
+    expect(modules.length, 'модулей действий').toBe(18);
+    expect(actions.length, 'действий').toBe(89);
 
     // Числа в prose документа — не украшение: следующий аудит ссылается на них.
     // Форма слова «файл» склоняется (21 файл, 23 файла), поэтому счёт роутов

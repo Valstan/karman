@@ -6,12 +6,14 @@ import {
   accountsAccount,
   accountsProject,
   accountsUsage,
+  accountToken,
   secretsProject,
   secretsToken,
 } from '@/lib/db/schema';
 import { hashToken } from '@/lib/secrets/token';
 import { encryptSecret } from '@/lib/secrets/crypto';
 import { accountPasswordAad } from '@/lib/services/accounts';
+import { accountTokenAad } from '@/lib/services/account-tokens';
 import { issueAccount, recordActivation } from '@/lib/services/minimax';
 
 /**
@@ -190,6 +192,36 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.offer.account?.id).toBe(mine);
+  });
+
+  it('пара токенов аккаунта едет вместе с аккаунтом — и только один раз', async () => {
+    const accountId = await makeAccount('С токеном', 'withtoken@example.test', null, null);
+    await makeCheckIn(accountId, '2026-11-12', 2);
+    const enc = encryptSecret(
+      JSON.stringify({ access: 'ACCESS-1', refresh: 'REFRESH-1' }),
+      accountTokenAad(accountId),
+    );
+    await refs.current!.insert(accountToken).values({
+      userId: OWNER_ID,
+      accountId,
+      ciphertext: enc.ciphertext,
+      iv: enc.iv,
+      authTag: enc.authTag,
+      expiresAt: new Date(NOW.getTime() + 3_600_000).toISOString(),
+    });
+
+    const first = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.offer.access_token).toBe('ACCESS-1');
+    expect(first.offer.refresh_token).toBe('REFRESH-1');
+    expect(first.offer.expires_at_ms).toBeGreaterThan(NOW.getTime());
+
+    // Refresh одноразовый: второй раз пара не отдаётся.
+    const second = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.offer.access_token).toBeUndefined();
   });
 });
 

@@ -89,6 +89,12 @@ export const minimaxActivationSchema = z.object({
   account_id: z.coerce.number().int().positive(),
   points: z.coerce.number().int().min(0, 'Очки не могут быть отрицательными').max(100_000_000).optional(),
   activation_index: z.coerce.number().int().min(1, 'Номер активации — от 1 до 7').max(7, 'Номер активации — от 1 до 7').optional(),
+  /**
+   * Обновлённая пара токенов агента: проект потратил свой одноразовый refresh и
+   * присылает новую цепочку — сохраняем, чтобы отдать пару снова.
+   */
+  access_token: z.string().min(1).max(4096).optional(),
+  refresh_token: z.string().min(1).max(4096).optional(),
 });
 
 export type AccountCreateInput = z.infer<typeof accountCreateSchema>;

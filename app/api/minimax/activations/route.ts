@@ -52,6 +52,8 @@ export async function POST(req: Request) {
     accountId: parsed.data.account_id,
     points: parsed.data.points ?? null,
     activationIndex: parsed.data.activation_index ?? null,
+    accessToken: parsed.data.access_token ?? null,
+    refreshToken: parsed.data.refresh_token ?? null,
   });
   if (!result.ok) {
     return NextResponse.json({ error: result.error.error }, { status: result.error.status });
