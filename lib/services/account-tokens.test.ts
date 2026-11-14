@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PGlite } from '@electric-sql/pglite';
 import { eq } from 'drizzle-orm';
 import { createTestDb, type TestDb } from '@/lib/db/test-db';
-import { accountToken, accountsAccount } from '@/lib/db/schema';
+import { accountToken, accountsAccount, accountsUsage } from '@/lib/db/schema';
+import { moscowToday } from '@/lib/accounts/rotation';
 import type { SessionUser } from '@/lib/auth/rbac';
 
 /**
@@ -176,6 +177,50 @@ describe('добыча токенов: «Следующий»', () => {
     expect(progress.withToken).toBe(1);
     expect(progress.remaining).toBe(1);
     expect(progress.complete).toBe(false);
+  });
+});
+
+describe('добыча токенов: кому пара пригодится сегодня', () => {
+  /** Сегодняшний чек-ин: очки аккаунта уже сожжены — пара ему сегодня не нужна. */
+  async function burnToday(accountId: number) {
+    await refs.current!.insert(accountsUsage).values({
+      userId: owner.id,
+      accountId,
+      usedOn: moscowToday(),
+      tokens: 400,
+      activationIndex: 1,
+    });
+  }
+
+  it('«Следующий» берёт аккаунт, у которого очки сегодня ещё целы', async () => {
+    const burned = await makeAccount('Сожжённый', 'burned@example.test');
+    const fresh = await makeAccount('Свежий', 'fresh@example.test');
+    await burnToday(burned);
+
+    const started = await startNextTokenFlow(owner);
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    expect(started.flow.account_id).toBe(fresh);
+  });
+
+  it('если очки сегодня сожжены у всех — берём любого без токена (владелец идёт по кругу)', async () => {
+    const only = await makeAccount('Единственный', 'only2@example.test');
+    await burnToday(only);
+
+    const started = await startNextTokenFlow(owner);
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    expect(started.flow.account_id).toBe(only);
+  });
+
+  it('прогресс показывает, чьи очки сегодня сожжены', async () => {
+    const burned = await makeAccount('Сожжённый', 'burned2@example.test');
+    const fresh = await makeAccount('Свежий', 'fresh2@example.test');
+    await burnToday(burned);
+
+    const progress = await tokenProgress(owner);
+    expect(progress.rows.find((row) => row.account_id === burned)?.today_status).toBe('burned');
+    expect(progress.rows.find((row) => row.account_id === fresh)?.today_status).toBe('free');
   });
 });
 
