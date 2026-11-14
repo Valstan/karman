@@ -45,6 +45,7 @@ import {
   handoverTokenPair,
   startNextTokenFlow,
   tokenProgress,
+  tokenReadyAccountIds,
 } from '@/lib/services/account-tokens';
 
 let pg: PGlite | undefined;
@@ -221,6 +222,38 @@ describe('добыча токенов: кому пара пригодится с
     const progress = await tokenProgress(owner);
     expect(progress.rows.find((row) => row.account_id === burned)?.today_status).toBe('burned');
     expect(progress.rows.find((row) => row.account_id === fresh)?.today_status).toBe('free');
+  });
+});
+
+describe('добыча токенов: протухшая пара', () => {
+  it('в раздачу не идёт, аккаунт ждёт нового входа', async () => {
+    // Access-токен MiniMax живёт 12 часов. Протухшая пара, которую никто не забрал,
+    // проекту бесполезна (наш refresh мы не крутим — цепочка одна), а аккаунту нужен
+    // новый вход: иначе он навсегда выпадает из оборота.
+    const accountId = await makeAccount('Протухший', 'dead@example.test');
+    await refs.current!.insert(accountToken).values({
+      userId: owner.id,
+      accountId,
+      ciphertext: 'x',
+      iv: 'x',
+      authTag: 'x',
+      expiresAt: new Date(Date.now() - 3_600_000).toISOString(),
+    });
+
+    expect(await tokenReadyAccountIds()).not.toContain(accountId);
+    expect(await handoverTokenPair(accountId)).toBeNull();
+
+    const progress = await tokenProgress(owner);
+    expect(progress.rows.find((row) => row.account_id === accountId)?.state).toBe('expired');
+    // Протухшая пара — не «токен есть»: аккаунт снова в остатке.
+    expect(progress.withToken).toBe(0);
+    expect(progress.remaining).toBe(1);
+
+    // «Следующий» берёт именно его: пара протухла и никто её не забрал.
+    const started = await startNextTokenFlow(owner);
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    expect(started.flow.account_id).toBe(accountId);
   });
 });
 

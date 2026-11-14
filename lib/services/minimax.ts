@@ -208,10 +208,11 @@ export async function issueAccount(
   const caller = callerResult.caller;
 
   const accounts = await listAccounts(caller.owner, now);
-  // Отдаём только аккаунты, у которых пара токенов уже добыта и её ещё можно отдать:
-  // вход в MiniMax делает владелец (программного логина по паролю у MiniMax нет),
-  // а проект работает с нашей парой — аккаунт без токена ему бесполезен.
-  const tokenReady = await tokenReadyAccountIds();
+  // Отдаём только аккаунты, у которых пара токенов уже добыта, ещё не отдана и НЕ
+  // ПРОТУХЛА: вход в MiniMax делает владелец (программного логина по паролю у MiniMax
+  // нет), а проект работает с нашей парой — аккаунт без токена ему бесполезен, а с
+  // мёртвым токеном (access живёт 12 часов) — тем более.
+  const tokenReady = await tokenReadyAccountIds(now);
   const picked = pickPoolAccount(accounts, now, {
     ...filters,
     tokenReadyIds: tokenReady,
@@ -246,7 +247,8 @@ export async function issueAccount(
 
   // Пара токенов агента — отдаём ОДИН раз (refresh у MiniMax одноразовый). После
   // отдачи свой refresh мы не крутим; проект присылает обновлённую пару обратно.
-  const handover = await handoverTokenPair(account.id);
+  // Время — то же, что у подбора: протухшую пару (access жил 12 часов) не отдаём.
+  const handover = await handoverTokenPair(account.id, now);
   if (handover) {
     offer.access_token = handover.access_token;
     offer.refresh_token = handover.refresh_token;
