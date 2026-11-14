@@ -479,6 +479,8 @@ export async function claimToken(
 export type AccessHandover = {
   access_token: string;
   expires_at_ms: number;
+  /** Refresh — только когда потребитель явно попросил пару (он вернёт её обратно). */
+  refresh_token?: string;
 };
 
 /**
@@ -498,6 +500,7 @@ export type AccessHandover = {
 export async function handoverAccessToken(
   accountId: number,
   now: Date = new Date(),
+  withRefresh: boolean = false,
 ): Promise<AccessHandover | null> {
   const [row] = await db
     .select()
@@ -521,10 +524,12 @@ export async function handoverAccessToken(
     .set({ handedOverAt, updatedAt: handedOverAt })
     .where(eq(accountToken.id, row.id));
 
-  // Refresh из расшифрованной пары наружу НЕ уходит: мандат владельца — один токен.
+  // Refresh из расшифрованной пары наружу НЕ уходит (мандат владельца — один токен) —
+  // кроме явной просьбы потребителя, который вернёт обновлённую пару обратно.
   return {
     access_token: payload.access,
     expires_at_ms: new Date(row.expiresAt).getTime(),
+    ...(withRefresh ? { refresh_token: payload.refresh } : {}),
   };
 }
 

@@ -64,11 +64,30 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     expect(picked.tier).toBe('points_1000');
   });
 
-  it('уже отмеченный сегодня аккаунт (0 очков) — последний резерв', () => {
+  it('уже отмеченный сегодня аккаунт (0 очков) НЕ выдаётся', () => {
+    // Просьба Сарафана (линия, id 146, 14.11): «не выдавай аккаунты, у которых
+    // сегодняшний чек-ин уже был: мы их всё равно пропускаем, и пул уменьшается зря».
+    // Чек-ин в сутки один — очки у такого аккаунта уже сожжены.
     const zero = account(1, [auto('2026-11-12'), auto(TODAY)]);
     const picked = pickPoolAccount([zero], NOW);
+    expect(picked.account).toBeNull();
+    expect(picked.tier).toBeNull();
+  });
+
+  it('запрошенный класс очков идёт первым, остальные — запасным', () => {
+    // Десктоп-панель (программирование владельца) просит тысячные явно.
+    const thousand = account(1, [auto('2026-11-10'), auto('2026-11-11'), auto('2026-11-12')]);
+    const four = account(2, [auto('2026-11-12')]);
+    const picked = pickPoolAccount([four, thousand], NOW, { tier: 'points_1000' });
     expect(picked.account?.id).toBe(1);
-    expect(picked.tier).toBe('points_0');
+    expect(picked.tier).toBe('points_1000');
+  });
+
+  it('запрошенного класса нет — берём оставшиеся (правило владельца)', () => {
+    const four = account(2, [auto('2026-11-12')]);
+    const picked = pickPoolAccount([four], NOW, { tier: 'points_1000' });
+    expect(picked.account?.id).toBe(2);
+    expect(picked.tier).toBe('points_400');
   });
 
   it('внутри класса 400 очков действует прежний порядок: ближе к бонусу — раньше', () => {

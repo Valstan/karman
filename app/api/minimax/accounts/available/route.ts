@@ -34,6 +34,14 @@ export const dynamic = 'force-dynamic';
  * `exclude` — id аккаунтов, которые проекту не подходят; `emails` — почты, которые у
  * проекта есть (отдаём только такие аккаунты).
  *
+ * **Пожелания потребителя** (запрос brain, 14.11 — десктоп-панель MiniMax Code):
+ * - `?tier=points_1000|points_400` — класс очков по запросу (если таких нет — берём
+ *   оставшиеся; по умолчанию 400 первыми, как решил владелец);
+ * - `X-MiniMax-Area: <область>` — область потребителя, попадает в аудит;
+ * - `X-MiniMax-Refresh: 1` — отдать **пару** (access + refresh): только для потребителя,
+ *   который сам продлевает сессию и возвращает обновлённую пару. По умолчанию пара не
+ *   отдаётся никому (мандат владельца: «отдавай ему только по одному токену»).
+ *
  * Честная пустота: сегодня брать нечего → 200 с `account: null` и `reason`, а не 404
  * и не 500 — «аккаунтов нет» и «сервис сломался» должны различаться на стороне
  * проекта.
@@ -56,6 +64,14 @@ export async function GET(req: Request) {
   const result = await issueAccount(token, ip, {
     excludeIds: parseIdList(params.get('exclude')),
     emails: parseList(params.get('emails')),
+    // Класс очков по запросу потребителя (десктоп-панель просит тысячные — запрос
+    // brain, 14.11). Если таких нет — берём оставшиеся (правило владельца).
+    tier: parseTier(params.get('tier')),
+    // Область потребителя — в аудит: кто и под что брал аккаунт.
+    area: headerValue(req, 'x-minimax-area'),
+    // Явная просьба отдать пару (access + refresh): только для потребителя, который
+    // сам продлевает сессию и возвращает обновлённую пару. По умолчанию — нет.
+    withRefresh: headerValue(req, 'x-minimax-refresh') === '1',
   });
   if (!result.ok) {
     return NextResponse.json({ error: result.error.error }, { status: result.error.status });
@@ -71,6 +87,21 @@ function parseIdList(raw: string | null): number[] | undefined {
     .map((part) => Number(part.trim()))
     .filter((value) => Number.isInteger(value) && value > 0);
   return ids.length ? ids : undefined;
+}
+
+/** Класс очков из запроса: `points_400` или `points_1000` (остальное — молча игнор). */
+function parseTier(raw: string | null): 'points_400' | 'points_1000' | undefined {
+  if (raw === 'points_400') return 'points_400';
+  if (raw === 'points_1000') return 'points_1000';
+  return undefined;
+}
+
+/** Значение заголовка (обрезанное, без хвоста) — для разбора потребителя. */
+function headerValue(req: Request, name: string): string | null {
+  const value = req.headers.get(name);
+  if (!value) return null;
+  const trimmed = value.trim().slice(0, 64);
+  return trimmed ? trimmed : null;
 }
 
 /** Список почт из строки «a@b.c,d@e.f». */

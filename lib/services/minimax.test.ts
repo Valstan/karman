@@ -277,10 +277,11 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     expect(result.offer.free).toBe(0);
   });
 
-  it('аккаунт, отмеченный сегодня ВЛАДЕЛЬЦЕМ, выдаётся без переписывания его записи', async () => {
-    // Аккаунт сегодня отмечен владельцем (его проект, его очки, метка owner). Выдача
-    // проекту не должна красть у владельца его запись — иначе 400 очков его
-    // программирования переписались бы на проектный расход.
+  it('аккаунт, отмеченный сегодня ВЛАДЕЛЬЦЕМ, не выдаётся вовсе и его запись не трогается', async () => {
+    // Аккаунт сегодня отмечен владельцем (его проект, его очки, метка owner). Правило
+    // владельца: чек-ин в сутки один — очки сегодня уже сожжены, такой аккаунт
+    // проекту бесполезен (просьба Сарафана, id 146), значит и не выдаётся. Запись
+    // владельца при этом не переписывается: его 400 очков остаются его.
     const accountId = await makeAccount('Отмеченный владельцем', 'own@example.test', null, null);
     await makeTokenPair(accountId);
     const [ownerProject] = await refs.current!
@@ -300,8 +301,8 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // Проекту такой аккаунт сегодня очков не даёт (чек-ин в сутки один).
-    expect(result.offer.account?.points_next).toBe(0);
+    // Не отдан — и очков у него сегодня нет.
+    expect(result.offer.account).toBeNull();
 
     // Запись владельца не переписана: проект, очки и метка те же.
     const [row] = await refs.current!
@@ -311,6 +312,53 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     expect(row!.projectId).toBe(ownerProject!.id);
     expect(row!.tokens).toBe(1000);
     expect(row!.source).toBe('owner');
+  });
+
+  it('класс очков по запросу: тысячные для десктоп-панели', async () => {
+    // Десктоп-панель MiniMax Code (программирование владельца на ПК) просит тысячные
+    // явно — запрос brain, 14.11. Без запроса мы отдаём 400 первыми (Сарафан).
+    const thousand = await makeAccount('Тысячник', 'thousand@example.test', null, null);
+    await makeCheckIn(thousand, '2026-11-10', 1);
+    await makeCheckIn(thousand, '2026-11-11', 2);
+    await makeCheckIn(thousand, '2026-11-12', 3);
+    await makeTokenPair(thousand);
+    const four = await makeAccount('Четырёхсотый', 'four@example.test', null, null);
+    await makeCheckIn(four, '2026-11-12', 1);
+    await makeTokenPair(four);
+
+    const byDefault = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(byDefault.ok).toBe(true);
+    if (!byDefault.ok) return;
+    expect(byDefault.offer.tier).toBe('points_400');
+
+    const wanted = await issueAccount(ROOM_TOKEN, '127.0.0.1', { tier: 'points_1000' }, NOW);
+    expect(wanted.ok).toBe(true);
+    if (!wanted.ok) return;
+    expect(wanted.offer.tier).toBe('points_1000');
+    expect(wanted.offer.account?.points_next).toBe(1000);
+  });
+
+  it('пара наружу не отдаётся, пока потребитель не попросил её явно', async () => {
+    const accountId = await makeAccount('С парой', 'pair@example.test', null, null);
+    await makeCheckIn(accountId, '2026-11-12', 2);
+    await makeTokenPair(accountId);
+
+    const without = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(without.ok).toBe(true);
+    if (!without.ok) return;
+    expect(without.offer.access_token).toBe('ACCESS-1');
+    expect(without.offer.refresh_token).toBeUndefined();
+
+    // Явная просьба (X-MiniMax-Refresh: 1) — потребитель сам продлевает сессию и
+    // возвращает обновлённую пару.
+    const second = await makeAccount('С парой 2', 'pair2@example.test', null, null);
+    await makeCheckIn(second, '2026-11-12', 2);
+    await makeTokenPair(second, 'ACCESS-2', 'REFRESH-2');
+    const withPair = await issueAccount(ROOM_TOKEN, '127.0.0.1', { withRefresh: true }, NOW);
+    expect(withPair.ok).toBe(true);
+    if (!withPair.ok) return;
+    expect(withPair.offer.access_token).toBe('ACCESS-2');
+    expect(withPair.offer.refresh_token).toBe('REFRESH-2');
   });
 
   it('аккаунт с ПРОТУХШЕЙ парой в раздачу не идёт — отдать сломанный вход хуже, чем ничего', async () => {

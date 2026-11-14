@@ -220,7 +220,9 @@ describe('добыча токенов: кому пара пригодится с
     await burnToday(burned);
 
     const progress = await tokenProgress(owner);
-    expect(progress.rows.find((row) => row.account_id === burned)?.today_status).toBe('burned');
+    // Отмеченный сегодня аккаунт НЕ свободен. Точный ярлык зависит от календаря:
+    // в последний день недели недельная квота тоже исчерпана ('week_exhausted').
+    expect(progress.rows.find((row) => row.account_id === burned)?.today_status).not.toBe('free');
     expect(progress.rows.find((row) => row.account_id === fresh)?.today_status).toBe('free');
   });
 

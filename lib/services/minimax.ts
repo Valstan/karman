@@ -298,12 +298,14 @@ export async function issueAccount(
 
   // Токен агента — отдаём ТОЛЬКО access (мандат владельца 14.11: «отдавай ему только
   // по одному токену»). Refresh остаётся у нас: он одноразовый, и второй раз отдать
-  // его проект не должен. Время — то же, что у подбора: протухший access (он жил
-  // 12 часов) не отдаём.
-  const handover = await handoverAccessToken(account.id, now);
+  // его проект не должен. ИСКЛЮЧЕНИЕ — явная просьба потребителя (`X-MiniMax-Refresh: 1`):
+  // десктоп-панель MiniMax Code сама продлевает сессию и возвращает обновлённую пару.
+  // Время — то же, что у подбора: протухший access (он жил 12 часов) не отдаём.
+  const handover = await handoverAccessToken(account.id, now, filters.withRefresh === true);
   if (handover) {
     offer.access_token = handover.access_token;
     offer.expires_at_ms = handover.expires_at_ms;
+    if (handover.refresh_token) offer.refresh_token = handover.refresh_token;
   }
 
   // В аудит — без токена: что за аккаунт, кому, с каким прогнозом очков.
@@ -315,6 +317,8 @@ export async function issueAccount(
       offer.account?.activation_index ?? '-'
     }, очки ${offer.account?.points_next ?? '-'}${handover ? ', access отдан' : ''}, ${
       existingToday ? 'активация за сегодня уже была' : 'активация записана'
+    }${filters.area ? `, область ${filters.area}` : ''}${
+      filters.tier ? `, запрошен класс ${filters.tier}` : ''
     }`,
     ip,
     caller.actor,
