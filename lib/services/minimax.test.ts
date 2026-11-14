@@ -13,7 +13,7 @@ import {
 import { hashToken } from '@/lib/secrets/token';
 import { encryptSecret } from '@/lib/secrets/crypto';
 import { accountPasswordAad } from '@/lib/services/accounts';
-import { accountTokenAad } from '@/lib/services/account-tokens';
+import { accountTokenAad, handoverTokenPair } from '@/lib/services/account-tokens';
 import { issueAccount, recordActivation } from '@/lib/services/minimax';
 
 /**
@@ -98,6 +98,26 @@ async function makeCheckIn(accountId: number, usedOn: string, activationIndex: n
   });
 }
 
+/**
+ * Пара токенов аккаунта — как её кладёт владелец через device-flow.
+ * Без неё ручка `available` аккаунт не отдаёт: вход в MiniMax делает владелец,
+ * у проекта пароля нет.
+ */
+async function makeTokenPair(accountId: number, access = 'ACCESS-1', refresh = 'REFRESH-1') {
+  const enc = encryptSecret(
+    JSON.stringify({ access, refresh }),
+    accountTokenAad(accountId),
+  );
+  await refs.current!.insert(accountToken).values({
+    userId: OWNER_ID,
+    accountId,
+    ciphertext: enc.ciphertext,
+    iv: enc.iv,
+    authTag: enc.authTag,
+    expiresAt: new Date(NOW.getTime() + 3_600_000).toISOString(),
+  });
+}
+
 // Свежая схема на каждый кейс: пул общий, и один кейс не должен видеть аккаунты
 // другого (иначе «тысячник отдаётся, когда четырёхсотых нет» ловит чужой аккаунт).
 // Комната Сарафана с пишущим токеном — на каждый кейс своя.
@@ -125,6 +145,8 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     await makeCheckIn(thousand, '2026-11-11', 2);
     await makeCheckIn(thousand, '2026-11-12', 3);
     await makeCheckIn(four, '2026-11-12', 2);
+    await makeTokenPair(thousand);
+    await makeTokenPair(four);
 
     const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
     expect(result.ok).toBe(true);
@@ -143,6 +165,7 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     await makeCheckIn(thousand, '2026-11-10', 1);
     await makeCheckIn(thousand, '2026-11-11', 2);
     await makeCheckIn(thousand, '2026-11-12', 3);
+    await makeTokenPair(thousand);
 
     const result = await issueAccount(OTHER_ROOM_TOKEN, '127.0.0.1', {}, NOW);
     expect(result.ok).toBe(true);
@@ -176,6 +199,8 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     const second = await makeAccount('Второй', 'second@example.test', null, null);
     await makeCheckIn(first, '2026-11-12', 2);
     await makeCheckIn(second, '2026-11-12', 2);
+    await makeTokenPair(first);
+    await makeTokenPair(second);
 
     const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', { excludeIds: [first] }, NOW);
     expect(result.ok).toBe(true);
@@ -185,8 +210,11 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
 
   it('emails — проект получает только аккаунты из своего списка почт', async () => {
     const mine = await makeAccount('Мой', 'mine@example.test', null, null);
-    await makeAccount('Чужой', 'alien@example.test', null, null);
+    const alien = await makeAccount('Чужой', 'alien@example.test', null, null);
     await makeCheckIn(mine, '2026-11-12', 2);
+    await makeCheckIn(alien, '2026-11-12', 2);
+    await makeTokenPair(mine);
+    await makeTokenPair(alien);
 
     const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', { emails: ['mine@example.test'] }, NOW);
     expect(result.ok).toBe(true);
@@ -197,18 +225,7 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
   it('пара токенов аккаунта едет вместе с аккаунтом — и только один раз', async () => {
     const accountId = await makeAccount('С токеном', 'withtoken@example.test', null, null);
     await makeCheckIn(accountId, '2026-11-12', 2);
-    const enc = encryptSecret(
-      JSON.stringify({ access: 'ACCESS-1', refresh: 'REFRESH-1' }),
-      accountTokenAad(accountId),
-    );
-    await refs.current!.insert(accountToken).values({
-      userId: OWNER_ID,
-      accountId,
-      ciphertext: enc.ciphertext,
-      iv: enc.iv,
-      authTag: enc.authTag,
-      expiresAt: new Date(NOW.getTime() + 3_600_000).toISOString(),
-    });
+    await makeTokenPair(accountId);
 
     const first = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
     expect(first.ok).toBe(true);
@@ -372,5 +389,81 @@ describe('пул MiniMax: запись активации', () => {
     const today = rows.filter((row) => row.usedOn === TODAY);
     expect(today).toHaveLength(1);
     expect(today[0]!.tokens).toBe(1000);
+  });
+
+  it('пара отдаётся вместе с аккаунтом — и второй раз уже не отдаётся', async () => {
+    const accountId = await makeAccount('С токеном', 'withtoken@example.test', null, null);
+    await makeCheckIn(accountId, '2026-11-12', 2);
+    const enc = encryptSecret(
+      JSON.stringify({ access: 'ACCESS-1', refresh: 'REFRESH-1' }),
+      accountTokenAad(accountId),
+    );
+    await refs.current!.insert(accountToken).values({
+      userId: OWNER_ID,
+      accountId,
+      ciphertext: enc.ciphertext,
+      iv: enc.iv,
+      authTag: enc.authTag,
+      expiresAt: new Date(NOW.getTime() + 3_600_000).toISOString(),
+    });
+
+    const first = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.offer.account?.id).toBe(accountId);
+    expect(first.offer.access_token).toBe('ACCESS-1');
+    expect(first.offer.refresh_token).toBe('REFRESH-1');
+
+    // Refresh одноразовый: второй раз ту же пару отдавать нельзя.
+    const second = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.offer.access_token).toBeUndefined();
+  });
+
+  it('без добытой пары токенов аккаунт не отдаётся: причина «токены не готовы»', async () => {
+    await makeAccount('Без токена', 'notoken@example.test', null, null);
+    const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.offer.account).toBeNull();
+    expect(result.offer.reason).toBe('no_tokens_ready');
+  });
+
+  it('обновлённая пара сохраняется, даже если запись активации конфликтует', async () => {
+    // Цепочка одна: если проект прислал обновлённую пару, а мы её не сохранили
+    // из-за 409 — аккаунт выбыл бы навсегда. Пара важнее записи активации.
+    await makeRoom('gonba', 'GONBA', OTHER_ROOM_TOKEN);
+    const accountId = await makeAccount('Конфликтный', 'conflict@example.test', null, null);
+    await makeCheckIn(accountId, '2026-11-12', 2);
+
+    const first = await recordActivation(
+      OTHER_ROOM_TOKEN,
+      '127.0.0.1',
+      { accountId, points: null, activationIndex: null },
+      NOW,
+    );
+    expect(first.ok).toBe(true);
+
+    const conflict = await recordActivation(
+      ROOM_TOKEN,
+      '127.0.0.1',
+      {
+        accountId,
+        points: null,
+        activationIndex: null,
+        accessToken: 'ACCESS-NEW',
+        refreshToken: 'REFRESH-NEW',
+      },
+      NOW,
+    );
+    expect(conflict.ok).toBe(false);
+    if (conflict.ok) return;
+    expect(conflict.error.status).toBe(409);
+
+    // Пара сохранена — аккаунт снова готов к выдаче.
+    const handover = await handoverTokenPair(accountId);
+    expect(handover?.access_token).toBe('ACCESS-NEW');
+    expect(handover?.refresh_token).toBe('REFRESH-NEW');
   });
 });

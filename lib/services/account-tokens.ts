@@ -455,34 +455,55 @@ export async function handoverTokenPair(accountId: number): Promise<TokenHandove
  * в обороте: refresh у MiniMax одноразовый, и кто его потратил, тот и держит цепочку.
  */
 export async function acceptRefreshedPair(
+  userId: number,
   accountId: number,
   pair: { accessToken: string; refreshToken: string; expiresInSeconds?: number },
   now: Date = new Date(),
 ): Promise<boolean> {
-  const [row] = await db
-    .select({ id: accountToken.id })
-    .from(accountToken)
-    .where(eq(accountToken.accountId, accountId))
-    .limit(1);
-  if (!row) return false;
-
   const payload = JSON.stringify({ access: pair.accessToken, refresh: pair.refreshToken });
   const enc = encryptSecret(payload, accountTokenAad(accountId));
   const expiresAt = new Date(now.getTime() + (pair.expiresInSeconds ?? 3600) * 1000);
 
+  // Upsert: пара может прийти и для аккаунта, у которого у нас строки нет (наши
+  // данные могли потеряться) — терять цепочку нельзя ни в коем случае.
   await db
-    .update(accountToken)
-    .set({
+    .insert(accountToken)
+    .values({
+      userId,
+      accountId,
       ciphertext: enc.ciphertext,
       iv: enc.iv,
       authTag: enc.authTag,
       expiresAt: expiresAt.toISOString(),
-      // Новая пара ещё не отдана — её можно отдать снова.
-      handedOverAt: null,
-      updatedAt: now.toISOString(),
     })
-    .where(eq(accountToken.id, row.id));
+    .onConflictDoUpdate({
+      target: accountToken.accountId,
+      set: {
+        ciphertext: enc.ciphertext,
+        iv: enc.iv,
+        authTag: enc.authTag,
+        expiresAt: expiresAt.toISOString(),
+        // Новая пара ещё не отдана — её можно отдать снова.
+        handedOverAt: null,
+        updatedAt: now.toISOString(),
+      },
+    });
   return true;
+}
+
+/**
+ * id аккаунтов, чью пару токенов ещё можно отдать проекту.
+ *
+ * «Ещё можно» = пара добыта И не отдавалась после последнего обновления. Отдача
+ * помечается `handed_over_at`, потому что refresh у MiniMax одноразовый: получив пару,
+ * проект крутит refresh сам и присылает обновлённую пару обратно (приём снимает
+ * отметку) — тогда отдать можно снова.
+ */
+export async function tokenReadyAccountIds(): Promise<number[]> {
+  const rows = await db
+    .select({ accountId: accountToken.accountId, handedOverAt: accountToken.handedOverAt })
+    .from(accountToken);
+  return rows.filter((row) => !row.handedOverAt).map((row) => row.accountId);
 }
 
 /** Отменить открытый flow (владелец передумал). */

@@ -186,6 +186,32 @@ describe('пул MiniMax: фильтры запроса', () => {
     });
     expect(picked.account).toBeNull();
   });
+
+  it('без добытой пары токенов аккаунт не отдаётся: причиной — «токены не готовы»', () => {
+    // Вход в MiniMax делает владелец, пароля у проекта нет — аккаунт без пары
+    // проекту бесполезен, значит и отдавать его нельзя.
+    const one = account(1, [auto('2026-11-12')]);
+    const picked = pickPoolAccount([one], NOW, { tokenReadyIds: [] });
+    expect(picked.account).toBeNull();
+    expect(picked.reason).toBe('no_tokens_ready');
+  });
+
+  it('из всех аккаунтов берётся тот, у кого пара есть', () => {
+    const withoutToken = account(1, [auto('2026-11-12')]);
+    const withToken = account(2, [auto('2026-11-12')]);
+    const picked = pickPoolAccount([withoutToken, withToken], NOW, { tokenReadyIds: [2] });
+    expect(picked.account?.id).toBe(2);
+  });
+
+  it('если в пуле вовсе нет свободных — причина «нет свободных»', () => {
+    const spent = account(1, [auto('2026-11-12')], {
+      usedAt: NOW.toISOString(),
+      usedOn: TODAY,
+    });
+    const picked = pickPoolAccount([spent], NOW, { tokenReadyIds: [1] });
+    expect(picked.account).toBeNull();
+    expect(picked.reason).toBe('no_free_accounts');
+  });
 });
 
 describe('пул MiniMax: запись активации по ответу проекта', () => {
