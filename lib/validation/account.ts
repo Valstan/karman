@@ -86,30 +86,23 @@ export const projectCreateSchema = z.object({
  * сервера. Клиентский клок не авторитет.
  */
 /**
- * Запись активации от проекта (машинный доступ к пулу MiniMax, 13.11).
+ * Наблюдение потребителя по выданному токену (машинный доступ к пулу MiniMax).
  *
- * - `account_id` — какой аккаунт отработан (внутренний id Кармана);
- * - `email` — тот же аккаунт, но ПОЧТОЙ. Принимаем и то, и другое: проект не должен
- *   знать наши внутренние id (Сарафан, 14.11: «примите в /activations email вместо
- *   account_id — тогда проекту не нужно знать ваши внутренние id, и учёт не рвётся,
- *   когда аккаунт уже отмечен и ручка его не выдаёт»). Если заданы оба — они должны
- *   указывать на один аккаунт, иначе 400.
- * - `points` — фактические очки с панели MiniMax (необязательно: если не прислали,
- *   считаем по клетке сами);
- * - `activation_index` — номер клетки, который ПРОЕКТ увидел на панели MiniMax (1..7).
- *   Это независимое показание: при расхождении с нашим предсказанием оно попадает в
- *   журнал как истина, а расхождение помечается.
- * - Обновлённая пара токенов агента: проект потратил свой одноразовый refresh и
- *   присылает новую цепочку — сохраняем, чтобы отдать пару снова.
+ * - `account_id` — какой аккаунт отработан (внутренний id Кармана); `email` — тот же
+ *   аккаунт ПОЧТОЙ (проект не обязан знать наши внутренние id). Если заданы оба — они
+ *   должны указывать на один аккаунт, иначе 400.
+ * - `points` — сколько очков фактически было на токене (факт панели MiniMax);
+ * - `activation_index` — номер клетки, который потребитель увидел на панели (1..7).
+ *
+ * Наблюдение — это истина, а не управление учётом: активацию, окно и статистику ведём
+ * мы. Пара токенов сюда НЕ принимается: цепочка одноразовых refresh'ей — наша.
  */
-export const minimaxActivationSchema = z
+export const minimaxObservationSchema = z
   .object({
     account_id: z.coerce.number().int().positive().optional(),
     email: z.string().trim().min(3, 'Укажите почту').max(320, 'Слишком длинная почта').optional(),
-    points: z.coerce.number().int().min(0, 'Очки не могут быть отрицательными').max(100_000_000).optional(),
+    points: z.coerce.number().int().min(0, 'Очки не могут быть отрицательными').max(100_000).optional(),
     activation_index: z.coerce.number().int().min(1, 'Номер активации — от 1 до 7').max(7, 'Номер активации — от 1 до 7').optional(),
-    access_token: z.string().min(1).max(4096).optional(),
-    refresh_token: z.string().min(1).max(4096).optional(),
   })
   .refine((value) => value.account_id !== undefined || value.email !== undefined, {
     message: 'Нужен account_id или email аккаунта',
@@ -141,4 +134,4 @@ export type AccountActivateInput = z.infer<typeof accountActivateSchema> & {
 };
 export type AccountActivationIndexInput = z.infer<typeof accountActivationIndexSchema>;
 export type ProjectCreateInput = z.infer<typeof projectCreateSchema>;
-export type MinimaxActivationInput = z.infer<typeof minimaxActivationSchema>;
+export type MinimaxObservationInput = z.infer<typeof minimaxObservationSchema>;

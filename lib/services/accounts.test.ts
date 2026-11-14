@@ -425,6 +425,35 @@ describe('мультиаккаунт: расход по запросам про�
 
     expect(await apiUsageByDay(stranger)).toEqual([]);
   });
+  it('проект чужой строки не переписывается (гонка «владелец активировал и тут же отдали»)', async () => {
+    // Живые данные показали такую гонку: владелец активировал аккаунт для своего
+    // программирования, и в ту же минуту его отдали проекту — проект строки уезжал
+    // в «КАРМАН», и 400 очков расхода проекта исчезали из его статистики.
+    const p1 = await createProject(owner, { name: 'Матрица РМЗ' });
+    const p2 = await createProject(owner, { name: 'Сарафан' });
+    const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+
+    // Строка владельца (source = owner), затем проектный запрос на тот же аккаунт.
+    await activateAccount(owner, { id: a, projectId: p1 }, NOW);
+    await activateAccount(owner, { id: a, projectId: p2, source: 'api' }, NOW);
+    const [row] = await refs.current!
+      .select()
+      .from(accountsUsage)
+      .where(eq(accountsUsage.accountId, a));
+    expect(row!.projectId).toBe(p1);
+    expect(row!.source).toBe('owner');
+
+    // И наоборот: строка проекта не забирается программированием владельца.
+    const b = await createAccount(owner, { title: 'B', email: 'b@example.test', password: 'p' });
+    await activateAccount(owner, { id: b, projectId: p2, source: 'api' }, NOW);
+    await activateAccount(owner, { id: b, projectId: p1 }, NOW);
+    const [apiRow] = await refs.current!
+      .select()
+      .from(accountsUsage)
+      .where(eq(accountsUsage.accountId, b));
+    expect(apiRow!.projectId).toBe(p2);
+    expect(apiRow!.source).toBe('api');
+  });
 });
 
 /**

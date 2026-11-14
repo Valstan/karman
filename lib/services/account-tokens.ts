@@ -479,8 +479,6 @@ export async function claimToken(
 export type AccessHandover = {
   access_token: string;
   expires_at_ms: number;
-  /** Refresh — только когда потребитель явно попросил пару (он вернёт её обратно). */
-  refresh_token?: string;
 };
 
 /**
@@ -500,7 +498,6 @@ export type AccessHandover = {
 export async function handoverAccessToken(
   accountId: number,
   now: Date = new Date(),
-  withRefresh: boolean = false,
 ): Promise<AccessHandover | null> {
   const [row] = await db
     .select()
@@ -524,65 +521,21 @@ export async function handoverAccessToken(
     .set({ handedOverAt, updatedAt: handedOverAt })
     .where(eq(accountToken.id, row.id));
 
-  // Refresh из расшифрованной пары наружу НЕ уходит (мандат владельца — один токен) —
-  // кроме явной просьбы потребителя, который вернёт обновлённую пару обратно.
+  // Refresh из расшифрованной пары наружу НЕ уходит (мандат владельца — один токен):
+  // цепочка токенов наша, её продлением занимаемся мы, а не потребитель.
   return {
     access_token: payload.access,
     expires_at_ms: new Date(row.expiresAt).getTime(),
-    ...(withRefresh ? { refresh_token: payload.refresh } : {}),
   };
 }
 
-/**
- * Принять обновлённую пару от проекта (он обновил refresh сам).
- *
- * Обмен «пара туда — обновлённая пара сюда» — единственный способ держать аккаунт
- * в обороте: refresh у MiniMax одноразовый, и кто его потратил, тот и держит цепочку.
- */
-export async function acceptRefreshedPair(
-  userId: number,
-  accountId: number,
-  pair: { accessToken: string; refreshToken: string; expiresInSeconds?: number },
-  now: Date = new Date(),
-): Promise<boolean> {
-  const payload = JSON.stringify({ access: pair.accessToken, refresh: pair.refreshToken });
-  const enc = encryptSecret(payload, accountTokenAad(accountId));
-  const expiresAt = new Date(now.getTime() + (pair.expiresInSeconds ?? 3600) * 1000);
-
-  // Upsert: пара может прийти и для аккаунта, у которого у нас строки нет (наши
-  // данные могли потеряться) — терять цепочку нельзя ни в коем случае.
-  await db
-    .insert(accountToken)
-    .values({
-      userId,
-      accountId,
-      ciphertext: enc.ciphertext,
-      iv: enc.iv,
-      authTag: enc.authTag,
-      expiresAt: expiresAt.toISOString(),
-    })
-    .onConflictDoUpdate({
-      target: accountToken.accountId,
-      set: {
-        ciphertext: enc.ciphertext,
-        iv: enc.iv,
-        authTag: enc.authTag,
-        expiresAt: expiresAt.toISOString(),
-        // Новая пара ещё не отдана — её можно отдать снова.
-        handedOverAt: null,
-        updatedAt: now.toISOString(),
-      },
-    });
-  return true;
-}
 
 /**
- * id аккаунтов, чью пару токенов ещё можно отдать проекту.
+ * id аккаунтов, чей access ещё можно отдать проекту.
  *
  * «Ещё можно» = пара добыта, ещё не отдана **и не протухла**. Отдача помечается
- * `handed_over_at`, потому что refresh у MiniMax одноразовый: получив пару, проект
- * крутит refresh сам и присылает обновлённую пару обратно (приём снимает отметку) —
- * тогда отдать можно снова.
+ * `handed_over_at`: access одноразово уходит проекту, а refresh остаётся у нас
+ * (цепочка наша — её продлением занимаемся мы, а не потребитель).
  *
  * **Протухшая пара в раздачу не идёт:** access живёт 12 часов, а наш refresh мы не
  * крутим (цепочка одна) — отдать мёртвый токен значит отдать проекту сломанный вход.
