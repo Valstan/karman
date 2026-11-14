@@ -423,6 +423,7 @@ export async function activateAccount(
         id: accountsUsage.id,
         tokens: accountsUsage.tokens,
         activationIndex: accountsUsage.activationIndex,
+        source: accountsUsage.source,
       })
       .from(accountsUsage)
       .where(
@@ -479,12 +480,18 @@ export async function activateAccount(
       })
       .where(eq(accountsAccount.id, input.id));
 
+    // Метка «кто потратил аккаунт» (миграция 0033). НЕ стирается: если строку дня
+    // переписал владелец (поправил номер клетки), расход проекта остаётся на проекте —
+    // иначе волна Сарафана растворилась бы в статистике программирования.
+    const source = existing?.source === 'api' ? 'api' : (input.source ?? 'owner');
+
     if (existing) {
       await tx
         .update(accountsUsage)
         .set({
           tokens: rowTokens,
           activationIndex: rowIndex,
+          source,
           ...(projectPatch !== undefined ? { projectId: projectPatch } : {}),
         })
         .where(eq(accountsUsage.id, existing.id));
@@ -496,6 +503,7 @@ export async function activateAccount(
         usedOn: sessionUsedOn,
         tokens: rowTokens,
         activationIndex: rowIndex,
+        source,
       });
     }
   });
@@ -642,6 +650,72 @@ export async function projectUsageByDay(user: SessionUser): Promise<ProjectUsage
     .groupBy(accountsUsage.projectId, accountsProject.name, accountsUsage.usedOn)
     .orderBy(desc(accountsUsage.usedOn), desc(sql<number>`count(*)`));
   return rows;
+}
+
+/**
+ * Расход аккаунтов ПО ЗАПРОСАМ ПРОЕКТОВ — по дням.
+ *
+ * Заказ владельца 14.11: «в статистике отдельно учитывай расход аккаунтов минимакса
+ * запросами с Сарафана — это не программирование, это сам проект Сарафан тратит
+ * аккаунты на обработки постов из ВК. Это надо подсчитывать отдельно от аккаунтов,
+ * которые я трачу на программирование, но также по дням смотреть, чтобы в какие дни
+ * по сколько аккаунтов и очков тратится на Сарафане».
+ *
+ * Различаем по МЕТКЕ в строке журнала (`accounts_usage.source = 'api'`), а не по
+ * названию проекта: у владельца проект «САРАФАН» (кириллица — программирование), у
+ * комнаты «SARAFAN» (латиница) — разница в одном символе, а не различие.
+ */
+export type ApiUsageDay = {
+  /** Москва-дата активации ('YYYY-MM-DD'). */
+  usedOn: string;
+  /** Сколько аккаунтов ушло по запросам проектов в этот день. */
+  activations: number;
+  /** Сколько очков на них ушло. */
+  tokens: number;
+  /** Проекты, чьи запросы привели к этим активациям. */
+  projects: {
+    projectId: number | null;
+    projectName: string | null;
+    activations: number;
+    tokens: number;
+  }[];
+};
+
+export async function apiUsageByDay(user: SessionUser): Promise<ApiUsageDay[]> {
+  const rows = await db
+    .select({
+      usedOn: accountsUsage.usedOn,
+      projectId: accountsUsage.projectId,
+      projectName: accountsProject.name,
+      activations: sql<number>`count(*)::int`,
+      tokens: sql<number>`coalesce(sum(${accountsUsage.tokens}), 0)::int`,
+    })
+    .from(accountsUsage)
+    .leftJoin(accountsProject, eq(accountsUsage.projectId, accountsProject.id))
+    .where(and(ownership(user, accountsUsage.userId), eq(accountsUsage.source, 'api')))
+    .groupBy(accountsUsage.usedOn, accountsUsage.projectId, accountsProject.name)
+    .orderBy(desc(accountsUsage.usedOn));
+
+  // Свернуть по дню: внутри дня — проекты (по сколько аккаунтов и очков от каждого).
+  const byDay = new Map<string, ApiUsageDay>();
+  for (const row of rows) {
+    const day = byDay.get(row.usedOn) ?? {
+      usedOn: row.usedOn,
+      activations: 0,
+      tokens: 0,
+      projects: [],
+    };
+    day.activations += row.activations;
+    day.tokens += row.tokens;
+    day.projects.push({
+      projectId: row.projectId,
+      projectName: row.projectName,
+      activations: row.activations,
+      tokens: row.tokens,
+    });
+    byDay.set(row.usedOn, day);
+  }
+  return [...byDay.values()];
 }
 
 /**

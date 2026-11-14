@@ -39,6 +39,7 @@ import { MinimaxAccountRow } from './minimax-account-row';
 import { MinimaxAllAccountsDialog } from './minimax-all-accounts-dialog';
 import { MinimaxActivationsByDay } from './minimax-activations-by-day';
 import { MinimaxDailySums } from './minimax-daily-sums';
+import { MinimaxApiUsage } from './minimax-api-usage';
 import { MinimaxAccountRating } from './minimax-account-rating';
 import { MinimaxActivityChart } from './minimax-activity-chart';
 import {
@@ -47,7 +48,12 @@ import {
   type ActivateKind,
 } from './minimax-activation';
 import { useNowTick } from './use-now';
-import type { AccountListItem, ProjectListItem, ProjectUsageDay } from '@/lib/services/accounts';
+import type {
+  AccountListItem,
+  ApiUsageDay,
+  ProjectListItem,
+  ProjectUsageDay,
+} from '@/lib/services/accounts';
 import type { AccountRatingRow, DailyUsage } from '@/lib/accounts/stats';
 import { sortProjectsByUsage } from '@/lib/accounts/stats';
 import type { ProjectUsage } from '@/lib/accounts/rotation';
@@ -80,6 +86,7 @@ export function MinimaxPanel({
   usageByDay,
   daily,
   rating,
+  apiUsage,
   serverNow,
 }: {
   accounts: AccountListItem[];
@@ -90,6 +97,8 @@ export function MinimaxPanel({
   daily: DailyUsage[];
   /** Рейтинг аккаунтов: кто активировался чаще всего (заказ 05.11). */
   rating: AccountRatingRow[];
+  /** Расход по запросам проектов по дням — отдельно от расхода на программирование (14.11). */
+  apiUsage: ApiUsageDay[];
   /** Момент, на котором сервер посчитал список (ISO) — для гидрации. */
   serverNow: string;
 }) {
@@ -365,6 +374,10 @@ export function MinimaxPanel({
               </TableBody>
             </Table>
           </div>
+
+          {/* Расход по запросам проектов — отдельно от расхода на программирование
+              (заказ владельца 14.11): по дням, сколько аккаунтов и очков ушло на волны. */}
+          <MinimaxApiUsage days={apiUsage} />
 
           {/* Суммы по дням: активации, проекты, очки (заказ владельца 05.11). */}
           <MinimaxDailySums days={daily} serverNow={serverNow} />
