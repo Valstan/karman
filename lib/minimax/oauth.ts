@@ -53,6 +53,12 @@ export type DeviceFlowStart = {
   userCode: string;
   /** Страница подтверждения. */
   verificationUri: string;
+  /**
+   * Готовая ссылка с кодом внутри (вендер отдаёт её сам, живая проба 14.11:
+   * `verification_uri_complete`). Если её нет — собираем из `verification_uri` и
+   * `user_code`.
+   */
+  verificationUriComplete: string | null;
   /** Как часто можно опрашивать обмен (секунды). */
   intervalSeconds: number;
   /** Сколько живёт код (секунды). */
@@ -131,6 +137,7 @@ export async function startDeviceFlow(
       deviceCode,
       userCode,
       verificationUri,
+      verificationUriComplete: stringField(payload, 'verification_uri_complete'),
       intervalSeconds: numberField(payload, 'interval') ?? 5,
       expiresInSeconds: numberField(payload, 'expires_in') ?? 600,
     },

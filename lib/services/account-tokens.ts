@@ -186,7 +186,8 @@ export async function startNextTokenFlow(
       accountId: accountTokenFlow.accountId,
       userCode: accountTokenFlow.userCode,
       verificationUri: accountTokenFlow.verificationUri,
-      createdAt: accountTokenFlow.createdAt,
+      verificationUriComplete: accountTokenFlow.verificationUriComplete,
+      expiresAt: accountTokenFlow.expiresAt,
     })
     .from(accountTokenFlow)
     .where(
@@ -200,8 +201,8 @@ export async function startNextTokenFlow(
   const pendingFlow = open[0];
 
   if (pendingFlow) {
-    const ageSeconds = (now.getTime() - new Date(pendingFlow.createdAt).getTime()) / 1000;
-    if (ageSeconds < 600) {
+    const expiresAt = new Date(pendingFlow.expiresAt);
+    if (expiresAt.getTime() > now.getTime()) {
       const account = progress.rows.find((row) => row.account_id === pendingFlow.accountId);
       return {
         ok: true,
@@ -211,8 +212,10 @@ export async function startNextTokenFlow(
           title: account?.title ?? '',
           email: account?.email ?? '',
           user_code: pendingFlow.userCode,
-          verification_link: verificationLink(pendingFlow.verificationUri, pendingFlow.userCode),
-          expires_at: new Date(new Date(pendingFlow.createdAt).getTime() + 600_000).toISOString(),
+          verification_link: pendingFlow.verificationUriComplete
+            ? pendingFlow.verificationUriComplete
+            : verificationLink(pendingFlow.verificationUri, pendingFlow.userCode),
+          expires_at: expiresAt.toISOString(),
           interval_seconds: 5,
           resumed: true,
         },
@@ -250,6 +253,8 @@ export async function startNextTokenFlow(
       codeVerifierTag: '',
       userCode: started.data.userCode,
       verificationUri: started.data.verificationUri,
+      verificationUriComplete: started.data.verificationUriComplete,
+      expiresAt: expiresAt.toISOString(),
       state: 'pending',
       createdAt: now.toISOString(),
     })
@@ -280,7 +285,9 @@ export async function startNextTokenFlow(
       title: next.title,
       email: next.email,
       user_code: started.data.userCode,
-      verification_link: verificationLink(started.data.verificationUri, started.data.userCode),
+      verification_link: started.data.verificationUriComplete
+        ? started.data.verificationUriComplete
+        : verificationLink(started.data.verificationUri, started.data.userCode),
       expires_at: expiresAt.toISOString(),
       interval_seconds: started.data.intervalSeconds,
       resumed: false,

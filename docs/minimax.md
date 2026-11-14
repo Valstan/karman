@@ -878,6 +878,12 @@ POST /api/minimax/activations
    (`grant_type=urn:ietf:params:oauth:grant-type:device_code`, `client_id=mcode-public`,
    `device_code`, `code_verifier`) → `access_token`, `refresh_token`, `expires_in` (~3600 с).
 
+**Живая проба с прода 14.11:** форма принята — `http 200`, ответ `device_code`,
+`user_code`, `verification_uri`, **`verification_uri_complete`** (готовая ссылка с кодом
+внутри — открываем её), `interval: 3`, `expires_in: 300`. То есть код живёт **5 минут**, а
+не десять, и опрашивать обмен можно раз в 3 секунды; срок берём из ответа вендера, а не
+из рецепта.
+
 ### Инструмент в КАРМАНе (`/minimax/tokens`, только владелец)
 
 - **«Следующий»** → заводит device-flow для следующего аккаунта **без токена** (идём по

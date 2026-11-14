@@ -44,6 +44,10 @@ CREATE TABLE IF NOT EXISTS account_token_flow (
   -- user_code — не секрет: его владелец вводит на странице MiniMax.
   user_code text NOT NULL,
   verification_uri text NOT NULL,
+  -- Готовая ссылка с кодом внутри (вендер отдаёт её сам) — если есть, берём её.
+  verification_uri_complete text,
+  -- Когда код перестанет работать (живёт около 5 минут — вендер отдаёт expires_in).
+  expires_at timestamptz NOT NULL,
   -- 'pending' — ждём подтверждения владельца; 'done' — пара получена;
   -- 'expired' — код не подтвердили в срок; 'failed' — вендер ответил ошибкой.
   state text NOT NULL DEFAULT 'pending',

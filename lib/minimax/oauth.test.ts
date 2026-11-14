@@ -87,6 +87,29 @@ describe('device-flow: заявка кода', () => {
     expect(result.ok).toBe(false);
   });
 
+  it('готовая ссылка с кодом (verification_uri_complete) — берём её', async () => {
+    // Живая проба 14.11: вендер отдаёт её сам, и в ней уже есть user_code.
+    mockFetch(
+      jsonResponse({
+        device_code: 'dev-123',
+        user_code: 'ABCD-1234',
+        verification_uri: 'https://account.minimax.io/oauth-authorize',
+        verification_uri_complete: 'https://account.minimax.io/oauth-authorize?user_code=ABCD-1234',
+        interval: 3,
+        expires_in: 300,
+      }),
+    );
+    const result = await startDeviceFlow('challenge');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.verificationUriComplete).toBe(
+      'https://account.minimax.io/oauth-authorize?user_code=ABCD-1234',
+    );
+    // Живые значения вендера: опрашивать можно чаще, код живёт 5 минут.
+    expect(result.data.intervalSeconds).toBe(3);
+    expect(result.data.expiresInSeconds).toBe(300);
+  });
+
   it('сеть недоступна — это «network», а не пустота', async () => {
     globalThis.fetch = vi.fn(async () => {
       throw new Error('down');

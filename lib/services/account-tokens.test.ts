@@ -85,6 +85,7 @@ beforeEach(async () => {
       deviceCode: 'dev-code',
       userCode: 'ABCD-1234',
       verificationUri: 'https://account.minimax.io/oauth-authorize',
+      verificationUriComplete: null,
       intervalSeconds: 5,
       expiresInSeconds: 600,
     },

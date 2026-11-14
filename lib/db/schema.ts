@@ -992,6 +992,10 @@ export const accountTokenFlow = pgTable('account_token_flow', {
   userCode: text('user_code').notNull(),
   /** Страница подтверждения (verification_uri из ответа MiniMax). */
   verificationUri: text('verification_uri').notNull(),
+  /** Готовая ссылка с кодом внутри (если вендер её отдал) — открывать её. */
+  verificationUriComplete: text('verification_uri_complete'),
+  /** Когда код перестанет работать (живёт около 5 минут — вендер отдаёт expires_in). */
+  expiresAt: tstz('expires_at').notNull(),
   /** 'pending' — ждём владельца; 'done' — пара получена; 'expired'; 'failed'. */
   state: varchar('state', { length: 16 }).notNull().default('pending'),
   createdAt: tstz('created_at').notNull().defaultNow(),
