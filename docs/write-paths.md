@@ -25,10 +25,11 @@
 «на странице». Гейт страницы не прикрывает ни Server Action (его зовут POST'ом по
 собственному идентификатору из чужого браузера), ни HTTP-роут.
 
-## 2. Server Actions — `lib/actions/*.ts` (17 модулей, 85 действий)
+## 2. Server Actions — `lib/actions/*.ts` (18 модулей, 89 действий)
 
 | Модуль | Пишет | Право, которое требует сервер |
 |---|---|---|
+| `account-tokens.ts` (4) | `account_token`, `account_token_flow` (пара токенов агента MiniMax) | сессия + **только владелец** (там токены агента; действия гейтят `currentUserOrNull()` и `isSuperuser`) |
 | `credits.ts` (4) | `credits_credit`, `credits_payment`, график платежей | сессия + **владение** строки кредита (`ownership()` в `UPDATE`/`DELETE`/`WHERE`) |
 | `payments.ts` (3) | `credits_payment` | сессия + владение через кредит (`credits.ts:87`, `payments.ts:46,68`) |
 | `reminders.ts` (4) | `reminder`, журнал срабатываний | сессия + владение (`reminders.ts:87,129,164,177`) |

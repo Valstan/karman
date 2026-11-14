@@ -960,6 +960,67 @@ export type AccountsProjectRow = typeof accountsProject.$inferSelect;
 export type AccountsAccountRow = typeof accountsAccount.$inferSelect;
 export type AccountsUsageRow = typeof accountsUsage.$inferSelect;
 
+// --- Токены аккаунтов MiniMax (заказ владельца 14.11) --------------------------
+// У MiniMax токен агента выдаётся только через OAuth device-flow, а refresh-токен
+// ОДНОРАЗОВЫЙ: повторное использование вендер считает злоупотреблением и отзывает
+// цепочку (рецепт Сарафана, линия «Телефона», 14.11). Значит пару добывают один раз
+// на аккаунт, хранят шифротекстом и отдают проекту ровно один раз.
+//
+// account_token_flow — незавершённый device-flow (device_code и code_verifier —
+// секреты, шифруются; user_code вводит владелец, он не секрет).
+// account_token — добытая пара {access, refresh} одним блоком под шифротекстом.
+//
+// Схема — миграция 0032_account_tokens.sql.
+
+export const accountTokenFlow = pgTable('account_token_flow', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => authUser.id, { onDelete: 'cascade' }),
+  accountId: bigint('account_id', { mode: 'number' })
+    .notNull()
+    .references(() => accountsAccount.id, { onDelete: 'cascade' }),
+  /** device_code (шифротекст): им обмениваются на пару токенов. */
+  deviceCode: text('device_code').notNull(),
+  deviceCodeIv: text('device_code_iv').notNull(),
+  deviceCodeTag: text('device_code_tag').notNull(),
+  /** code_verifier PKCE (шифротекст): доказывает, что обмен наш. */
+  codeVerifier: text('code_verifier').notNull(),
+  codeVerifierIv: text('code_verifier_iv').notNull(),
+  codeVerifierTag: text('code_verifier_tag').notNull(),
+  /** user_code — не секрет: его владелец вводит на странице MiniMax. */
+  userCode: text('user_code').notNull(),
+  /** Страница подтверждения (verification_uri из ответа MiniMax). */
+  verificationUri: text('verification_uri').notNull(),
+  /** 'pending' — ждём владельца; 'done' — пара получена; 'expired'; 'failed'. */
+  state: varchar('state', { length: 16 }).notNull().default('pending'),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+  updatedAt: tstz('updated_at').notNull().defaultNow().$onUpdate(isoNow),
+});
+
+export const accountToken = pgTable('account_token', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => authUser.id, { onDelete: 'cascade' }),
+  accountId: bigint('account_id', { mode: 'number' })
+    .notNull()
+    .references(() => accountsAccount.id, { onDelete: 'cascade' }),
+  /** Пара {access, refresh} одним JSON-блоком под шифротекстом (AAD — id аккаунта). */
+  ciphertext: text('ciphertext').notNull(),
+  iv: text('iv').notNull(),
+  authTag: text('auth_tag').notNull(),
+  /** Срок жизни access-токена (~3600 с у MiniMax). */
+  expiresAt: tstz('expires_at').notNull(),
+  /** Пара отдана проекту: с этого момента свой refresh мы не крутим никогда. */
+  handedOverAt: tstz('handed_over_at'),
+  createdAt: tstz('created_at').notNull().defaultNow(),
+  updatedAt: tstz('updated_at').notNull().defaultNow().$onUpdate(isoNow),
+});
+
+export type AccountTokenFlowRow = typeof accountTokenFlow.$inferSelect;
+export type AccountTokenRow = typeof accountToken.$inferSelect;
+
 // --- Промты (заказ владельца 2026-11-06) -------------------------------------
 // Библиотерия промтов, разложенных по проектам: Мозг раскладывает
 // надиктованное по разделам, владелец копирует промт в буфер и уходит с ним

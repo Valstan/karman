@@ -12,6 +12,7 @@ import type { SessionUser } from '@/lib/auth/rbac';
 import { resolveApiToken } from '@/lib/services/secrets/token';
 import { logAudit } from '@/lib/services/secrets/internal';
 import { activateAccount, listAccounts } from '@/lib/services/accounts';
+import { acceptRefreshedPair, handoverTokenPair } from '@/lib/services/account-tokens';
 import { isSpent, moscowToday } from '@/lib/accounts/rotation';
 import { weeklyQuota } from '@/lib/accounts/weekly';
 import {
@@ -236,14 +237,23 @@ export async function issueAccount(
     today,
   });
 
-  // В аудит — без пароля: что за аккаунт, кому и с каким прогнозом очков.
+  // Пара токенов агента — отдаём ОДИН раз (refresh у MiniMax одноразовый). После
+  // отдачи свой refresh мы не крутим; проект присылает обновлённую пару обратно.
+  const handover = await handoverTokenPair(account.id);
+  if (handover) {
+    offer.access_token = handover.access_token;
+    offer.refresh_token = handover.refresh_token;
+    offer.expires_at_ms = handover.expires_at_ms;
+  }
+
+  // В аудит — без пары: что за аккаунт, кому, с каким прогнозом очков.
   await logAudit(
     caller.roomId,
     caller.tokenId,
     'minimax_account_issued',
     `выдан аккаунт #${account.id} «${account.title}»: класс ${picked.tier ?? '-'}, клетка ${
       offer.account?.activation_index ?? '-'
-    }, очки ${offer.account?.points_next ?? '-'}`,
+    }, очки ${offer.account?.points_next ?? '-'}${handover ? ', пара токенов отдана' : ''}`,
     ip,
     caller.actor,
   );
@@ -273,6 +283,8 @@ export type ActivationRecord = {
   source: 'client_index' | 'client_points' | 'computed';
   /** Обновили ли уже существующую строку дня (повтор от того же проекта). */
   updated: boolean;
+  /** Сохранили ли обновлённую пару токенов, присланную проектом. */
+  token_stored: boolean;
   project: string;
 };
 
@@ -291,7 +303,14 @@ export type ActivationRecord = {
 export async function recordActivation(
   rawToken: string,
   ip: string | null,
-  input: { accountId: number; points?: number | null; activationIndex?: number | null },
+  input: {
+    accountId: number;
+    points?: number | null;
+    activationIndex?: number | null;
+    /** Обновлённая пара токенов от проекта (он обновил refresh сам). */
+    accessToken?: string | null;
+    refreshToken?: string | null;
+  },
   now: Date = new Date(),
 ): Promise<{ ok: true; record: ActivationRecord } | { ok: false; error: PoolCallError }> {
   const callerResult = await resolveCaller(rawToken, ip);
@@ -448,6 +467,16 @@ export async function recordActivation(
   const points = row?.tokens ?? resolution.points;
   const index = row?.activationIndex ?? resolution.index;
   const expectedPoints = expectedPrediction.points;
+
+  // Обновлённая пара от проекта: он потратил свой refresh и прислал нам новую цепочку —
+  // сохраняем, чтобы можно было отдать пару снова (refresh одноразовый).
+  const tokenStored =
+    input.accessToken && input.refreshToken
+      ? await acceptRefreshedPair(input.accountId, {
+          accessToken: input.accessToken,
+          refreshToken: input.refreshToken,
+        }, now)
+      : false;
   // Расхождения — по отдельности: клетка и очки могут разойтись независимо.
   // Это сигнал (независимое показание по клетке), а не ошибка: модель клетки отсюда
   // не меняется.
@@ -481,6 +510,8 @@ export async function recordActivation(
       mismatch,
       source: resolution.source,
       updated: existing !== undefined,
+      /** Сохранили ли обновлённую пару токенов от проекта. */
+      token_stored: tokenStored,
       project: caller.projectName,
     },
   };

@@ -165,6 +165,11 @@ echo "backup_vault: pg_dump vault-таблиц…"
 # 2026-11-06 (позже): добавлена `prompt_project` (миграция 0028) — реестр
 # разделов библиотеки. Рядом с промтами: без него разделы не восстановить.
 #
+# 2026-11-14: добавлена `account_token` (миграция 0032) — добытые пары токенов
+# агента MiniMax. Тот же класс, что `secrets_item`: значения лежат шифротекстом под
+# мастер-ключом, а сам архив — под gpg. В дампе нужна и как данные (по каким
+# аккаунтам токен уже есть), и на случай, если пара ещё не потрачена.
+#
 # BACKUP_EXCLUDES — таблицы схемы, сознательно НЕ попадающие в дамп. Формат
 # `таблица|причина`, по одной на строку. Не украшение: список читает гейт
 # `lib/security/backup-tables.test.ts`, который падает, если в схеме есть
@@ -183,6 +188,7 @@ BACKUP_EXCLUDES=(
   "reminder_delivery|журнал срабатываний — растущий лог воркера, не состояние"
   "reminder_action|нажатия кнопок — то же, что журнал: лог, не состояние"
   "schema_migrations|журнал применённых миграций: это состояние СХЕМЫ, а не данные; после восстановления он восстанавливается применением миграций, а не дампом"
+  "account_token_flow|незавершённые device-flow добычи токенов: код живёт 10 минут, в бэкапе бесполезен (а device_code и verifier в нём — секреты)"
 )
 
 pg_dump "$PG_DSN_NOPASS" --no-owner --no-privileges \
@@ -198,6 +204,7 @@ pg_dump "$PG_DSN_NOPASS" --no-owner --no-privileges \
   -t family_person -t family_relation \
   -t hotline_message -t hotline_presence \
   -t accounts_account -t accounts_project -t accounts_usage \
+  -t account_token \
   -t prompt -t prompt_project \
   > "$WORK/vault.sql"
 
