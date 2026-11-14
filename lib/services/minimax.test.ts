@@ -277,6 +277,42 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     expect(result.offer.free).toBe(0);
   });
 
+  it('аккаунт, отмеченный сегодня ВЛАДЕЛЬЦЕМ, выдаётся без переписывания его записи', async () => {
+    // Аккаунт сегодня отмечен владельцем (его проект, его очки, метка owner). Выдача
+    // проекту не должна красть у владельца его запись — иначе 400 очков его
+    // программирования переписались бы на проектный расход.
+    const accountId = await makeAccount('Отмеченный владельцем', 'own@example.test', null, null);
+    await makeTokenPair(accountId);
+    const [ownerProject] = await refs.current!
+      .insert(accountsProject)
+      .values({ userId: OWNER_ID, name: 'Матрица РМЗ' })
+      .returning({ id: accountsProject.id });
+    await refs.current!.insert(accountsUsage).values({
+      userId: OWNER_ID,
+      accountId,
+      projectId: ownerProject!.id,
+      usedOn: TODAY,
+      tokens: 1000,
+      activationIndex: 4,
+      source: 'owner',
+    });
+
+    const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Проекту такой аккаунт сегодня очков не даёт (чек-ин в сутки один).
+    expect(result.offer.account?.points_next).toBe(0);
+
+    // Запись владельца не переписана: проект, очки и метка те же.
+    const [row] = await refs.current!
+      .select()
+      .from(accountsUsage)
+      .where(and(eq(accountsUsage.accountId, accountId), eq(accountsUsage.usedOn, TODAY)));
+    expect(row!.projectId).toBe(ownerProject!.id);
+    expect(row!.tokens).toBe(1000);
+    expect(row!.source).toBe('owner');
+  });
+
   it('аккаунт с ПРОТУХШЕЙ парой в раздачу не идёт — отдать сломанный вход хуже, чем ничего', async () => {
     // Access-токен MiniMax живёт 12 часов; протухшая пара проекту бесполезна, а наш
     // refresh мы не крутим (цепочка одна). Значит такой аккаунт в выдаче — тихая
