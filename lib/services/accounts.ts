@@ -450,6 +450,8 @@ export async function activateAccount(
       today,
     );
     const index = input.activationIndex ?? quota.nextIndex ?? null;
+    // Отмечен ли аккаунт сегодня (чек-ин в сутки один).
+    const checkedInToday = checkIns.some((row) => row.usedOn === today);
 
     // Очки считаются ПО НОМЕРУ АКТИВАЦИИ: 4-я и 7-я клетки — 1000, остальные
     // 400. Номер, названный владельцем, — истина (заказ 08.11: «очки будут в
@@ -458,10 +460,17 @@ export async function activateAccount(
     //
     // Чек-ин в сутки один: строка дня уже есть → сегодняшние очки не затираем,
     // а номер дня остаётся прежним (иначе «не меняю» превратилось бы в затирку).
+    //
+    // **А отмеченный сегодня аккаунт сегодня очков НЕ даёт** (заказ владельца
+    // 11.11) — поэтому в модели очки нулевые, а не по клетке. Иначе выдача такого
+    // аккаунта проекту (последний резерв пула) записала бы в статистику 400 очков,
+    // которых у MiniMax нет.
     const rowTokens =
       input.activationIndex !== undefined && index !== null
         ? pointsForIndex(index)
-        : (tokens ?? existing?.tokens ?? (index !== null ? pointsForIndex(index) : 0));
+        : (tokens ??
+          existing?.tokens ??
+          (index !== null ? (checkedInToday ? 0 : pointsForIndex(index)) : 0));
     const rowIndex =
       existing && input.activationIndex === undefined ? existing.activationIndex : index;
     // projectId: undefined — «проект не меняем»; null — «проекта нет»;
@@ -480,10 +489,11 @@ export async function activateAccount(
       })
       .where(eq(accountsAccount.id, input.id));
 
-    // Метка «кто потратил аккаунт» (миграция 0033). НЕ стирается: если строку дня
-    // переписал владелец (поправил номер клетки), расход проекта остаётся на проекте —
-    // иначе волна Сарафана растворилась бы в статистике программирования.
-    const source = existing?.source === 'api' ? 'api' : (input.source ?? 'owner');
+    // Метка «кто потратил аккаунт» (миграция 0033) ставится ТОЛЬКО при создании
+    // строки: существующая строка сохраняет свою метку. Иначе выдача аккаунта,
+    // отмеченного сегодня владельцем, переписала бы его запись (проект и очки) на
+    // проектный — и 400 очков владельца исчезли бы из его статистики.
+    const source = existing?.source ?? input.source ?? 'owner';
 
     if (existing) {
       await tx

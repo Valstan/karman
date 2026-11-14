@@ -254,11 +254,29 @@ export async function issueAccount(
   // расхода владельца на программирование. Сарафан после запроса ничего писать не
   // должен: он получил аккаунт и access — и работает у себя.
   //
+  // **Если у аккаунта уже есть строка за сегодня** (её записал владелец под своё
+  // программирование или сам проект раньше) — мы её НЕ переписываем: чужая запись
+  // остаётся (проект, очки, метка). Такой аккаунт даёт проекту ноль очков (чек-ин в
+  // сутки один) — и это честно видно в ответе (`points_next: 0`).
+  //
   // Порядок именно такой: сначала запись, потом выдача токена. Если запись не
   // удалась — токен не отдаём (иначе проект получил бы вход, которого нет в учёте).
+  const [existingToday] = await db
+    .select({ id: accountsUsage.id })
+    .from(accountsUsage)
+    .where(
+      and(
+        eq(accountsUsage.accountId, account.id),
+        eq(accountsUsage.usedOn, today),
+        eq(accountsUsage.userId, caller.owner.id),
+      ),
+    )
+    .limit(1);
   const activated = await activateAccount(
     caller.owner,
-    { id: account.id, projectId: caller.projectId, source: 'api' },
+    existingToday
+      ? { id: account.id } // проект и метка — не трогаем
+      : { id: account.id, projectId: caller.projectId, source: 'api' },
     now,
   );
   if (!activated) {
@@ -295,7 +313,9 @@ export async function issueAccount(
     'minimax_account_issued',
     `выдан аккаунт #${account.id} «${account.title}»: класс ${picked.tier ?? '-'}, клетка ${
       offer.account?.activation_index ?? '-'
-    }, очки ${offer.account?.points_next ?? '-'}${handover ? ', access отдан' : ''}, активация записана`,
+    }, очки ${offer.account?.points_next ?? '-'}${handover ? ', access отдан' : ''}, ${
+      existingToday ? 'активация за сегодня уже была' : 'активация записана'
+    }`,
     ip,
     caller.actor,
   );
