@@ -4,6 +4,7 @@ import { db } from '@/lib/db/client';
 import { accountToken, accountTokenFlow, accountsAccount } from '@/lib/db/schema';
 import { ownership, type SessionUser } from '@/lib/auth/rbac';
 import { decryptSecret, encryptSecret } from '@/lib/secrets/crypto';
+import { listAccounts } from '@/lib/services/accounts';
 import {
   exchangeDeviceCode,
   pkcePair,
@@ -57,7 +58,20 @@ export type AccountTokenRow = {
   expires_at: string | null;
   /** Когда пару отдали проекту (ISO) или null. */
   handed_over_at: string | null;
+  /** Москва-дата последней активации аккаунта или null. */
+  used_on: string | null;
+  /** Годится ли пара проекту сегодня: очки не сожжены, аккаунт не занят, неделя не кончилась. */
+  today_status: TokenTodayStatus;
 };
+
+/**
+ * Состояние аккаунта «на сегодня» — важно для добычи токенов.
+ *
+ * Пара, добытая владельцем для аккаунта, чьи очки сегодня уже сожжены, проекту
+ * бесполезна: активировать его сегодня уже нельзя, а пара живёт 12 часов и завтра
+ * сгорит. Поэтому «Следующий» сначала берёт аккаунты, у которых очки целы.
+ */
+export type TokenTodayStatus = 'free' | 'burned' | 'busy' | 'week_exhausted';
 
 export type TokenProgress = {
   total: number;
@@ -78,13 +92,14 @@ export type TokenProgress = {
  * Аккаунты без токена идут в порядке id — «Следующий» идёт по кругу сверху, как
  * список владельца.
  */
-export async function tokenProgress(user: SessionUser): Promise<TokenProgress> {
+export async function tokenProgress(
+  user: SessionUser,
+  now: Date = new Date(),
+): Promise<TokenProgress> {
+  // Список аккаунтов — тот же, что видит владелец в панели (`listAccounts`): с
+  // окном простоя и недельной квотой. Отсюда и «годится ли пара сегодня».
   const [accounts, flows, tokens] = await Promise.all([
-    db
-      .select({ id: accountsAccount.id, title: accountsAccount.title, email: accountsAccount.email })
-      .from(accountsAccount)
-      .where(ownership(user, accountsAccount.userId))
-      .orderBy(asc(accountsAccount.id)),
+    listAccounts(user, now),
     db
       .select({
         accountId: accountTokenFlow.accountId,
@@ -127,6 +142,8 @@ export async function tokenProgress(user: SessionUser): Promise<TokenProgress> {
       state,
       expires_at: token ? token.expiresAt : null,
       handed_over_at: token?.handedOverAt ?? null,
+      used_on: account.usedOn,
+      today_status: todayStatus(account),
     };
   });
 
@@ -163,12 +180,35 @@ export type NextTokenFlow = {
 };
 
 /**
+ * Состояние аккаунта «на сегодня» для добычи токенов.
+ *
+ * `burned` — очки за сегодня уже сожжены (чек-ин был): пара такому аккаунту
+ * сегодня не нужна, а за завтра она всё равно сгорит (access живёт 12 часов).
+ */
+function todayStatus(account: {
+  weekCheckedInToday: boolean;
+  spent: boolean;
+  weekExhausted: boolean;
+}): TokenTodayStatus {
+  if (account.weekExhausted) return 'week_exhausted';
+  if (account.weekCheckedInToday) return 'burned';
+  if (account.spent) return 'busy';
+  return 'free';
+}
+
+/**
  * «Следующий» — следующий аккаунт без токена.
  *
  * Если на аккаунте уже висит живой (не истёкший) device-flow — возвращаем его:
  * владелец мог просто не успеть подтвердить, и начинать заново с другим аккаунтом
  * означало бы оставлять висящие коды. Аккаунты с уже добытым токеном пропускаются
  * (заказ владельца: «если у аккаунта уже есть токен, то его пропустить»).
+ *
+ * **Порядок выбора — сначала те, у кого очки сегодня ещё целы.** Добыча пары стоит
+ * владельцу времени (device-flow, ~2 минуты на аккаунт), и пара живёт 12 часов, а
+ * у аккаунта, отмеченного сегодня, очки уже сожжены — такая пара проекту не
+ * пригодится никогда. Если таких аккаунтов не осталось — берём любой (владелец
+ * идёт по кругу до конца, как и просил).
  */
 export async function startNextTokenFlow(
   user: SessionUser,
@@ -177,7 +217,7 @@ export async function startNextTokenFlow(
   | { ok: true; flow: NextTokenFlow }
   | { ok: false; error: 'complete' | 'oauth_failed'; message?: string }
 > {
-  const progress = await tokenProgress(user);
+  const progress = await tokenProgress(user, now);
 
   // Живой открытый flow — продолжаем его.
   const open = await db
@@ -228,7 +268,10 @@ export async function startNextTokenFlow(
       .where(eq(accountTokenFlow.id, pendingFlow.id));
   }
 
-  const next = progress.rows.find((row) => row.state === 'none');
+  const candidates = progress.rows.filter((row) => row.state === 'none');
+  // Сначала — аккаунты, у которых очки сегодня ещё не сожжены: именно их пара
+  // пригодится проекту сегодня же. Остальные — только если таких не осталось.
+  const next = candidates.find((row) => row.today_status === 'free') ?? candidates[0];
   if (!next) {
     return { ok: false, error: 'complete' };
   }

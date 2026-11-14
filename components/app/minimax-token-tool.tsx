@@ -71,6 +71,20 @@ const STATE_LABEL: Record<string, string> = {
   handed_over: 'отдан проекту',
 };
 
+/**
+ * Состояние аккаунта «на сегодня» — видно, кому пара пригодится.
+ *
+ * «Очки сожжены» — у такого аккаунта сегодняшние очки уже израсходованы: добывать
+ * для него токен бессмысленно (пара живёт 12 часов, а активировать его сегодня
+ * уже нельзя).
+ */
+const TODAY_LABEL: Record<string, string> = {
+  free: 'свободен',
+  burned: 'очки сожжены',
+  busy: 'занят (окно)',
+  week_exhausted: 'неделя кончилась',
+};
+
 export function MinimaxTokenTool({ progress }: { progress: TokenProgress }) {
   const router = useRouter();
   const [flow, setFlow] = useState<NextTokenFlow | null>(null);
@@ -303,6 +317,7 @@ export function MinimaxTokenTool({ progress }: { progress: TokenProgress }) {
               <th className="p-2">id</th>
               <th className="p-2">Аккаунт</th>
               <th className="p-2">Почта</th>
+              <th className="p-2">Сегодня</th>
               <th className="p-2">Состояние</th>
             </tr>
           </thead>
@@ -312,6 +327,9 @@ export function MinimaxTokenTool({ progress }: { progress: TokenProgress }) {
                 <td className="p-2 text-muted-foreground">{row.account_id}</td>
                 <td className="p-2">{row.title || '—'}</td>
                 <td className="p-2 text-muted-foreground">{row.email}</td>
+                <td className="p-2 text-muted-foreground">
+                  {TODAY_LABEL[row.today_status] ?? row.today_status}
+                </td>
                 <td className="p-2">{STATE_LABEL[row.state] ?? row.state}</td>
               </tr>
             ))}
