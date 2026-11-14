@@ -13,7 +13,7 @@ import {
 import { hashToken } from '@/lib/secrets/token';
 import { encryptSecret } from '@/lib/secrets/crypto';
 import { accountPasswordAad } from '@/lib/services/accounts';
-import { accountTokenAad, handoverTokenPair } from '@/lib/services/account-tokens';
+import { accountTokenAad, handoverAccessToken } from '@/lib/services/account-tokens';
 import { issueAccount, recordActivation } from '@/lib/services/minimax';
 
 /**
@@ -222,7 +222,7 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     expect(result.offer.account?.id).toBe(mine);
   });
 
-  it('пара токенов аккаунта едет вместе с аккаунтом — и только один раз', async () => {
+  it('access едет вместе с аккаунтом — и только один раз, без refresh', async () => {
     const accountId = await makeAccount('С токеном', 'withtoken@example.test', null, null);
     await makeCheckIn(accountId, '2026-11-12', 2);
     await makeTokenPair(accountId);
@@ -231,10 +231,12 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     expect(first.offer.access_token).toBe('ACCESS-1');
-    expect(first.offer.refresh_token).toBe('REFRESH-1');
     expect(first.offer.expires_at_ms).toBeGreaterThan(NOW.getTime());
+    // Мандат владельца 14.11: пара целиком не отдаётся — только один токен.
+    expect(first.offer).not.toHaveProperty('refresh_token');
+    expect((first.offer as { refresh_token?: string }).refresh_token).toBeUndefined();
 
-    // Refresh одноразовый: второй раз пара не отдаётся.
+    // Access отдан — второй раз не отдаётся.
     const second = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
     expect(second.ok).toBe(true);
     if (!second.ok) return;
@@ -456,9 +458,10 @@ describe('пул MiniMax: запись активации', () => {
     if (!first.ok) return;
     expect(first.offer.account?.id).toBe(accountId);
     expect(first.offer.access_token).toBe('ACCESS-1');
-    expect(first.offer.refresh_token).toBe('REFRESH-1');
+    // Пара целиком не отдаётся (мандат владельца 14.11) — только один токен.
+    expect((first.offer as { refresh_token?: string }).refresh_token).toBeUndefined();
 
-    // Refresh одноразовый: второй раз ту же пару отдавать нельзя.
+    // Access отдан — второй раз ту же пару отдавать нельзя.
     const second = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
     expect(second.ok).toBe(true);
     if (!second.ok) return;
@@ -506,9 +509,9 @@ describe('пул MiniMax: запись активации', () => {
     expect(conflict.error.status).toBe(409);
 
     // Пара сохранена — аккаунт снова готов к выдаче. Время — то же, что у выдачи:
-    // пара живёт 12 часов, и протухшую в раздачу не отдаём.
-    const handover = await handoverTokenPair(accountId, NOW);
+    // access живёт 12 часов, и протухший в раздачу не отдаём.
+    const handover = await handoverAccessToken(accountId, NOW);
     expect(handover?.access_token).toBe('ACCESS-NEW');
-    expect(handover?.refresh_token).toBe('REFRESH-NEW');
+    expect(handover).not.toHaveProperty('refresh_token');
   });
 });

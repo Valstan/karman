@@ -42,7 +42,7 @@ vi.mock('@/lib/db/client', () => ({
 import {
   acceptRefreshedPair,
   claimToken,
-  handoverTokenPair,
+  handoverAccessToken,
   startNextTokenFlow,
   tokenProgress,
   tokenReadyAccountIds,
@@ -241,7 +241,7 @@ describe('добыча токенов: протухшая пара', () => {
     });
 
     expect(await tokenReadyAccountIds()).not.toContain(accountId);
-    expect(await handoverTokenPair(accountId)).toBeNull();
+    expect(await handoverAccessToken(accountId)).toBeNull();
 
     const progress = await tokenProgress(owner);
     expect(progress.rows.find((row) => row.account_id === accountId)?.state).toBe('expired');
@@ -296,34 +296,35 @@ describe('добыча токенов: обмен кода', () => {
   });
 });
 
-describe('выдача пары проекту', () => {
-  it('пара отдаётся ОДИН раз: refresh одноразовый', async () => {
+describe('выдача токена проекту', () => {
+  it('access отдаётся ОДИН раз: пара целиком не отдаётся (мандат владельца 14.11)', async () => {
     const accountId = await makeAccount('Выдаваемый', 'handover@example.test');
     const started = await startNextTokenFlow(owner);
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     await claimToken(owner, started.flow.flow_id);
 
-    const first = await handoverTokenPair(accountId);
+    const first = await handoverAccessToken(accountId);
     expect(first?.access_token).toBe('ACCESS-1');
-    expect(first?.refresh_token).toBe('REFRESH-1');
+    // Refresh наружу не уходит: мандат владельца — отдавать по одному токену.
+    expect(first).not.toHaveProperty('refresh_token');
     expect(first?.expires_at_ms).toBeGreaterThan(Date.now());
 
-    const second = await handoverTokenPair(accountId);
+    const second = await handoverAccessToken(accountId);
     expect(second).toBeNull();
 
     const progress = await tokenProgress(owner);
     expect(progress.rows.find((row) => row.account_id === accountId)?.state).toBe('handed_over');
   });
 
-  it('обновлённая пара от проекта сохраняется — и отдаётся снова', async () => {
+  it('обновлённая пара от проекта сохраняется — и access отдаётся снова', async () => {
     const accountId = await makeAccount('Обновляемый', 'refresh@example.test');
     const started = await startNextTokenFlow(owner);
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     await claimToken(owner, started.flow.flow_id);
-    await handoverTokenPair(accountId);
-    expect(await handoverTokenPair(accountId)).toBeNull();
+    await handoverAccessToken(accountId);
+    expect(await handoverAccessToken(accountId)).toBeNull();
 
     const accepted = await acceptRefreshedPair(1, accountId, {
       accessToken: 'ACCESS-2',
@@ -331,8 +332,8 @@ describe('выдача пары проекту', () => {
     });
     expect(accepted).toBe(true);
 
-    const again = await handoverTokenPair(accountId);
+    const again = await handoverAccessToken(accountId);
     expect(again?.access_token).toBe('ACCESS-2');
-    expect(again?.refresh_token).toBe('REFRESH-2');
+    expect(again).not.toHaveProperty('refresh_token');
   });
 });
