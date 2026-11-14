@@ -3,16 +3,25 @@
 import { useEffect, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
+import { KeyRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   claimTokenAction,
   cancelTokenFlowAction,
   nextTokenFlowAction,
 } from '@/lib/actions/account-tokens';
+import { copyAccountSecret } from '@/components/app/minimax-activation';
 import type { NextTokenFlow, TokenProgress } from '@/lib/services/account-tokens';
 
 /**
- * Инструмент добычи токенов аккаунтов MiniMax (заказ владельца 14.11).
+ * Инструмент получения токенов аккаунтов MiniMax (заказ владельца 14.11).
  *
  * Сценарий: владелец жмёт «Следующий» → получает ссылку и код подтверждения MiniMax →
  * открывает ссылку, входит и подтверждает → страница сама опрашивает обмен кода и
@@ -20,9 +29,28 @@ import type { NextTokenFlow, TokenProgress } from '@/lib/services/account-tokens
  * токены есть у всех — процесс останавливается и говорит об этом.
  *
  * Опрашивать можно и рукой («Забрать токен») — на случай, если браузер спит.
+ *
+ * ## Ускорение рутины (заказ владельца 14.11, второй заход)
+ *
+ * «Нажми "Следующий" — сразу перейди по ссылке, скопируй почту в буфер, открой
+ * модалку с кнопкой копирования пароля; после копирования пароля модалка закрывается».
+ * Поэтому «Следующий» теперь делает всё сразу:
+ *
+ * 1) **кладёт почту аккаунта в буфер обмена** — вставьте её в окне MiniMax. Именно
+ *    ПЕРВЫМ: clipboard API браузера требует фокуса документа, а открытое окно MiniMax
+ *    уводит вкладку в фон, и копирование после этого падает;
+ * 2) **открывает подтверждение MiniMax** новым окном;
+ * 3) **показывает модалку с кнопкой «Скопировать пароль»** — пароль нужен для входа
+ *    в тот же MiniMax; после копирования модалка закрывается сама.
+ *
+ * Модалка намеренно НЕ забирает фокус (`onOpenAutoFocus` отменён): иначе она
+ * перехватила бы ввод в только что открытом окне MiniMax.
  */
 
 type FlowState = 'idle' | 'waiting' | 'claimed' | 'expired';
+
+/** Аккаунт, для которого показываем модалку с паролем. */
+type PasswordPrompt = { id: number; title: string; email: string };
 
 const STATE_LABEL: Record<string, string> = {
   none: 'нет токена',
@@ -35,6 +63,7 @@ export function MinimaxTokenTool({ progress }: { progress: TokenProgress }) {
   const router = useRouter();
   const [flow, setFlow] = useState<NextTokenFlow | null>(null);
   const [state, setState] = useState<FlowState>('idle');
+  const [passwordPrompt, setPasswordPrompt] = useState<PasswordPrompt | null>(null);
   const [busy, startTransition] = useTransition();
   const [pending, startPending] = useTransition();
   // Пауза между опросами обмена. Вендер сам задаёт её в `interval` (живая проба:
@@ -84,12 +113,46 @@ export function MinimaxTokenTool({ progress }: { progress: TokenProgress }) {
       setFlow(next);
       setState('waiting');
       setPollMs(Math.max(3, next.interval_seconds) * 1000);
-      toast.info(
-        next.resumed
-          ? `Продолжаем: аккаунт #${next.account_id} «${next.title}»`
-          : `Аккаунт #${next.account_id} «${next.title}» — откройте ссылку`,
-      );
+
+      // 1) ПОЧТА — в буфер обмена, ПОКА вкладка активна. Clipboard API браузера
+      //    требует фокуса документа: если сначала открыть окно MiniMax, вкладка
+      //    останется на фоне и копирование упадёт («Document is not focused»).
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(next.email);
+        copied = true;
+      } catch {
+        toast.error('Не удалось скопировать почту — она показана в окне, скопируйте вручную');
+      }
+
+      // 2) Сразу уводим в подтверждение MiniMax.
+      const tab = window.open(next.verification_link, '_blank');
+      if (!tab) {
+        toast.info('Браузер заблокировал новое окно — откройте ссылку подтверждения ниже');
+      }
+
+      // 3) Модалка с кнопкой копирования пароля (фокус не забираем — ввод в окне
+      //    MiniMax должен остаться доступен).
+      setPasswordPrompt({ id: next.account_id, title: next.title, email: next.email });
+      if (copied) {
+        toast.info('Почта скопирована — вставьте её в окне MiniMax');
+      }
     });
+  }
+
+  /** Пароль в буфер обмена; после копирования модалка закрывается. */
+  async function copyPassword() {
+    if (!passwordPrompt) return;
+    const outcome = await copyAccountSecret(
+      { id: passwordPrompt.id, email: passwordPrompt.email },
+      'password',
+    );
+    if (!outcome.ok) {
+      toast.error(outcome.error);
+      return;
+    }
+    toast.success('Пароль скопирован — вставьте его в окне MiniMax');
+    setPasswordPrompt(null);
   }
 
   function claimNow() {
@@ -213,6 +276,34 @@ export function MinimaxTokenTool({ progress }: { progress: TokenProgress }) {
           </tbody>
         </table>
       </div>
+
+      {/* Пароль от аккаунта: копируем и закрываемся. Фокус не забираем — ввод в
+          только что открытом окне MiniMax должен остаться доступен. */}
+      <Dialog
+        open={passwordPrompt !== null}
+        onOpenChange={(open) => {
+          if (!open) setPasswordPrompt(null);
+        }}
+      >
+        <DialogContent onOpenAutoFocus={(event) => event.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle>Пароль от аккаунта</DialogTitle>
+            <DialogDescription>
+              Аккаунт #{passwordPrompt?.id} «{passwordPrompt?.title || '—'}». Почта уже в
+              буфере обмена — вставьте её в окне MiniMax. Пароль нужен там же для входа:
+              нажмите кнопку, он попадёт в буфер, и окно закроется.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-3">
+            <p className="text-sm">
+              Почта: <span className="font-mono">{passwordPrompt?.email}</span>
+            </p>
+            <Button onClick={() => void copyPassword()}>
+              <KeyRound className="mr-1 h-4 w-4" /> Скопировать пароль
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

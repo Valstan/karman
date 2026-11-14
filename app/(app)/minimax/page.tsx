@@ -1,5 +1,8 @@
 import { notFound } from 'next/navigation';
+import Link from 'next/link';
+import { KeyRound } from 'lucide-react';
 import { requireUser } from '@/lib/auth/current-user';
+import { Button } from '@/components/ui/button';
 import {
   accountRating,
   dailyUsage,
@@ -40,13 +43,23 @@ export default async function MinimaxPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="min-w-0">
-        <h1 className="text-2xl font-semibold">Минимакс</h1>
-        <p className="text-sm text-muted-foreground">
-          Аккаунты MiniMax, которыми переключаешься, пока программирует. Копируешь почту или
-          пароль — аккаунт гаснет на 5 часов с момента активации, а активация уходит в
-          статистику выбранного проекта.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-semibold">Минимакс</h1>
+          <p className="text-sm text-muted-foreground">
+            Аккаунты MiniMax, которыми переключаешься, пока программирует. Копируешь почту или
+            пароль — аккаунт гаснет на 5 часов с момента активации, а активация уходит в
+            статистику выбранного проекта.
+          </p>
+        </div>
+        {/* Получение токенов аккаунтов — отдельный инструмент (заказ владельца 14.11):
+            кнопка «Следующий» сама открывает подтверждение MiniMax, кладёт почту в буфер
+            и показывает пароль. Ссылка ведёт именно туда, а не в «активацию». */}
+        <Button asChild variant="outline" size="sm">
+          <Link href="/minimax/tokens">
+            <KeyRound className="mr-1 h-4 w-4" /> Получить токены аккаунтов
+          </Link>
+        </Button>
       </div>
 
       <MinimaxPanel
