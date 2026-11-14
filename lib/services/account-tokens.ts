@@ -522,6 +522,50 @@ export async function cancelTokenFlow(user: SessionUser, flowId: number): Promis
   return row !== undefined;
 }
 
+/** Данные всплывающего окна «пароль от аккаунта». */
+export type TokenWindowData = {
+  accountId: number;
+  title: string;
+  email: string;
+  /** Ссылка подтверждения MiniMax — запасной путь, если вкладка не открылась. */
+  verificationLink: string | null;
+};
+
+/**
+ * Данные для окна пароля — по id device-flow.
+ *
+ * Ссылка подтверждения берётся ИЗ СТРОКИ ПОТОКА, а не из адреса окна: код живёт
+ * пять минут, и класть его в URL — значит оставлять его в журнале доступа.
+ * Поэтому окно знает только `flow=<id>`, а всё остальное спрашивает у базы.
+ */
+export async function tokenWindowData(
+  user: SessionUser,
+  flowId: number,
+): Promise<TokenWindowData | null> {
+  const [row] = await db
+    .select({
+      accountId: accountTokenFlow.accountId,
+      userCode: accountTokenFlow.userCode,
+      verificationUri: accountTokenFlow.verificationUri,
+      verificationUriComplete: accountTokenFlow.verificationUriComplete,
+      title: accountsAccount.title,
+      email: accountsAccount.email,
+    })
+    .from(accountTokenFlow)
+    .innerJoin(accountsAccount, eq(accountsAccount.id, accountTokenFlow.accountId))
+    .where(and(eq(accountTokenFlow.id, flowId), ownership(user, accountTokenFlow.userId)))
+    .limit(1);
+  if (!row) return null;
+
+  return {
+    accountId: row.accountId,
+    title: row.title,
+    email: row.email,
+    verificationLink:
+      row.verificationUriComplete ?? verificationLink(row.verificationUri, row.userCode),
+  };
+}
+
 /** Проверка «есть ли у аккаунта токен» — используется в ручках выдачи. */
 export async function hasToken(accountId: number): Promise<boolean> {
   const [row] = await db
