@@ -46,8 +46,15 @@ export function accountTokenFlowAad(flowId: number): string {
   return `accounts:token-flow:${flowId}`;
 }
 
-/** Состояние аккаунта в процессе добычи токенов. */
-export type AccountTokenState = 'none' | 'pending' | 'stored' | 'handed_over';
+/**
+ * Состояние аккаунта в процессе добычи токенов.
+ *
+ * `expired` — пара была добыта, но access-токен истёк (живёт 12 часов) и пару **никто не
+ * забрал**: для проекта она мёртвая, и наш refresh мы не крутим (цепочка одна) — значит
+ * аккаунту нужен новый вход. Отдельно от `handed_over`: отданную пару проект держит у
+ * себя (вместе с refresh) и вправе продлить её сам — переделывать её не нужно.
+ */
+export type AccountTokenState = 'none' | 'pending' | 'stored' | 'handed_over' | 'expired';
 
 export type AccountTokenRow = {
   account_id: number;
@@ -128,10 +135,19 @@ export async function tokenProgress(
 
   const rows: AccountTokenRow[] = accounts.map((account) => {
     const token = tokenBy.get(account.id);
+    // Пара, которую никто не забрал, а access-токен истёк (живёт 12 часов): для
+    // проекта она мёртвая, и наш refresh мы не крутим (цепочка одна) — значит аккаунту
+    // нужен новый вход, а аккаунт не должен уходить в раздачу с мёртвым токеном.
+    const tokenDead =
+      token !== undefined &&
+      !token.handedOverAt &&
+      new Date(token.expiresAt).getTime() <= now.getTime();
     const state: AccountTokenState = token
       ? token.handedOverAt
         ? 'handed_over'
-        : 'stored'
+        : tokenDead
+          ? 'expired'
+          : 'stored'
       : pendingBy.has(account.id)
         ? 'pending'
         : 'none';
@@ -268,9 +284,12 @@ export async function startNextTokenFlow(
       .where(eq(accountTokenFlow.id, pendingFlow.id));
   }
 
-  const candidates = progress.rows.filter((row) => row.state === 'none');
+  const candidates = progress.rows.filter(
+    (row) => row.state === 'none' || row.state === 'expired',
+  );
   // Сначала — аккаунты, у которых очки сегодня ещё не сожжены: именно их пара
   // пригодится проекту сегодня же. Остальные — только если таких не осталось.
+  // «expired» — пара протухла и её никто не забрал: аккаунт надо добыть заново.
   const next = candidates.find((row) => row.today_status === 'free') ?? candidates[0];
   if (!next) {
     return { ok: false, error: 'complete' };
@@ -461,14 +480,22 @@ export type TokenHandover = {
  * Отдача помечается `handed_over_at`: после этого мы свой refresh НЕ крутим (refresh
  * одноразовый, цепочка одна). Если проект пришлёт обновлённую пару обратно (он её
  * обновил), приём снимает отметку — и отдать можно снова.
+ *
+ * **Протухшую пару не отдаём:** access-токен живёт 12 часов, а наш refresh мы не
+ * крутим — отдать мёртвый access значит отдать проекту сломанный вход. (Свой refresh
+ * может покрутить только проект, у которого пара уже в руках.)
  */
-export async function handoverTokenPair(accountId: number): Promise<TokenHandover | null> {
+export async function handoverTokenPair(
+  accountId: number,
+  now: Date = new Date(),
+): Promise<TokenHandover | null> {
   const [row] = await db
     .select()
     .from(accountToken)
     .where(eq(accountToken.accountId, accountId))
     .limit(1);
   if (!row || row.handedOverAt) return null;
+  if (new Date(row.expiresAt).getTime() <= now.getTime()) return null;
 
   const payload = JSON.parse(
     decryptSecret(
@@ -478,10 +505,10 @@ export async function handoverTokenPair(accountId: number): Promise<TokenHandove
   ) as { access?: string; refresh?: string };
   if (!payload.access || !payload.refresh) return null;
 
-  const now = new Date().toISOString();
+  const handedOverAt = now.toISOString();
   await db
     .update(accountToken)
-    .set({ handedOverAt: now, updatedAt: now })
+    .set({ handedOverAt, updatedAt: handedOverAt })
     .where(eq(accountToken.id, row.id));
 
   return {
@@ -537,16 +564,28 @@ export async function acceptRefreshedPair(
 /**
  * id аккаунтов, чью пару токенов ещё можно отдать проекту.
  *
- * «Ещё можно» = пара добыта И не отдавалась после последнего обновления. Отдача
- * помечается `handed_over_at`, потому что refresh у MiniMax одноразовый: получив пару,
- * проект крутит refresh сам и присылает обновлённую пару обратно (приём снимает
- * отметку) — тогда отдать можно снова.
+ * «Ещё можно» = пара добыта, ещё не отдана **и не протухла**. Отдача помечается
+ * `handed_over_at`, потому что refresh у MiniMax одноразовый: получив пару, проект
+ * крутит refresh сам и присылает обновлённую пару обратно (приём снимает отметку) —
+ * тогда отдать можно снова.
+ *
+ * **Протухшая пара в раздачу не идёт:** access живёт 12 часов, а наш refresh мы не
+ * крутим (цепочка одна) — отдать мёртвый токен значит отдать проекту сломанный вход.
  */
-export async function tokenReadyAccountIds(): Promise<number[]> {
+export async function tokenReadyAccountIds(now: Date = new Date()): Promise<number[]> {
   const rows = await db
-    .select({ accountId: accountToken.accountId, handedOverAt: accountToken.handedOverAt })
+    .select({
+      accountId: accountToken.accountId,
+      handedOverAt: accountToken.handedOverAt,
+      expiresAt: accountToken.expiresAt,
+    })
     .from(accountToken);
-  return rows.filter((row) => !row.handedOverAt).map((row) => row.accountId);
+  return rows
+    .filter(
+      (row) =>
+        !row.handedOverAt && new Date(row.expiresAt).getTime() > now.getTime(),
+    )
+    .map((row) => row.accountId);
 }
 
 /** Отменить открытый flow (владелец передумал). */

@@ -240,6 +240,28 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     if (!second.ok) return;
     expect(second.offer.access_token).toBeUndefined();
   });
+
+  it('аккаунт с ПРОТУХШЕЙ парой в раздачу не идёт — отдать сломанный вход хуже, чем ничего', async () => {
+    // Access-токен MiniMax живёт 12 часов; протухшая пара проекту бесполезна, а наш
+    // refresh мы не крутим (цепочка одна). Значит такой аккаунт в выдаче — тихая
+    // поломка у проекта, и мы его не отдаём.
+    const accountId = await makeAccount('С протухшей парой', 'deadpair@example.test', null, null);
+    await makeCheckIn(accountId, '2026-11-12', 2);
+    await refs.current!.insert(accountToken).values({
+      userId: OWNER_ID,
+      accountId,
+      ciphertext: 'x',
+      iv: 'x',
+      authTag: 'x',
+      expiresAt: new Date(NOW.getTime() - 3_600_000).toISOString(),
+    });
+
+    const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.offer.account).toBeNull();
+    expect(result.offer.reason).toBe('no_tokens_ready');
+  });
 });
 
 describe('пул MiniMax: запись активации', () => {
@@ -483,8 +505,9 @@ describe('пул MiniMax: запись активации', () => {
     if (conflict.ok) return;
     expect(conflict.error.status).toBe(409);
 
-    // Пара сохранена — аккаунт снова готов к выдаче.
-    const handover = await handoverTokenPair(accountId);
+    // Пара сохранена — аккаунт снова готов к выдаче. Время — то же, что у выдачи:
+    // пара живёт 12 часов, и протухшую в раздачу не отдаём.
+    const handover = await handoverTokenPair(accountId, NOW);
     expect(handover?.access_token).toBe('ACCESS-NEW');
     expect(handover?.refresh_token).toBe('REFRESH-NEW');
   });
