@@ -61,7 +61,7 @@ import {
  */
 
 export type PoolCallError = {
-  status: 401 | 403 | 404 | 409 | 500;
+  status: 400 | 401 | 403 | 404 | 409 | 500;
   error: string;
 };
 
@@ -304,7 +304,8 @@ export async function recordActivation(
   rawToken: string,
   ip: string | null,
   input: {
-    accountId: number;
+    accountId?: number | null;
+    email?: string | null;
     points?: number | null;
     activationIndex?: number | null;
     /** Обновлённая пара токенов от проекта (он обновил refresh сам). */
@@ -318,26 +319,77 @@ export async function recordActivation(
   const caller = callerResult.caller;
   const today = moscowToday(now);
 
-  const [account] = await db
-    .select({
-      id: accountsAccount.id,
-      usedOn: accountsAccount.usedOn,
-      usedAt: accountsAccount.usedAt,
-    })
-    .from(accountsAccount)
-    .where(and(eq(accountsAccount.id, input.accountId), eq(accountsAccount.userId, caller.owner.id)))
-    .limit(1);
+  // Аккаунт ищем по id ИЛИ по почте: проект не обязан знать наши внутренние id
+  // (просьба Сарафана 14.11). Если заданы оба — они должны указывать на один аккаунт.
+  if (
+    (input.accountId === undefined || input.accountId === null) &&
+    !input.email
+  ) {
+    return {
+      ok: false,
+      error: { status: 400, error: 'Нужен account_id или email аккаунта' },
+    };
+  }
+  const byId =
+    input.accountId !== undefined && input.accountId !== null
+      ? (
+          await db
+            .select({
+              id: accountsAccount.id,
+              email: accountsAccount.email,
+              usedOn: accountsAccount.usedOn,
+              usedAt: accountsAccount.usedAt,
+            })
+            .from(accountsAccount)
+            .where(
+              and(
+                eq(accountsAccount.id, input.accountId),
+                eq(accountsAccount.userId, caller.owner.id),
+              ),
+            )
+            .limit(1)
+        )[0]
+      : undefined;
+  const byEmail =
+    input.email
+      ? (
+          await db
+            .select({
+              id: accountsAccount.id,
+              email: accountsAccount.email,
+              usedOn: accountsAccount.usedOn,
+              usedAt: accountsAccount.usedAt,
+            })
+            .from(accountsAccount)
+            .where(
+              and(
+                sql`lower(${accountsAccount.email}) = lower(${input.email})`,
+                eq(accountsAccount.userId, caller.owner.id),
+              ),
+            )
+            .limit(1)
+        )[0]
+      : undefined;
+
+  if (byId && byEmail && byId.id !== byEmail.id) {
+    return {
+      ok: false,
+      error: { status: 400, error: 'account_id и email указывают на разные аккаунты' },
+    };
+  }
+  const account = byId ?? byEmail;
   if (!account) {
     await logAudit(
       caller.roomId,
       caller.tokenId,
       'minimax_denied',
-      `аккаунт #${input.accountId} в пуле не найден`,
+      `аккаунт ${input.accountId ?? input.email ?? '?'} в пуле не найден`,
       ip,
       caller.actor,
     );
     return { ok: false, error: { status: 404, error: 'Аккаунт не найден в пуле' } };
   }
+  const accountId = account.id;
 
   const [existing] = await db
     .select({
@@ -349,7 +401,7 @@ export async function recordActivation(
     .from(accountsUsage)
     .where(
       and(
-        eq(accountsUsage.accountId, input.accountId),
+        eq(accountsUsage.accountId, accountId),
         eq(accountsUsage.usedOn, today),
         eq(accountsUsage.userId, caller.owner.id),
       ),
@@ -362,7 +414,7 @@ export async function recordActivation(
       caller.roomId,
       caller.tokenId,
       'minimax_conflict',
-      `аккаунт #${input.accountId} за ${today} уже записан за другим проектом`,
+      `аккаунт #${accountId} за ${today} уже записан за другим проектом`,
       ip,
       caller.actor,
     );
@@ -382,7 +434,7 @@ export async function recordActivation(
       caller.roomId,
       caller.tokenId,
       'minimax_conflict',
-      `аккаунт #${input.accountId} занят окном (активирован ${account.usedAt ?? '-'})`,
+      `аккаунт #${accountId} занят окном (активирован ${account.usedAt ?? '-'})`,
       ip,
       caller.actor,
     );
@@ -392,7 +444,7 @@ export async function recordActivation(
   const checkIns = await db
     .select({ usedOn: accountsUsage.usedOn, activationIndex: accountsUsage.activationIndex })
     .from(accountsUsage)
-    .where(and(eq(accountsUsage.accountId, input.accountId), eq(accountsUsage.userId, caller.owner.id)));
+    .where(and(eq(accountsUsage.accountId, accountId), eq(accountsUsage.userId, caller.owner.id)));
   const quota = weeklyQuota(
     checkIns.map((row) => ({ date: row.usedOn, index: row.activationIndex })),
     today,
@@ -404,7 +456,7 @@ export async function recordActivation(
   // При повторе от того же проекта предсказание — то, что уже записано: иначе
   // квота уже учла сегодняшний чек-ин и «предсказала» бы следующую клетку.
   const hint = hintFor({
-    id: input.accountId,
+    id: accountId,
     title: '',
     email: '',
     usedOn: account.usedOn,
@@ -433,7 +485,7 @@ export async function recordActivation(
   const written = await activateAccount(
     caller.owner,
     {
-      id: input.accountId,
+      id: accountId,
       projectId: caller.projectId,
       ...(resolution.source === 'client_index'
         ? { activationIndex: resolution.index ?? undefined }
@@ -457,7 +509,7 @@ export async function recordActivation(
     .from(accountsUsage)
     .where(
       and(
-        eq(accountsUsage.accountId, input.accountId),
+        eq(accountsUsage.accountId, accountId),
         eq(accountsUsage.usedOn, today),
         eq(accountsUsage.userId, caller.owner.id),
       ),
@@ -472,7 +524,7 @@ export async function recordActivation(
   // сохраняем, чтобы можно было отдать пару снова (refresh одноразовый).
   const tokenStored =
     input.accessToken && input.refreshToken
-      ? await acceptRefreshedPair(input.accountId, {
+      ? await acceptRefreshedPair(accountId, {
           accessToken: input.accessToken,
           refreshToken: input.refreshToken,
         }, now)
@@ -491,7 +543,7 @@ export async function recordActivation(
     caller.roomId,
     caller.tokenId,
     'minimax_activation_recorded',
-    `аккаунт #${input.accountId}: клетка ${index ?? '-'}, очки ${points}${mismatch ? ' (расходится с предсказанием)' : ''}`,
+    `аккаунт #${accountId}: клетка ${index ?? '-'}, очки ${points}${mismatch ? ' (расходится с предсказанием)' : ''}`,
     ip,
     caller.actor,
   );
@@ -499,7 +551,7 @@ export async function recordActivation(
   return {
     ok: true,
     record: {
-      account_id: input.accountId,
+      account_id: accountId,
       used_on: row?.usedOn ?? today,
       activation_index: index,
       points,
