@@ -95,7 +95,7 @@ export type PoolOffer = {
   /** Аккаунт к активации или null — сегодня брать нечего. */
   account: PoolHandout | null;
   /** Почему аккаунта нет (когда account === null). */
-  reason: 'no_free_accounts' | null;
+  reason: 'no_free_accounts' | 'no_tokens_ready' | null;
   /** Из какого класса выдан аккаунт. */
   tier: PoolTier | null;
   /** Аккаунт первый — его и предлагаем активировать сейчас. */
@@ -198,6 +198,15 @@ export type PoolFilters = {
   excludeIds?: number[];
   /** Почты, которые у проекта есть: отдаём только такие аккаунты. */
   emails?: string[];
+  /**
+   * id аккаунтов, у которых пара токенов уже добыта и её ещё можно отдать.
+   *
+   * Схема 14.11: вход в MiniMax делает владелец (программного логина по паролю у
+   * MiniMax нет — `grant_type=password` → 400), а проект работает с **нашей** парой
+   * токенов. Значит аккаунт без добытой пары проекту бесполезен: отдавать такой нельзя,
+   * иначе проект упрётся в «нет токена» на живом аккаунте.
+   */
+  tokenReadyIds?: number[];
 };
 
 /**
@@ -216,12 +225,19 @@ export function pickPoolAccount<T extends PoolRow>(
   accounts: T[],
   now: Date = new Date(),
   filters: PoolFilters = {},
-): { account: T | null; free: number; soon: number; tier: PoolTier | null } {
+): {
+  account: T | null;
+  free: number;
+  soon: number;
+  tier: PoolTier | null;
+  reason: 'no_free_accounts' | 'no_tokens_ready' | null;
+} {
   const summary = accountPoolSummary(accounts, now);
   const exclude = new Set(filters.excludeIds ?? []);
   const emails = filters.emails
     ? new Set(filters.emails.map((mail) => mail.trim().toLowerCase()).filter(Boolean))
     : null;
+  const tokenReady = filters.tokenReadyIds ? new Set(filters.tokenReadyIds) : null;
 
   const sorted = sortAccounts(accounts, now);
   const free = sorted.filter((account) => {
@@ -230,23 +246,49 @@ export function pickPoolAccount<T extends PoolRow>(
     if (emails && !emails.has(account.email.trim().toLowerCase())) return false;
     return true;
   });
+  // Аккаунты с добытой парой токенов — единственные, с которыми проект может
+  // работать: вход в MiniMax делает владелец, пароля у проекта нет.
+  const usable = tokenReady ? free.filter((account) => tokenReady.has(account.id)) : free;
 
   const pick = (tier: PoolTier): T | null =>
-    free.find((account) => tierOf(account) === tier) ?? null;
+    usable.find((account) => tierOf(account) === tier) ?? null;
 
   const four = pick('points_400');
-  if (four) return { account: four, free: summary.free, soon: summary.soon, tier: 'points_400' };
+  if (four) {
+    return { account: four, free: summary.free, soon: summary.soon, tier: 'points_400', reason: null };
+  }
   const thousand = pick('points_1000');
   if (thousand) {
-    return { account: thousand, free: summary.free, soon: summary.soon, tier: 'points_1000' };
+    return {
+      account: thousand,
+      free: summary.free,
+      soon: summary.soon,
+      tier: 'points_1000',
+      reason: null,
+    };
   }
   const zero = pick('points_0');
-  if (zero) return { account: zero, free: summary.free, soon: summary.soon, tier: 'points_0' };
+  if (zero) {
+    return { account: zero, free: summary.free, soon: summary.soon, tier: 'points_0', reason: null };
+  }
   const unverified = pick('unverified');
   if (unverified) {
-    return { account: unverified, free: summary.free, soon: summary.soon, tier: 'unverified' };
+    return {
+      account: unverified,
+      free: summary.free,
+      soon: summary.soon,
+      tier: 'unverified',
+      reason: null,
+    };
   }
-  return { account: null, free: summary.free, soon: summary.soon, tier: null };
+  return {
+    account: null,
+    free: summary.free,
+    soon: summary.soon,
+    tier: null,
+    // Свободные аккаунты есть, но без добытой пары токенов — отдавать нечего.
+    reason: tokenReady && free.length > 0 ? 'no_tokens_ready' : 'no_free_accounts',
+  };
 }
 
 /** Очковый класс аккаунта — по ПОДСКАЗКЕ (то, что покажет и панель). */
@@ -291,7 +333,13 @@ export function explainChoice(account: PoolRow, hint: PoolHint, tier: PoolTier):
 
 /** Сборка ответа: аккаунт + состояние пула. Пустота — честная, а не ошибка. */
 export function buildOffer(
-  picked: { account: PoolRow | null; free: number; soon: number; tier: PoolTier | null },
+  picked: {
+    account: PoolRow | null;
+    free: number;
+    soon: number;
+    tier: PoolTier | null;
+    reason?: 'no_free_accounts' | 'no_tokens_ready' | null;
+  },
   context: {
     project: string;
     today: string;
@@ -301,7 +349,7 @@ export function buildOffer(
   if (!account) {
     return {
       account: null,
-      reason: 'no_free_accounts',
+      reason: picked.reason ?? 'no_free_accounts',
       tier: null,
       recommended: false,
       why: null,

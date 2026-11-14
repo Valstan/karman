@@ -12,7 +12,7 @@ import type { SessionUser } from '@/lib/auth/rbac';
 import { resolveApiToken } from '@/lib/services/secrets/token';
 import { logAudit } from '@/lib/services/secrets/internal';
 import { activateAccount, listAccounts } from '@/lib/services/accounts';
-import { acceptRefreshedPair, handoverTokenPair } from '@/lib/services/account-tokens';
+import { acceptRefreshedPair, handoverTokenPair, tokenReadyAccountIds } from '@/lib/services/account-tokens';
 import { isSpent, moscowToday } from '@/lib/accounts/rotation';
 import { weeklyQuota } from '@/lib/accounts/weekly';
 import {
@@ -208,7 +208,14 @@ export async function issueAccount(
   const caller = callerResult.caller;
 
   const accounts = await listAccounts(caller.owner, now);
-  const picked = pickPoolAccount(accounts, now, filters);
+  // Отдаём только аккаунты, у которых пара токенов уже добыта и её ещё можно отдать:
+  // вход в MiniMax делает владелец (программного логина по паролю у MiniMax нет),
+  // а проект работает с нашей парой — аккаунт без токена ему бесполезен.
+  const tokenReady = await tokenReadyAccountIds();
+  const picked = pickPoolAccount(accounts, now, {
+    ...filters,
+    tokenReadyIds: tokenReady,
+  });
   const today = moscowToday(now);
 
   if (!picked.account) {
@@ -391,6 +398,23 @@ export async function recordActivation(
   }
   const accountId = account.id;
 
+  // Обновлённая пара токенов от проекта принимается **ДО** проверки конфликта.
+  // Refresh у MiniMax одноразовый: если проект прислал пару, а мы её не сохранили
+  // из-за 409 — цепочка умерла и аккаунт выбыл навсегда. Пара важнее записи активации:
+  // сохраняем всегда, а конфликт по активации показываем отдельно.
+  const tokenStored =
+    input.accessToken && input.refreshToken
+      ? await acceptRefreshedPair(
+          caller.owner.id,
+          accountId,
+          {
+            accessToken: input.accessToken,
+            refreshToken: input.refreshToken,
+          },
+          now,
+        )
+      : false;
+
   const [existing] = await db
     .select({
       id: accountsUsage.id,
@@ -520,15 +544,6 @@ export async function recordActivation(
   const index = row?.activationIndex ?? resolution.index;
   const expectedPoints = expectedPrediction.points;
 
-  // Обновлённая пара от проекта: он потратил свой refresh и прислал нам новую цепочку —
-  // сохраняем, чтобы можно было отдать пару снова (refresh одноразовый).
-  const tokenStored =
-    input.accessToken && input.refreshToken
-      ? await acceptRefreshedPair(accountId, {
-          accessToken: input.accessToken,
-          refreshToken: input.refreshToken,
-        }, now)
-      : false;
   // Расхождения — по отдельности: клетка и очки могут разойтись независимо.
   // Это сигнал (независимое показание по клетке), а не ошибка: модель клетки отсюда
   // не меняется.

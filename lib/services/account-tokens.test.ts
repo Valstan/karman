@@ -247,7 +247,7 @@ describe('выдача пары проекту', () => {
     await handoverTokenPair(accountId);
     expect(await handoverTokenPair(accountId)).toBeNull();
 
-    const accepted = await acceptRefreshedPair(accountId, {
+    const accepted = await acceptRefreshedPair(1, accountId, {
       accessToken: 'ACCESS-2',
       refreshToken: 'REFRESH-2',
     });
