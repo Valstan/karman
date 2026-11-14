@@ -801,11 +801,17 @@ GET  /api/minimax/accounts/available[?exclude=67,68][&emails=a@b.c,d@e.f]
 
 POST /api/minimax/activations
      Authorization: Bearer <токен комнаты с правом записи>
-     { account_id, points?, activation_index? }
+     { account_id | email, points?, activation_index?, access_token?, refresh_token? }
      → { account_id, used_on, activation_index, points, points_expected,
          cell_expected, cell_mismatch, points_mismatch, mismatch,
-         source, updated, project }
+         source, updated, token_stored, project }
 ```
+
+**Аккаунт опознаётся по `account_id` ИЛИ по `email`** (просьба Сарафана 14.11: проект
+не должен знать наши внутренние id — иначе учёт рвётся там, где ручка уже не выдаёт
+аккаунт, потому что его клетка отмечена). Если заданы оба поля — они должны указывать на
+один аккаунт, иначе **400**; если не задано ни то, ни другое — **400**. В ответе всегда
+приходит `account_id` — что именно записали.
 
 **Что важно знать про контракт:**
 

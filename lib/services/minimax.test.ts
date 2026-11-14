@@ -282,6 +282,53 @@ describe('пул MiniMax: запись активации', () => {
     expect(result.record.source).toBe('client_index');
   });
 
+  it('email вместо внутреннего id — аккаунт находится по почте', async () => {
+    // Просьба Сарафана (14.11): проект не должен знать наши внутренние id.
+    const accountId = await makeAccount('По почте', 'by-mail@example.test', null, null);
+    await makeCheckIn(accountId, '2026-11-12', 2);
+
+    const result = await recordActivation(
+      ROOM_TOKEN,
+      '127.0.0.1',
+      { accountId: undefined, email: 'BY-MAIL@example.test', points: null, activationIndex: null },
+      NOW,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.record.account_id).toBe(accountId);
+    expect(result.record.used_on).toBe(TODAY);
+  });
+
+  it('id и email на разные аккаунты — 400, а не запись не туда', async () => {
+    const first = await makeAccount('Первый', 'one@example.test', null, null);
+    const second = await makeAccount('Второй', 'two@example.test', null, null);
+    await makeCheckIn(first, '2026-11-12', 2);
+    await makeCheckIn(second, '2026-11-12', 2);
+
+    const result = await recordActivation(
+      ROOM_TOKEN,
+      '127.0.0.1',
+      { accountId: first, email: 'two@example.test', points: null, activationIndex: null },
+      NOW,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.status).toBe(400);
+  });
+
+  it('ни id, ни почты — 400: нечем опознать аккаунт', async () => {
+    await makeAccount('Лишний', 'extra@example.test', null, null);
+    const result = await recordActivation(
+      ROOM_TOKEN,
+      '127.0.0.1',
+      { accountId: undefined, email: undefined, points: null, activationIndex: null },
+      NOW,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.status).toBe(400);
+  });
+
   it('повтор от другого проекта — 409: одна правда об аккаунте в сутки', async () => {
     await makeRoom('gonba', 'GONBA', OTHER_ROOM_TOKEN);
     const accountId = await makeAccount('Гонка', 'race@example.test', null, null);

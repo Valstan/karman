@@ -49,7 +49,8 @@ export async function POST(req: Request) {
   }
 
   const result = await recordActivation(token, ip, {
-    accountId: parsed.data.account_id,
+    accountId: parsed.data.account_id ?? null,
+    email: parsed.data.email ?? null,
     points: parsed.data.points ?? null,
     activationIndex: parsed.data.activation_index ?? null,
     accessToken: parsed.data.access_token ?? null,

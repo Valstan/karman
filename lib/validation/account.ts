@@ -85,17 +85,35 @@ export const projectCreateSchema = z.object({
  * Проекта и даты в теле нет: проект — это токен, кто звал, а дата — московская дата
  * сервера. Клиентский клок не авторитет.
  */
-export const minimaxActivationSchema = z.object({
-  account_id: z.coerce.number().int().positive(),
-  points: z.coerce.number().int().min(0, 'Очки не могут быть отрицательными').max(100_000_000).optional(),
-  activation_index: z.coerce.number().int().min(1, 'Номер активации — от 1 до 7').max(7, 'Номер активации — от 1 до 7').optional(),
-  /**
-   * Обновлённая пара токенов агента: проект потратил свой одноразовый refresh и
-   * присылает новую цепочку — сохраняем, чтобы отдать пару снова.
-   */
-  access_token: z.string().min(1).max(4096).optional(),
-  refresh_token: z.string().min(1).max(4096).optional(),
-});
+/**
+ * Запись активации от проекта (машинный доступ к пулу MiniMax, 13.11).
+ *
+ * - `account_id` — какой аккаунт отработан (внутренний id Кармана);
+ * - `email` — тот же аккаунт, но ПОЧТОЙ. Принимаем и то, и другое: проект не должен
+ *   знать наши внутренние id (Сарафан, 14.11: «примите в /activations email вместо
+ *   account_id — тогда проекту не нужно знать ваши внутренние id, и учёт не рвётся,
+ *   когда аккаунт уже отмечен и ручка его не выдаёт»). Если заданы оба — они должны
+ *   указывать на один аккаунт, иначе 400.
+ * - `points` — фактические очки с панели MiniMax (необязательно: если не прислали,
+ *   считаем по клетке сами);
+ * - `activation_index` — номер клетки, который ПРОЕКТ увидел на панели MiniMax (1..7).
+ *   Это независимое показание: при расхождении с нашим предсказанием оно попадает в
+ *   журнал как истина, а расхождение помечается.
+ * - Обновлённая пара токенов агента: проект потратил свой одноразовый refresh и
+ *   присылает новую цепочку — сохраняем, чтобы отдать пару снова.
+ */
+export const minimaxActivationSchema = z
+  .object({
+    account_id: z.coerce.number().int().positive().optional(),
+    email: z.string().trim().min(3, 'Укажите почту').max(320, 'Слишком длинная почта').optional(),
+    points: z.coerce.number().int().min(0, 'Очки не могут быть отрицательными').max(100_000_000).optional(),
+    activation_index: z.coerce.number().int().min(1, 'Номер активации — от 1 до 7').max(7, 'Номер активации — от 1 до 7').optional(),
+    access_token: z.string().min(1).max(4096).optional(),
+    refresh_token: z.string().min(1).max(4096).optional(),
+  })
+  .refine((value) => value.account_id !== undefined || value.email !== undefined, {
+    message: 'Нужен account_id или email аккаунта',
+  });
 
 export type AccountCreateInput = z.infer<typeof accountCreateSchema>;
 export type AccountUpdateInput = z.infer<typeof accountUpdateSchema>;
