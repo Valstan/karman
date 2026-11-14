@@ -12,7 +12,7 @@ import type { SessionUser } from '@/lib/auth/rbac';
 import { resolveApiToken } from '@/lib/services/secrets/token';
 import { logAudit } from '@/lib/services/secrets/internal';
 import { activateAccount, listAccounts } from '@/lib/services/accounts';
-import { acceptRefreshedPair, handoverTokenPair, tokenReadyAccountIds } from '@/lib/services/account-tokens';
+import { acceptRefreshedPair, handoverAccessToken, tokenReadyAccountIds } from '@/lib/services/account-tokens';
 import { isSpent, moscowToday } from '@/lib/accounts/rotation';
 import { weeklyQuota } from '@/lib/accounts/weekly';
 import {
@@ -245,24 +245,24 @@ export async function issueAccount(
     today,
   });
 
-  // Пара токенов агента — отдаём ОДИН раз (refresh у MiniMax одноразовый). После
-  // отдачи свой refresh мы не крутим; проект присылает обновлённую пару обратно.
-  // Время — то же, что у подбора: протухшую пару (access жил 12 часов) не отдаём.
-  const handover = await handoverTokenPair(account.id, now);
+  // Токен агента — отдаём ТОЛЬКО access (мандат владельца 14.11: «отдавай ему только
+  // по одному токену»). Refresh остаётся у нас: он одноразовый, и второй раз отдать
+  // его проект не должен. Время — то же, что у подбора: протухший access (он жил
+  // 12 часов) не отдаём.
+  const handover = await handoverAccessToken(account.id, now);
   if (handover) {
     offer.access_token = handover.access_token;
-    offer.refresh_token = handover.refresh_token;
     offer.expires_at_ms = handover.expires_at_ms;
   }
 
-  // В аудит — без пары: что за аккаунт, кому, с каким прогнозом очков.
+  // В аудит — без токена: что за аккаунт, кому, с каким прогнозом очков.
   await logAudit(
     caller.roomId,
     caller.tokenId,
     'minimax_account_issued',
     `выдан аккаунт #${account.id} «${account.title}»: класс ${picked.tier ?? '-'}, клетка ${
       offer.account?.activation_index ?? '-'
-    }, очки ${offer.account?.points_next ?? '-'}${handover ? ', пара токенов отдана' : ''}`,
+    }, очки ${offer.account?.points_next ?? '-'}${handover ? ', access отдан' : ''}`,
     ip,
     caller.actor,
   );
