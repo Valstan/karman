@@ -37,6 +37,9 @@ export function MinimaxTokenTool({ progress }: { progress: TokenProgress }) {
   const [state, setState] = useState<FlowState>('idle');
   const [busy, startTransition] = useTransition();
   const [pending, startPending] = useTransition();
+  // Пауза между опросами обмена. Вендер сам задаёт её в `interval` (живая проба:
+  // 3 секунды), а на `slow_down` просит опрашивать реже — тогда отступаем вдвое.
+  const [pollMs, setPollMs] = useState(3000);
 
   // Пока код жив — опрашиваем обмен: MiniMax отвечает «authorization_pending», пока
   // владелец не подтвердил. Как только пара получена — останавливаемся.
@@ -58,11 +61,16 @@ export function MinimaxTokenTool({ progress }: { progress: TokenProgress }) {
           setState('expired');
           toast.error('Код истёк — жмите «Следующий» для нового');
           router.refresh();
+          return;
+        }
+        if (claim.error === 'slow_down') {
+          // Вендер просит опрашивать реже — отступаем (до минуты).
+          setPollMs((prev) => Math.min(prev * 2, 60_000));
         }
       })();
-    }, Math.max(3, flow.interval_seconds) * 1000);
+    }, pollMs);
     return () => clearInterval(timer);
-  }, [flow, state, router]);
+  }, [flow, state, pollMs, router]);
 
   function next() {
     startTransition(async () => {
@@ -75,6 +83,7 @@ export function MinimaxTokenTool({ progress }: { progress: TokenProgress }) {
       const next = result.data;
       setFlow(next);
       setState('waiting');
+      setPollMs(Math.max(3, next.interval_seconds) * 1000);
       toast.info(
         next.resumed
           ? `Продолжаем: аккаунт #${next.account_id} «${next.title}»`
