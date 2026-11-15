@@ -5,15 +5,21 @@ import { Button } from '@/components/ui/button';
 import { MinimaxCountdown, formatAvailableAt } from './minimax-countdown';
 import { MinimaxFormDialog } from './minimax-form-dialog';
 import { ConfirmDialog } from './confirm-dialog';
+import { TOKEN_STATE_LABEL } from './minimax-token-flow';
 import type { ActivateKind } from './minimax-activation';
 import type { AccountListItem, ProjectListItem } from '@/lib/services/accounts';
 
 /**
- * Компактная строка аккаунта: название с почтой, кнопки «Почта»/«Пароль»,
- * «Правка» и корзинка. Под названием — обратный отсчёт до освобождения
- * (04.11: «сколько времени осталось»).
+ * Компактная строка аккаунта: название с почтой, статус токена, кнопки
+ * «Почта»/«Пароль», «Правка» и корзинка. Под названием — обратный отсчёт до
+ * освобождения (04.11: «сколько времени осталось»).
  *
- * Строка израсходованного аккаунта подкрашена красным, свободного — зелёным.
+ * Строка с сожжённым бонусом подкрашена красным, свободного — зелёным.
+ *
+ * Токен аккаунта — в одном месте со всем остальным (заказ владельца 15.11: «пусть
+ * там будет аккаунт мини макса, в котором будут и его активации, его токен, его
+ * почта, его пароль»). Статусов ровно два — «Без токена» и «Токен получен»; если
+ * токена нет, рядом кнопка «Токен»: получить его, не выходя из раздела.
  */
 export function MinimaxAccountRow({
   account,
@@ -23,10 +29,12 @@ export function MinimaxAccountRow({
   onEdit,
   onDelete,
   onOpenWindow,
+  onGetToken,
+  tokenState,
   projects,
 }: {
   account: AccountListItem;
-  /** Аккаунт израсходован (окно 24 ч не истекло) — строка гаснет. */
+  /** Аккаунт с сожжённым бонусом (ночной сброс ещё не наступил) — строка гаснет. */
   spent: boolean;
   /** Клиентские часы; null — показываем серверное значение. */
   now: number | null;
@@ -37,6 +45,10 @@ export function MinimaxAccountRow({
   onDelete: () => void | Promise<void>;
   /** Открыть в отдельном окне поверх вкладок. */
   onOpenWindow?: () => void;
+  /** Получить токен этого аккаунта (device-flow). */
+  onGetToken?: (accountId: number) => void;
+  /** Статус токена аккаунта: «Без токена» или «Токен получен». */
+  tokenState?: 'none' | 'obtained';
   /** Проекты — для смены проекта в правке. */
   projects?: ProjectListItem[];
 }) {
@@ -69,6 +81,10 @@ export function MinimaxAccountRow({
               }`
             : 'сегодня чек-ин уже был — очков сегодня не даст'}
         </div>
+        {/* Токен аккаунта — ровно два статуса (заказ владельца 15.11). */}
+        <div className="text-xs text-muted-foreground">
+          Токен: {tokenState ? TOKEN_STATE_LABEL[tokenState] : '—'}
+        </div>
         {/* Заказ владельца 05.11: по аккаунту — на какой проект он активирован,
             сколько очков ушло и сколько раз его брали. */}
         <div className="text-xs text-muted-foreground">
@@ -95,6 +111,16 @@ export function MinimaxAccountRow({
         >
           <KeyRound className="mr-1 h-4 w-4" /> Пароль
         </Button>
+        {tokenState === 'none' && onGetToken ? (
+          <Button
+            variant="outline"
+            size="sm"
+            title="Получить токен этого аккаунта (вход в MiniMax в браузере)"
+            onClick={() => onGetToken(account.id)}
+          >
+            <KeyRound className="mr-1 h-4 w-4" /> Токен
+          </Button>
+        ) : null}
         {onOpenWindow ? (
           <Button
             variant="outline"

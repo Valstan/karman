@@ -1,8 +1,5 @@
 import { notFound } from 'next/navigation';
-import Link from 'next/link';
-import { KeyRound } from 'lucide-react';
 import { requireUser } from '@/lib/auth/current-user';
-import { Button } from '@/components/ui/button';
 import {
   accountRating,
   apiUsageByDay,
@@ -12,11 +9,17 @@ import {
   projectUsage,
   projectUsageByDay,
 } from '@/lib/services/accounts';
+import { tokenProgress } from '@/lib/services/account-tokens';
 import { MinimaxPanel } from '@/components/app/minimax-panel';
 
 /**
  * «Минимакс» — раздел мультиаккаунта (задача владельца 2026-11-03): аккаунты
  * MiniMax, которыми переключается, пока программирует.
+ *
+ * С 15.11 здесь ВСЁ про MiniMax в одном месте (заказ владельца: «давай все
+ * объединим в одно целое… будет одна страница мини макса»): аккаунты, их
+ * активации, почта, пароль и токен. Отдельной страницы «Токены аккаунтов MiniMax»
+ * больше нет — её адрес ведёт сюда.
  *
  * Раздел ТОЛЬКО владельца: там пароли. Проверка — здесь (не только в меню) и в
  * действиях; отказ — 404, как у раздела секретов. Второй фактор нужен не на
@@ -33,35 +36,27 @@ export default async function MinimaxPage() {
   // Один момент на весь список: иначе «свободен через …» в разных строках
   // считалось бы по разным часам, а список мог бы разъехаться при гидрации.
   const now = new Date();
-  const [accounts, projects, usage, usageByDay, daily, rating, apiUsage] = await Promise.all([
-    listAccounts(user, now),
-    listProjects(user),
-    projectUsage(user),
-    projectUsageByDay(user),
-    dailyUsage(user),
-    accountRating(user),
-    apiUsageByDay(user),
-  ]);
+  const [accounts, projects, usage, usageByDay, daily, rating, apiUsage, tokens] =
+    await Promise.all([
+      listAccounts(user, now),
+      listProjects(user),
+      projectUsage(user),
+      projectUsageByDay(user),
+      dailyUsage(user),
+      accountRating(user),
+      apiUsageByDay(user),
+      tokenProgress(user, now),
+    ]);
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-semibold">Минимакс</h1>
-          <p className="text-sm text-muted-foreground">
-            Аккаунты MiniMax, которыми переключаешься, пока программирует. Копируешь почту или
-            пароль — аккаунт гаснет на 5 часов с момента активации, а активация уходит в
-            статистику выбранного проекта.
-          </p>
-        </div>
-        {/* Получение токенов аккаунтов — отдельный инструмент (заказ владельца 14.11):
-            кнопка «Следующий» сама открывает подтверждение MiniMax, кладёт почту в буфер
-            и показывает пароль. Ссылка ведёт именно туда, а не в «активацию». */}
-        <Button asChild variant="outline" size="sm">
-          <Link href="/minimax/tokens">
-            <KeyRound className="mr-1 h-4 w-4" /> Получить токены аккаунтов
-          </Link>
-        </Button>
+      <div>
+        <h1 className="text-2xl font-semibold">Минимакс</h1>
+        <p className="text-sm text-muted-foreground">
+          Аккаунты MiniMax в одном месте: почта, пароль, активации и токен. Аккаунт,
+          у которого суточный бонус ещё сожжён (ночной сброс MiniMax не наступил),
+          проектам не выдаётся — очки у него сегодня уже списаны.
+        </p>
       </div>
 
       <MinimaxPanel
@@ -72,6 +67,7 @@ export default async function MinimaxPage() {
         daily={daily}
         rating={rating}
         apiUsage={apiUsage}
+        tokenProgress={tokens}
         serverNow={now.toISOString()}
       />
     </div>

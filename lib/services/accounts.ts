@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, asc, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { accountsAccount, accountsProject, accountsUsage } from '@/lib/db/schema';
 import { ownership, type SessionUser } from '@/lib/auth/rbac';
@@ -13,9 +13,10 @@ import {
   type DailyUsage,
 } from '@/lib/accounts/stats';
 import {
-  ACTIVATION_WINDOW_MS,
   aggregateUsage,
   availableAt,
+  dailyResetAfter,
+  freeBefore,
   isSpent,
   moscowToday,
   sortAccounts,
@@ -214,7 +215,9 @@ export async function listAccounts(user: SessionUser, now: Date = new Date()): P
       weekCheckedInToday: state?.checkedInToday ?? false,
       // Очки следующей активации и расстояние до бонусной клетки — по ним
       // выбирается, кого активировать (заказ владельца 11.11).
-      weekPointsNext: state?.week.pointsToday ?? 0,
+      // Бонус сожжён (ночной сброс после активации ещё не наступил) — очков
+      // сегодня не будет, сколько бы клетка ни обещала.
+      weekPointsNext: isSpent(row, now) ? 0 : (state?.week.pointsToday ?? 0),
       weekDaysToBonus: state?.week.daysToBonus ?? WEEKLY_ACTIVATION_LIMIT,
       weekStreak: state?.week.streak ?? 0,
     };
@@ -259,7 +262,9 @@ export async function listAccount(
       weekUsed: state?.week.used ?? 0,
       weekExhausted: state?.week.exhausted ?? false,
       weekCheckedInToday: state?.checkedInToday ?? false,
-      weekPointsNext: state?.week.pointsToday ?? 0,
+      // Бонус сожжён (ночной сброс после активации ещё не наступил) — очков
+      // сегодня не будет, сколько бы клетка ни обещала.
+      weekPointsNext: isSpent({ usedAt: row.usedAt }, now) ? 0 : (state?.week.pointsToday ?? 0),
       weekDaysToBonus: state?.week.daysToBonus ?? WEEKLY_ACTIVATION_LIMIT,
       weekStreak: state?.week.streak ?? 0,
     },
@@ -349,9 +354,9 @@ export async function deleteAccount(user: SessionUser, accountId: number): Promi
 }
 
 /**
- * Активация аккаунта: гасит его на СВОИ 10 ЧАСОВ — от момента активации
- * (заказ владельца 07.11 — 6 часов, 08.11 — 10; раньше было 24 часа); до
- * истечения окна его не активируют заново.
+ * Активация аккаунта: гасит его ДО НОЧНОГО СБРОСА у MiniMax — суточный
+ * бонус сожжён, и до сброса аккаунт ни проекту не отдаётся, ни очков не даёт
+ * (мандат владельца 15.11; подробности — `lib/accounts/rotation.ts`).
  *
  * Вызывается ТОЛЬКО явной кнопкой «Активировать» (заказ владельца 05.11):
  * копирование почты или пароля аккаунт не гасит и в журнал не пишет.
@@ -379,6 +384,7 @@ export async function activateAccount(
   user: SessionUser,
   input: AccountActivateInput,
   now: Date = new Date(),
+  options?: { onlyIfFree?: boolean },
 ): Promise<boolean> {
   if ((await ownedAccount(user, input.id)) === null) return false;
 
@@ -411,13 +417,16 @@ export async function activateAccount(
     if (!account) return;
 
     // Окно ещё открыто → продолжение той же сессии: окно не сдвигается, строка
-    // журнала та же. Окно истекло (или активации не было) → новая сессия.
+    // Сессия ещё открыта → продолжение той же сессии: окно не сдвигается,
+    // строка журнала та же. Сессия истекла (или активации не было) → новая.
     const sessionOpen =
       account.usedAt !== null &&
-      new Date(account.usedAt).getTime() + ACTIVATION_WINDOW_MS > now.getTime();
+      dailyResetAfter(new Date(account.usedAt)).getTime() > now.getTime();
+    // Сожжён ли суточный бонус: пока сессия открыта — сброс не наступил, значит
+    // повторная активация очков не даёт (чек-ин в сутки один).
+    const burned = sessionOpen;
     const sessionUsedOn = sessionOpen ? account.usedOn! : moscowToday(now);
     const sessionUsedAt = sessionOpen ? account.usedAt! : usedAt;
-
     const [existing] = await tx
       .select({
         id: accountsUsage.id,
@@ -470,7 +479,7 @@ export async function activateAccount(
         ? pointsForIndex(index)
         : (tokens ??
           existing?.tokens ??
-          (index !== null ? (checkedInToday ? 0 : pointsForIndex(index)) : 0));
+          (index !== null ? (burned || checkedInToday ? 0 : pointsForIndex(index)) : 0));
     const rowIndex =
       existing && input.activationIndex === undefined ? existing.activationIndex : index;
     // projectId: undefined — «проект не меняем»; null — «проекта нет»;
@@ -493,7 +502,11 @@ export async function activateAccount(
     const projectPatch =
       input.projectId === undefined || !sameSource ? undefined : projectId;
 
-    await tx
+    // Захват аккаунта. При `onlyIfFree` обновление идёт ТОЛЬКО если аккаунт
+    // ещё свободен (бонус не сожжён): гонка двух проектов за один аккаунт решена
+    // на уровне БД — второй получит 0 обновлённых строк и возьмёт другой.
+    const cutoff = freeBefore(now).toISOString();
+    const updated = await tx
       .update(accountsAccount)
       .set({
         usedOn: sessionUsedOn,
@@ -502,7 +515,16 @@ export async function activateAccount(
         ...(projectPatch !== undefined ? { usedProjectId: projectPatch } : {}),
         updatedAt: usedAt,
       })
-      .where(eq(accountsAccount.id, input.id));
+      .where(
+        options?.onlyIfFree
+          ? and(
+              eq(accountsAccount.id, input.id),
+              or(isNull(accountsAccount.usedAt), lt(accountsAccount.usedAt, cutoff)),
+            )
+          : eq(accountsAccount.id, input.id),
+      )
+      .returning({ id: accountsAccount.id });
+    if (updated.length === 0) return false;
 
     if (existing) {
       await tx

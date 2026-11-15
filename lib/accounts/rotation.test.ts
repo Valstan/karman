@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   ACTIVATED_PREVIEW_LIMIT,
-  ACTIVATION_WINDOW_HOURS,
-  ACTIVATION_WINDOW_MS,
+  DAILY_RESET_HOURS,
   SOON_RELEASE_WINDOW_MS,
   accountPoolSummary,
   aggregateUsage,
   availableAt,
+  dailyResetAfter,
   isSpent,
   moscowToday,
   sortAccounts,
@@ -35,7 +35,7 @@ function row(over: Partial<AccountRotationRow> & { id: number }): AccountRotatio
   };
 }
 
-describe('мультиаккаунт: окно активации — 5 часов с момента', () => {
+describe('мультиаккаунт: ночная граница вместо суток', () => {
   it('московская дата — по UTC+3, а не по времени машины', () => {
     // 2026-11-02T21:30Z — это уже 3 ноября в Москве (UTC+3).
     expect(moscowToday(new Date('2026-11-02T21:30:00Z'))).toBe('2026-11-03');
@@ -43,62 +43,63 @@ describe('мультиаккаунт: окно активации — 5 часо
     expect(moscowToday(new Date('2026-11-02T20:59:00Z'))).toBe('2026-11-02');
   });
 
-  it('окно ровно 5 часов со момента активации', () => {
-    // Решение владельца 11.11: 5 часов — ровно столько же длится окно расхода у
-    // MiniMax (5-часовое, «all except image and video models»), поэтому наше
-    // «занят» значит то же, что у них: аккаунт снова готов к работе через пять
-    // часов после первого использования. Ограничителем недели остаётся недельная
-    // квота в 7 активаций (lib/accounts/weekly.ts).
-    expect(ACTIVATION_WINDOW_HOURS).toBe(5);
-    expect(ACTIVATION_WINDOW_MS).toBe(5 * 60 * 60 * 1000);
+  it('часы сброса: полночь и три ночи — берём более поздний', () => {
+    // Мандат владельца 15.11: «может в 12 ночи, может быть в 3 ночи, я не знаю
+    // точно». Ждать дольше безопасно (бонус точно обновился и не потрачен), ждать
+    // меньше — нет.
+    expect(DAILY_RESET_HOURS).toEqual([0, 3]);
   });
 
-  it('через 4 часа 59 минут аккаунт ещё израсходован', () => {
+  it('активация днём свободна с 03:00 следующих суток', () => {
+    // 2026-11-03T10:00Z = 13:00 МСК 3 ноября. Ближайшие сбросы: полночь 4-го
+    // (2026-11-03T21:00Z) и 03:00 4-го (2026-11-04T00:00Z). Берём поздний.
     const usedAt = '2026-11-03T10:00:00Z';
-    const now = new Date(new Date(usedAt).getTime() + ACTIVATION_WINDOW_MS - 60_000);
-    expect(isSpent({ usedAt }, now)).toBe(true);
+    expect(dailyResetAfter(new Date(usedAt)).toISOString()).toBe('2026-11-04T00:00:00.000Z');
   });
 
-  it('на исходе 5 часов аккаунт снова свободен', () => {
-    const usedAt = '2026-11-03T10:00:00Z';
-    const now = new Date(new Date(usedAt).getTime() + ACTIVATION_WINDOW_MS);
-    expect(isSpent({ usedAt }, now)).toBe(false);
+  it('активация в 23:50 свободна через три часа — ночью, а не через сутки', () => {
+    // Владелец: «работаешь-работаешь на аккаунте и бац в 12 часов смотришь — а у
+    // него снова можно очки активировать». 23:50 МСК = 20:50Z.
+    const usedAt = '2026-11-03T20:50:00Z';
+    expect(dailyResetAfter(new Date(usedAt)).toISOString()).toBe('2026-11-04T00:00:00.000Z');
+    // За два часа до сброса — ещё сожжён.
+    expect(isSpent({ usedAt }, new Date('2026-11-03T22:50:00Z'))).toBe(true);
+    // А в 03:20 МСК — уже свободен.
+    expect(isSpent({ usedAt }, new Date('2026-11-04T00:20:00Z'))).toBe(false);
+  });
+
+  it('неопределённая полоса 00:00–03:00 ждёт целые сутки', () => {
+    // Активация в 01:50 МСК 4 ноября = 2026-11-03T22:50Z. Если сброс в полночь —
+    // бонус обновится только в полночь 5-го; если в три ночи — в 03:00 4-го. Берём
+    // более позднее, чтобы не отдать аккаунт с несброшенным бонусом.
+    const usedAt = '2026-11-03T22:50:00Z';
+    expect(dailyResetAfter(new Date(usedAt)).toISOString()).toBe('2026-11-04T21:00:00.000Z');
   });
 
   it('не использованный аккаунт свободен', () => {
     expect(isSpent({ usedAt: null }, new Date('2026-11-03T10:00:00Z'))).toBe(false);
   });
 
-  it('своё окно у каждого аккаунта: активированный в 23:50 живёт до 09:50', () => {
-    // Активация в 23:50 МСК = 20:50Z.
-    const usedAt = '2026-11-03T20:50:00Z';
-    // Через два часа (уже 01:50 МСК следующего дня) — ещё израсходован.
-    expect(isSpent({ usedAt }, new Date('2026-11-03T22:50:00Z'))).toBe(true);
-    // Через 10 часов — свободен.
-    expect(isSpent({ usedAt }, new Date('2026-11-04T06:50:00Z'))).toBe(false);
-  });
-
   it('availableAt — момент освобождения аккаунта', () => {
-    // Окно 5 часов — столько же, сколько окно расхода у MiniMax.
-    expect(availableAt('2026-11-03T10:00:00Z')).toBe('2026-11-03T15:00:00.000Z');
+    expect(availableAt('2026-11-03T10:00:00Z')).toBe('2026-11-04T00:00:00.000Z');
     expect(availableAt(null)).toBeNull();
   });
 });
 
 describe('мультиаккаунт: сводка по запасу (заказ владельца 06.11)', () => {
-  const now = new Date('2026-11-03T12:00:00Z');
+  const now = new Date('2026-11-03T23:50:00Z');
 
   it('свободные сейчас и освобождающиеся в ближайшие полчаса', () => {
     const summary = accountPoolSummary(
       [
         // Никогда не активированный — свободен.
         row({ id: 1 }),
-        // Окно истекло — свободен.
+        // Сброс уже прошёл — свободен.
         row({ id: 2, usedOn: '2026-11-01', usedAt: '2026-11-01T06:00:00Z' }),
-        // Освободится через 10 минут (окно простоя 5 ч).
-        row({ id: 3, usedOn: '2026-11-03', usedAt: '2026-11-03T07:10:00Z' }),
-        // Освободится через 4 часа — это уже не «скоро».
-        row({ id: 4, usedOn: '2026-11-03', usedAt: '2026-11-03T11:00:00Z' }),
+        // Освободится через 10 минут (сброс в 03:00 МСК 4-го).
+        row({ id: 3, usedOn: '2026-11-03', usedAt: '2026-11-03T20:00:00Z' }),
+        // Неопределённая полоса 00:00–03:00 — ждёт целые сутки, «скоро» не значит.
+        row({ id: 4, usedOn: '2026-11-04', usedAt: '2026-11-03T23:00:00Z' }),
       ],
       now,
     );
@@ -107,13 +108,21 @@ describe('мультиаккаунт: сводка по запасу (заказ
 
   it('полчаса — граница «скоро»', () => {
     expect(SOON_RELEASE_WINDOW_MS).toBe(30 * 60 * 1000);
+    // Активация в 23:00 МСК 3 ноября — сброс в 03:00 МСК 4-го.
+    const usedAt = '2026-11-03T20:00:00Z';
+    const release = new Date('2026-11-04T00:00:00Z');
     // Ровно за полчаса до освобождения — ещё «скоро».
-    const usedAt = '2026-11-02T11:30:00Z';
     const summary = accountPoolSummary(
-      [row({ id: 1, usedOn: '2026-11-02', usedAt })],
-      new Date(new Date(usedAt).getTime() + ACTIVATION_WINDOW_MS - SOON_RELEASE_WINDOW_MS),
+      [row({ id: 1, usedOn: '2026-11-03', usedAt })],
+      new Date(release.getTime() - SOON_RELEASE_WINDOW_MS),
     );
     expect(summary).toEqual({ free: 0, soon: 1 });
+    // На минуту раньше — уже не «скоро».
+    const earlier = accountPoolSummary(
+      [row({ id: 1, usedOn: '2026-11-03', usedAt })],
+      new Date(release.getTime() - SOON_RELEASE_WINDOW_MS - 60_000),
+    );
+    expect(earlier).toEqual({ free: 0, soon: 0 });
   });
 
   it('пустой список — ноль и ноль', () => {

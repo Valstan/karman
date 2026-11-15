@@ -32,12 +32,18 @@ export async function tokenProgressAction(): Promise<ActionResult<TokenProgress>
   return { ok: true, data: progress };
 }
 
-/** «Следующий» — завести device-flow для следующего аккаунта без токена. */
-export async function nextTokenFlowAction(): Promise<ActionResult<NextTokenFlow>> {
+/**
+ * «Следующий» — завести device-flow для аккаунта БЕЗ токена.
+ *
+ * `accountId` — начать для КОНКРЕТНОГО аккаунта: кнопка «Получить токен» в строке
+ * и немедленная добыча сразу после добавления аккаунта (заказ владельца 15.11:
+ * «пусть сразу же при добавлении этого аккаунта в карман сразу же получается токен»).
+ */
+export async function nextTokenFlowAction(accountId?: number): Promise<ActionResult<NextTokenFlow>> {
   const user = await currentUserOrNull();
   if (!user) return { ok: false, error: 'Требуется авторизация' };
   if (!user.isSuperuser) return { ok: false, error: 'Раздел доступен только владельцу' };
-  const started = await startNextTokenFlow(user);
+  const started = await startNextTokenFlow(user, new Date(), accountId);
   if (!started.ok) {
     if (started.error === 'complete') {
       return { ok: false, error: 'Все токены получены — процесс завершён' };

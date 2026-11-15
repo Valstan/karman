@@ -8,32 +8,49 @@ import { listAccounts } from '@/lib/services/accounts';
 import {
   exchangeDeviceCode,
   pkcePair,
+  refreshAccessToken,
   startDeviceFlow,
   verificationLink,
   type DeviceFlowError,
 } from '@/lib/minimax/oauth';
 
 /**
- * Токены аккаунтов MiniMax: добыча через OAuth device-flow и выдача проекту.
+ * Токены аккаунтов MiniMax: добыча через OAuth device-flow, оживление по refresh
+ * и выдача проекту.
  *
  * ЗАКАЗ ВЛАДЕЛЬЦА (14.11): «напишешь скрипт-программу с веб-интерфейсом на кармане,
  * чтобы я туда зашел и просто щелкал кнопку "Следующий" и ты давал ссылку для
  * авторизации, я проходил авторизацию и скрипт забирал токен и клал его в базу для
- * этого аккаунта и так по кругу пока все аккаунты не пройду и не получу токены, тоесть
- * скрипт должен видеть что если у акаунта уже есть токен, то его пропустить, и если
- * токены есть у всех аккаунтов то остановить процесс получение токенов и сообщить
- * оператору что все токены получены».
+ * этого аккаунта и так по кругу пока все аккаунты не пройду и не получу токены».
+ *
+ * ## Что такое «протухший» токен (15.11)
+ *
+ * Владелец: «никаких пар не надо делать, ты отдаешь по одному токену за один
+ * запрос… забудь про пары токенов, мы по две штуки нигде не используем и никому не
+ * даём. И оживи те токены которые названы протухшими, токены не протухли, протухло
+ * их использование на эти сутки, завтра их можно снова использовать… на этой
+ * странице может быть только два статуса — "Без токена" и "Токен получен", все».
+ *
+ * Значит:
+ *
+ * - **наружу уходит только access** — по одному за запрос; refresh остаётся у нас;
+ * - **access протухает через 12 часов** (вендорский `expires_in = 43 200`), но
+ *   это НЕ «нужен новый вход»: refresh одноразовый, однако вместе с новым access
+ *   вендор отдаёт и новый refresh — цепочка продлевается (живая проба 15.11:
+ *   HTTP 200, пришли оба токена). Значит протухший access мы оживляем САМИ
+ *   (`ensureLiveAccessToken`);
+ * - **в интерфейсе статуса ровно два**: «Без токена» и «Токен получен». «Пара
+ *   протухла — нужен новый вход» было нашей выдумкой, и она пугала владельца.
  *
  * ## Правило одноразового refresh
  *
- * Refresh-токен у MiniMax **одноразовый**: повторное использование вендер считает
- * злоупотреблением и отзывает цепочку (рецепт Сарафана, 14.11). Значит:
+ * Refresh-токен у MiniMax одноразовый: повторное использование вендор считает
+ * злоупотреблением и отзывает цепочку. Поэтому:
  *
  * - добытая пара хранится шифротекстом (ключ мастер-ключа vault, AAD — id аккаунта);
- * - проект получает пару **один раз** (отдача помечается `handed_over_at`), и после
- *   этого мы **не крутим** свой refresh никогда;
- * - если проект прислал обновлённую пару (он её обновил, а мы сохранили) — можно
- *   отдавать снова: приём пары обратно снимает отметку отдачи.
+ * - наружу refresh не уходит НИКОГДА — цепочка наша, и продлеваем её мы;
+ * - при оживлении refresh ПРОДЛЕВАЕТСЯ: вендор отдаёт новый refresh вместе с новым
+ *   access, и мы кладём в базу новую пару целиком (старая цепочка оборвана).
  */
 
 /** AAD шифротекста пары токенов — привязывает блок к аккаунту. */
@@ -47,13 +64,15 @@ export function accountTokenFlowAad(flowId: number): string {
 }
 
 /**
- * Состояние аккаунта в процессе добычи токенов.
+ * Состояние аккаунта по токену — ровно ДВА, как просил владелец (15.11).
  *
- * `expired` — access истёк (он живёт 12 часов): токен мёртв, проект отдавать ему
- * нечего, аккаунту нужен новый вход. Отдельно от `handed_over`: тот access жив, просто
- * уже у проекта.
+ * `obtained` — пара есть (access жив или протух и оживляем по refresh);
+ * `none` — пары нет, аккаунту нужен device-flow (вход владельца в MiniMax).
+ *
+ * Отдельно живёт флаг `pending` — идёт подтверждение кода. Это не «статус
+ * токена», а состояние процесса, поэтому в колонке статуса он не показывается.
  */
-export type AccountTokenState = 'none' | 'pending' | 'stored' | 'handed_over' | 'expired';
+export type AccountTokenState = 'none' | 'obtained';
 
 export type AccountTokenRow = {
   account_id: number;
@@ -62,28 +81,30 @@ export type AccountTokenRow = {
   state: AccountTokenState;
   /** Срок жизни access-токена (ISO) — когда он истечёт. */
   expires_at: string | null;
-  /** Когда пару отдали проекту (ISO) или null. */
+  /** Когда access последний раз отдали проекту (ISO) или null. */
   handed_over_at: string | null;
   /** Москва-дата последней активации аккаунта или null. */
   used_on: string | null;
-  /** Годится ли пара проекту сегодня: очки не сожжены, аккаунт не занят, неделя не кончилась. */
+  /** Годится ли аккаунт сегодня: бонус не сожжён, неделя не кончилась. */
   today_status: TokenTodayStatus;
   /** Очки, которые даст следующая активация этого аккаунта (400 или 1000). */
   points_next: number;
+  /** Идёт ли по аккаунту device-flow (владелец ещё не подтвердил код). */
+  pending: boolean;
 };
 
 /**
  * Состояние аккаунта «на сегодня» — важно для добычи токенов.
  *
- * Пара, добытая владельцем для аккаунта, чьи очки сегодня уже сожжены, проекту
- * бесполезна: активировать его сегодня уже нельзя, а пара живёт 12 часов и завтра
- * сгорит. Поэтому «Следующий» сначала берёт аккаунты, у которых очки целы.
+ * `busy` — суточный бонус сожжён: ночной сброс у MiniMax после активации ещё не
+ * наступил (мандат владельца 15.11). Такая пара сегодня проекту не нужна: бонус
+ * до утра не восстановится.
  */
 export type TokenTodayStatus = 'free' | 'burned' | 'busy' | 'week_exhausted';
 
 export type TokenProgress = {
   total: number;
-  /** Аккаунтов с добытой парой (включая уже отданную). */
+  /** Аккаунтов с добытой парой. */
   withToken: number;
   /** Осталось добыть. */
   remaining: number;
@@ -136,35 +157,25 @@ export async function tokenProgress(
 
   const rows: AccountTokenRow[] = accounts.map((account) => {
     const token = tokenBy.get(account.id);
-    // Access живёт 12 часов. Протухший — мёртвый: проект получил бы битый вход, а мы
-    // продлить его не можем (refresh одноразовый и остаётся у нас). Значит аккаунту
-    // нужен новый вход — и неважно, отдавали мы access или нет.
-    const tokenDead =
-      token !== undefined && new Date(token.expiresAt).getTime() <= now.getTime();
-    const state: AccountTokenState = token
-      ? tokenDead
-        ? 'expired'
-        : token.handedOverAt
-          ? 'handed_over'
-          : 'stored'
-      : pendingBy.has(account.id)
-        ? 'pending'
-        : 'none';
     return {
       account_id: account.id,
       title: account.title,
       email: account.email,
-      state,
+      // Статусов ровно два (владелец, 15.11): пара есть — «Токен получен»,
+      // пары нет — «Без токена». Протухший access — не «нужен новый вход»:
+      // мы оживляем его по refresh (см. ensureLiveAccessToken).
+      state: token ? 'obtained' : 'none',
       expires_at: token ? token.expiresAt : null,
       handed_over_at: token?.handedOverAt ?? null,
       used_on: account.usedOn,
       today_status: todayStatus(account),
       points_next: account.weekPointsNext,
+      pending: pendingBy.has(account.id),
     };
   });
 
-  const withToken = rows.filter((row) => row.state === 'stored' || row.state === 'handed_over').length;
-  const pending = rows.filter((row) => row.state === 'pending').length;
+  const withToken = rows.filter((row) => row.state === 'obtained').length;
+  const pending = rows.filter((row) => row.pending).length;
 
   return {
     total: rows.length,
@@ -198,8 +209,8 @@ export type NextTokenFlow = {
 /**
  * Состояние аккаунта «на сегодня» для добычи токенов.
  *
- * `burned` — очки за сегодня уже сожжены (чек-ин был): пара такому аккаунту
- * сегодня не нужна, а за завтра она всё равно сгорит (access живёт 12 часов).
+ * `busy` — суточный бонус сожжён (ночной сброс ещё не наступил): пара такому
+ * аккаунту сегодня не нужна, бонус до утра не восстановится.
  */
 function todayStatus(account: {
   weekCheckedInToday: boolean;
@@ -207,8 +218,8 @@ function todayStatus(account: {
   weekExhausted: boolean;
 }): TokenTodayStatus {
   if (account.weekExhausted) return 'week_exhausted';
-  if (account.weekCheckedInToday) return 'burned';
   if (account.spent) return 'busy';
+  if (account.weekCheckedInToday) return 'burned';
   return 'free';
 }
 
@@ -220,18 +231,21 @@ function todayStatus(account: {
  * означало бы оставлять висящие коды. Аккаунты с уже добытым токеном пропускаются
  * (заказ владельца: «если у аккаунта уже есть токен, то его пропустить»).
  *
- * **Порядок выбора — сначала те, у кого очки сегодня ещё целы.** Добыча пары стоит
- * владельцу времени (device-flow, ~2 минуты на аккаунт), и пара живёт 12 часов, а
- * у аккаунта, отмеченного сегодня, очки уже сожжены — такая пара проекту не
- * пригодится никогда. Если таких аккаунтов не осталось — берём любой (владелец
- * идёт по кругу до конца, как и просил).
+ * **Порядок выбора — сначала те, у кого бонус сегодня ещё целы.** Добыча пары стоит
+ * владельцу времени (device-flow, ~2 минуты на аккаунт), а у аккаунта с сожжённым
+ * бонусом пара сегодня не пригодится никогда. Если таких аккаунтов не осталось —
+ * берём любой (владелец идёт по кругу до конца, как и просил).
+ *
+ * `accountId` — начать flow для КОНКРЕТНОГО аккаунта (кнопка «Получить токен» в
+ * строке и немедленная добыча после добавления аккаунта).
  */
 export async function startNextTokenFlow(
   user: SessionUser,
   now: Date = new Date(),
+  accountId?: number,
 ): Promise<
   | { ok: true; flow: NextTokenFlow }
-  | { ok: false; error: 'complete' | 'oauth_failed'; message?: string }
+  | { ok: false; error: 'complete' | 'oauth_failed' | 'not_found'; message?: string }
 > {
   const progress = await tokenProgress(user, now);
 
@@ -255,6 +269,48 @@ export async function startNextTokenFlow(
     .orderBy(asc(accountTokenFlow.id))
     .limit(1);
   const pendingFlow = open[0];
+
+  // Конкретный аккаунт: висящий flow по ДРУГОМУ аккаунту — отменяем (владелец
+  // выбрал другой), иначе он просто продолжится.
+  if (accountId !== undefined) {
+    const target = progress.rows.find((row) => row.account_id === accountId);
+    if (!target) return { ok: false, error: 'not_found' };
+    if (pendingFlow && pendingFlow.accountId !== accountId) {
+      await db
+        .update(accountTokenFlow)
+        .set({ state: 'expired', updatedAt: now.toISOString() })
+        .where(eq(accountTokenFlow.id, pendingFlow.id));
+    } else if (pendingFlow) {
+      const expiresAt = new Date(pendingFlow.expiresAt);
+      if (expiresAt.getTime() > now.getTime()) {
+        return {
+          ok: true,
+          flow: {
+            flow_id: pendingFlow.id,
+            account_id: pendingFlow.accountId,
+            title: target.title,
+            email: target.email,
+            user_code: pendingFlow.userCode,
+            verification_link: pendingFlow.verificationUriComplete
+              ? pendingFlow.verificationUriComplete
+              : verificationLink(pendingFlow.verificationUri, pendingFlow.userCode),
+            expires_at: expiresAt.toISOString(),
+            interval_seconds: 5,
+            resumed: true,
+          },
+        };
+      }
+      await db
+        .update(accountTokenFlow)
+        .set({ state: 'expired', updatedAt: now.toISOString() })
+        .where(eq(accountTokenFlow.id, pendingFlow.id));
+    }
+    return startFlowFor(user, now, {
+      account_id: target.account_id,
+      title: target.title,
+      email: target.email,
+    });
+  }
 
   if (pendingFlow) {
     const expiresAt = new Date(pendingFlow.expiresAt);
@@ -284,13 +340,12 @@ export async function startNextTokenFlow(
       .where(eq(accountTokenFlow.id, pendingFlow.id));
   }
 
-  const candidates = progress.rows.filter(
-    (row) => row.state === 'none' || row.state === 'expired',
-  );
+  // Кандидаты — аккаунты БЕЗ токена. Протухшая пара сюда не идёт: её мы оживляем
+  // по refresh, новый вход владельцу не нужен (заказ 15.11).
+  const candidates = progress.rows.filter((row) => row.state === 'none');
   // Порядок — по мандату владельца 14.11: **Сарафану четырехсотовые аккаунты в первую
   // очередь** (тысячные владелец оставляет себе под программирование), и очки у них
-  // сегодня ещё не сожжены. Дальше — любые свободные, в конце — протухшие.
-  // «expired» — access умер и его никто не забрал: аккаунт надо добыть заново.
+  // сегодня ещё не сожжены. Дальше — любые свободные.
   const next =
     candidates.find((row) => row.today_status === 'free' && row.points_next === 400) ??
     candidates.find((row) => row.today_status === 'free') ??
@@ -299,7 +354,22 @@ export async function startNextTokenFlow(
   if (!next) {
     return { ok: false, error: 'complete' };
   }
+  return startFlowFor(user, now, {
+    account_id: next.account_id,
+    title: next.title,
+    email: next.email,
+  });
+}
 
+/** Завести device-flow для конкретного аккаунта и вернуть данные для подтверждения. */
+async function startFlowFor(
+  user: SessionUser,
+  now: Date,
+  account: { account_id: number; title: string; email: string },
+): Promise<
+  | { ok: true; flow: NextTokenFlow }
+  | { ok: false; error: 'oauth_failed'; message?: string }
+> {
   const { verifier, challenge } = pkcePair();
   const started = await startDeviceFlow(challenge);
   if (!started.ok) {
@@ -311,7 +381,7 @@ export async function startNextTokenFlow(
     .insert(accountTokenFlow)
     .values({
       userId: user.id,
-      accountId: next.account_id,
+      accountId: account.account_id,
       deviceCode: '',
       deviceCodeIv: '',
       deviceCodeTag: '',
@@ -348,9 +418,9 @@ export async function startNextTokenFlow(
     ok: true,
     flow: {
       flow_id: flowId,
-      account_id: next.account_id,
-      title: next.title,
-      email: next.email,
+      account_id: account.account_id,
+      title: account.title,
+      email: account.email,
       user_code: started.data.userCode,
       verification_link: started.data.verificationUriComplete
         ? started.data.verificationUriComplete
@@ -473,7 +543,7 @@ export async function claimToken(
 }
 
 /**
- * Что отдаём проекту: **только access** (мандат владельца 14.11 — пара целиком не
+ * Что отдаём проекту: **только access** (мандат владельца 15.11 — пара целиком не
  * отдаётся). Refresh остаётся у нас.
  */
 export type AccessHandover = {
@@ -482,20 +552,22 @@ export type AccessHandover = {
 };
 
 /**
- * Access-токен, который отдаём проекту, — **один раз** за жизнь пары.
+ * Живой access-токен аккаунта — с оживлением по refresh.
  *
- * **Мандат владельца 14.11:** пара целиком не отдаётся — «отдавай ему только по одному
- * токену». Поэтому наружу уходит **только access**; refresh (одноразовый) остаётся у
- * нас, и второй раз отдать его проект не должен.
+ * Access живёт 12 часов (вендорский `expires_in = 43 200`). Протухший access — не
+ * «нужен новый вход»: refresh одноразовый, но вместе с новым access вендор отдаёт и
+ * новый refresh, то есть цепочка продлевается (живая проба 15.11: HTTP 200, оба
+ * токена). Поэтому мы обновляем пару сами и кладём в базу новую целиком.
  *
- * Отдача помечается `handed_over_at`: после этого мы свой refresh НЕ крутим (refresh
- * одноразовый, цепочка одна). Если проект пришлёт обновлённую пару обратно (он её
- * обновил), приём снимает отметку — и отдать можно снова.
+ * Возвращает null, если:
  *
- * **Протухший access не отдаём:** он живёт 12 часов, а продлить его без refresh мы не
- * можем — отдать мёртвый токен значит отдать проекту сломанный вход.
+ * - пары нет вовсе (аккаунту нужен device-flow);
+ * - refresh не сработал и цепочка оборвана — тогда аккаунту нужен новый вход, и мы
+ *   говорим об этом честно (в интерфейсе это «Без токена»);
+ * - access жив, но его уже отдали: тот же вход двоим не нужен, баланс у аккаунта
+ *   общий.
  */
-export async function handoverAccessToken(
+export async function ensureLiveAccessToken(
   accountId: number,
   now: Date = new Date(),
 ): Promise<AccessHandover | null> {
@@ -504,56 +576,95 @@ export async function handoverAccessToken(
     .from(accountToken)
     .where(eq(accountToken.accountId, accountId))
     .limit(1);
-  if (!row || row.handedOverAt) return null;
-  if (new Date(row.expiresAt).getTime() <= now.getTime()) return null;
+  if (!row) return null;
 
-  const payload = JSON.parse(
-    decryptSecret(
-      { ciphertext: row.ciphertext, iv: row.iv, authTag: row.authTag },
-      accountTokenAad(accountId),
-    ),
-  ) as { access?: string; refresh?: string };
-  if (!payload.access || !payload.refresh) return null;
+  let payload: { access?: string; refresh?: string };
+  try {
+    payload = JSON.parse(
+      decryptSecret(
+        { ciphertext: row.ciphertext, iv: row.iv, authTag: row.authTag },
+        accountTokenAad(accountId),
+      ),
+    ) as { access?: string; refresh?: string };
+  } catch {
+    // Пара не читается (повреждена или сменился мастер-ключ). Аккаунту нужен новый
+    // вход, но данные мы не трогаем: молча переписать их нельзя.
+    return null;
+  }
+  const access = payload.access;
+  const refresh = payload.refresh;
+  if (!access || !refresh) return null;
 
-  const handedOverAt = now.toISOString();
-  await db
+  const expiresAtMs = new Date(row.expiresAt).getTime();
+  if (expiresAtMs > now.getTime()) {
+    if (row.handedOverAt) return null;
+    return { access_token: access, expires_at_ms: expiresAtMs };
+  }
+
+
+  // Access мёртв — оживляем цепочку. Refresh одноразовый, поэтому вендор отдаёт
+  // новый вместе с новым access: в базу кладём пару целиком.
+  const refreshed = await refreshAccessToken(refresh);
+  if (!refreshed.ok) {
+    if (refreshed.error === 'invalid_grant') {
+      // Цепочка оборвана: refresh вендор больше не примет. Аккаунту нужен новый
+      // вход — говорим об этом честно, пара удаляется.
+      await db.delete(accountToken).where(eq(accountToken.id, row.id));
+    }
+    return null;
+  }
+
+  const newExpiresAt = new Date(now.getTime() + refreshed.data.expiresInSeconds * 1000);
+  const enc = encryptSecret(
+    JSON.stringify({
+      access: refreshed.data.accessToken,
+      refresh: refreshed.data.refreshToken,
+    }),
+    accountTokenAad(accountId),
+  );
+  // Оптимистичная блокировка: если пару в тот же момент обновили (кто-то другой
+  // оживил этот же аккаунт), наша запись не должна затереть чужую.
+  const updated = await db
     .update(accountToken)
-    .set({ handedOverAt, updatedAt: handedOverAt })
-    .where(eq(accountToken.id, row.id));
+    .set({
+      ciphertext: enc.ciphertext,
+      iv: enc.iv,
+      authTag: enc.authTag,
+      expiresAt: newExpiresAt.toISOString(),
+      handedOverAt: null,
+      updatedAt: now.toISOString(),
+    })
+    .where(and(eq(accountToken.id, row.id), eq(accountToken.ciphertext, row.ciphertext)))
+    .returning({ id: accountToken.id });
+  if (updated.length === 0) return null;
 
-  // Refresh из расшифрованной пары наружу НЕ уходит (мандат владельца — один токен):
-  // цепочка токенов наша, её продлением занимаемся мы, а не потребитель.
-  return {
-    access_token: payload.access,
-    expires_at_ms: new Date(row.expiresAt).getTime(),
-  };
+  return { access_token: refreshed.data.accessToken, expires_at_ms: newExpiresAt.getTime() };
 }
 
+/**
+ * Пометить, что access отдан проекту (мандат владельца 15.11: по одному токену за
+ * один запрос).
+ */
+export async function markAccessHandedOver(
+  accountId: number,
+  now: Date = new Date(),
+): Promise<void> {
+  await db
+    .update(accountToken)
+    .set({ handedOverAt: now.toISOString(), updatedAt: now.toISOString() })
+    .where(eq(accountToken.accountId, accountId));
+}
 
 /**
- * id аккаунтов, чей access ещё можно отдать проекту.
+ * id аккаунтов, у которых пара токенов есть.
  *
- * «Ещё можно» = пара добыта, ещё не отдана **и не протухла**. Отдача помечается
- * `handed_over_at`: access одноразово уходит проекту, а refresh остаётся у нас
- * (цепочка наша — её продлением занимаемся мы, а не потребитель).
- *
- * **Протухшая пара в раздачу не идёт:** access живёт 12 часов, а наш refresh мы не
- * крутим (цепочка одна) — отдать мёртвый токен значит отдать проекту сломанный вход.
+ * Такой аккаунт годится для выдачи всегда: протухший access мы оживим по refresh
+ * при выдаче (`ensureLiveAccessToken`). Не годится только тот, у кого цепочка
+ * оборвана — там мы честно скажем «без токена».
  */
-export async function tokenReadyAccountIds(now: Date = new Date()): Promise<number[]> {
-  const rows = await db
-    .select({
-      accountId: accountToken.accountId,
-      handedOverAt: accountToken.handedOverAt,
-      expiresAt: accountToken.expiresAt,
-    })
-    .from(accountToken);
-  return rows
-    .filter(
-      (row) =>
-        !row.handedOverAt && new Date(row.expiresAt).getTime() > now.getTime(),
-    )
-    .map((row) => row.accountId);
+export async function tokenBackedAccountIds(): Promise<number[]> {
+  const rows = await db.select({ accountId: accountToken.accountId }).from(accountToken);
+  return rows.map((row) => row.accountId);
 }
 
 /** Отменить открытый flow (владелец передумал). */

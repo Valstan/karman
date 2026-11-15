@@ -13,13 +13,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { MinimaxCountdown, availableAtFromNow } from './minimax-countdown';
+import {
+  MinimaxCountdown,
+  availableAtFromNow,
+  remainingUntilFree,
+} from './minimax-countdown';
 import {
   MinimaxAlreadyActivatedDialog,
   type MinimaxBlockedIntent,
 } from './minimax-already-activated-dialog';
 import { MinimaxActivationPoints } from './minimax-activation-points';
-import { ACTIVATION_WINDOW_MS } from '@/lib/accounts/rotation';
+
 import { WEEKLY_ACTIVATION_LIMIT, pointsForIndex } from '@/lib/accounts/weekly';
 import {
   activateAccountOnly,
@@ -180,7 +184,7 @@ export function MinimaxWindow({
       }
       setActivated(true);
       publishMinimaxActivated(account.id);
-      toast.success('Аккаунт активирован на 10 часов');
+      toast.success('Аккаунт активирован — до ночного сброса MiniMax');
       window.close();
     } finally {
       setBusy(false);
@@ -230,7 +234,7 @@ export function MinimaxWindow({
             <div className="mt-1 text-xs text-muted-foreground">
               <MinimaxCountdown
                 availableAt={availableAtFromNow(activatedAt)}
-                remainingMs={ACTIVATION_WINDOW_MS}
+                remainingMs={remainingUntilFree(activatedAt)}
                 now={now}
               />
             </div>

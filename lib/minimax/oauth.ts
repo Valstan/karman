@@ -37,12 +37,14 @@ export const MINIMAX_OAUTH_SCOPE = 'agent.default';
 export const MINIMAX_OAUTH_AUDIENCE = 'agent-backend';
 export const MINIMAX_OAUTH_GRANT_TYPE = 'urn:ietf:params:oauth:grant-type:device_code';
 
-/** Коды ошибок, которые вендер отдаёт на обмен кода. */
+/** Коды ошибок, которые вендор отдаёт на обмен кода. */
 export type DeviceFlowError =
   | 'authorization_pending'
   | 'slow_down'
   | 'expired_token'
   | 'access_denied'
+  /** Refresh недействителен: цепочка токенов оборвана вендором. */
+  | 'invalid_grant'
   | 'network'
   | 'unknown';
 
@@ -195,6 +197,67 @@ export async function exchangeDeviceCode(
     },
   };
 }
+
+/**
+ * Обновить access-токен по refresh.
+ *
+ * Refresh у MiniMax ОДНОРАЗОВЫЙ, но вместе с новым access вендор отдаёт и НОВЫЙ
+ * refresh — цепочка продлевается (живая проба 15.11: HTTP 200, пришли оба токена,
+ * `expires_in` 43 200 с = 12 часов). Поэтому «протухший» access — не «нужен новый
+ * вход», а просьба продлить цепочку; новый вход владельцу не нужен (заказ 15.11).
+ *
+ * Наружу refresh не уходит никогда (мандат владельца 15.11): цепочка наша.
+ *
+ * `invalid_grant` — вендор отозвал цепочку: refresh второй раз не примет, аккаунту
+ * нужен новый вход.
+ */
+export async function refreshAccessToken(
+  refreshToken: string,
+  signal?: AbortSignal,
+): Promise<OAuthResult<TokenPair>> {
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    client_id: MINIMAX_OAUTH_CLIENT_ID,
+    refresh_token: refreshToken,
+  });
+
+  let response: Response;
+  try {
+    response = await fetch(TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+      signal,
+    });
+  } catch {
+    return { ok: false, error: 'network', message: 'MiniMax недоступен' };
+  }
+
+  const payload = await readJson(response);
+  if (!response.ok) {
+    const code = stringField(payload, 'error') ?? '';
+    return {
+      ok: false,
+      error: code === 'invalid_grant' ? 'invalid_grant' : 'unknown',
+      message: errorMessage(payload) ?? code ?? `HTTP ${response.status}`,
+    };
+  }
+
+  const accessToken = stringField(payload, 'access_token');
+  const newRefresh = stringField(payload, 'refresh_token');
+  if (!accessToken || !newRefresh) {
+    return { ok: false, error: 'unknown', message: 'MiniMax не вернул пару токенов' };
+  }
+  return {
+    ok: true,
+    data: {
+      accessToken,
+      refreshToken: newRefresh,
+      expiresInSeconds: numberField(payload, 'expires_in') ?? 43_200,
+    },
+  };
+}
+
 
 /** Ошибки вендера → наши коды. Неизвестное — 'unknown' с текстом вендера. */
 function mapError(code: string): DeviceFlowError {

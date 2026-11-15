@@ -117,7 +117,7 @@ function ActivateForm({
         return;
       }
 
-      toast.success('Аккаунт активирован — погаснет на 5 часов');
+      toast.success('Аккаунт активирован — до ночного сброса MiniMax');
       // Другие вкладки раздела должны увидеть новое состояние (тот же канал,
       // что и у плавающего окна).
       publishMinimaxActivated(account.id);
@@ -134,8 +134,8 @@ function ActivateForm({
         <DialogTitle>Активация аккаунта</DialogTitle>
         <DialogDescription>
           «{account.title || account.email}» — на какой проект зачесть активацию? Аккаунт
-          погаснет на 5 часов с момента активации (столько же длится окно расхода у
-          MiniMax). Копирование почты или пароля аккаунт не гасит.
+          погаснет до ночного сброса MiniMax: суточный бонус обновляется ночью,
+          раньше он не восстановится. Копирование почты или пароля аккаунт не гасит.
         </DialogDescription>
       </DialogHeader>
       <div className="flex flex-col gap-3">

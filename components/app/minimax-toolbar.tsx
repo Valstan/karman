@@ -18,8 +18,17 @@ import { MinimaxProjectDialog } from './minimax-activate-dialog';
  * Компонент целиком клиентский и сам рисует все три кнопки: серверная страница
  * не передаёт сюда готовые элементы-триггеры (разрыв рендера между сервером и
  * клиентом давал расхождение гидрации).
+ *
+ * `onAccountCreated` — аккаунт только что добавили, и для него СРАЗУ начинается
+ * добыча токена (заказ владельца 15.11: «пусть сразу же при добавлении этого
+ * аккаунта в карман сразу же получается токен»).
  */
-export function MinimaxToolbar() {
+export function MinimaxToolbar({
+  onAccountCreated,
+}: {
+  /** Аккаунт только что добавлен — сразу начинаем добычу токена. */
+  onAccountCreated?: (accountId: number) => void;
+}) {
   const [projectOpen, setProjectOpen] = useState(false);
 
   return (
@@ -28,6 +37,7 @@ export function MinimaxToolbar() {
         <Plus className="mr-1 h-4 w-4" /> Добавить проект
       </Button>
       <MinimaxFormDialog
+        onCreated={onAccountCreated}
         trigger={
           <Button>
             <Plus className="mr-1 h-4 w-4" /> Добавить аккаунт

@@ -50,6 +50,7 @@ export function MinimaxFormDialog({
   projects,
   open: openProp,
   onOpenChange: onOpenChangeProp,
+  onCreated,
 }: {
   account?: AccountListItem;
   /** Кнопка-триггер. В управляемом режиме не нужна. */
@@ -58,6 +59,11 @@ export function MinimaxFormDialog({
   /** Управляемый режим: `undefined` — диалог сам держит открытость. */
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  /**
+   * Аккаунт только что создан — для него сразу берём токен (заказ владельца 15.11:
+   * «пусть сразу же при добавлении этого аккаунта в карман сразу же получается токен»).
+   */
+  onCreated?: (accountId: number) => void;
 }) {
   const router = useRouter();
   const [ownOpen, setOwnOpen] = useState(false);
@@ -121,6 +127,10 @@ export function MinimaxFormDialog({
     changeOpen(false);
     reset();
     router.refresh();
+    // Новый аккаунт — сразу берём для него токен (вход в MiniMax откроется в браузере).
+    if (!account && result.data && 'id' in result.data) {
+      onCreated?.(result.data.id);
+    }
   }
 
   return (

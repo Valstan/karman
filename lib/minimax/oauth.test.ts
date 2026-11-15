@@ -5,6 +5,7 @@ import {
   MINIMAX_OAUTH_CLIENT_ID,
   MINIMAX_OAUTH_GRANT_TYPE,
   pkcePair,
+  refreshAccessToken,
   startDeviceFlow,
   verificationLink,
 } from '@/lib/minimax/oauth';
@@ -162,6 +163,44 @@ describe('device-flow: обмен кода на пару', () => {
   it('ответ без пары — ошибка, а не половина токена', async () => {
     mockFetch(jsonResponse({ access_token: 'at-1' }));
     const result = await exchangeDeviceCode('dev', 'ver');
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe('refresh: продление цепочки', () => {
+  it('форма — grant_type=refresh_token, client_id, refresh_token', async () => {
+    // Refresh одноразовый, но вместе с новым access вендор отдаёт новый refresh —
+    // цепочка продлевается (живая проба 15.11: HTTP 200, оба токена).
+    const spy = mockFetch(
+      jsonResponse({ access_token: 'at-2', refresh_token: 'rt-2', expires_in: 43_200 }),
+    );
+
+    const result = await refreshAccessToken('rt-1');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.accessToken).toBe('at-2');
+    expect(result.data.refreshToken).toBe('rt-2');
+    expect(result.data.expiresInSeconds).toBe(43_200);
+
+    const [url, init] = spy.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://account.minimax.io/oauth2/token');
+    const body = new URLSearchParams(init.body as string);
+    expect(body.get('grant_type')).toBe('refresh_token');
+    expect(body.get('client_id')).toBe(MINIMAX_OAUTH_CLIENT_ID);
+    expect(body.get('refresh_token')).toBe('rt-1');
+  });
+
+  it('invalid_grant — цепочка оборвана: нужен новый вход', async () => {
+    mockFetch(jsonResponse({ error: 'invalid_grant' }, 400));
+    const result = await refreshAccessToken('rt-1');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('invalid_grant');
+  });
+
+  it('ответ без пары — ошибка: без нового refresh цепочка оборвётся', async () => {
+    mockFetch(jsonResponse({ access_token: 'at-2' }));
+    const result = await refreshAccessToken('rt-1');
     expect(result.ok).toBe(false);
   });
 });
