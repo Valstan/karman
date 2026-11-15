@@ -12,7 +12,12 @@ import type { SessionUser } from '@/lib/auth/rbac';
 import { resolveApiToken } from '@/lib/services/secrets/token';
 import { logAudit } from '@/lib/services/secrets/internal';
 import { activateAccount, listAccounts } from '@/lib/services/accounts';
-import { handoverAccessToken, tokenReadyAccountIds } from '@/lib/services/account-tokens';
+import {
+  ensureLiveAccessToken,
+  markAccessHandedOver,
+  tokenBackedAccountIds,
+  type AccessHandover,
+} from '@/lib/services/account-tokens';
 import { moscowToday } from '@/lib/accounts/rotation';
 import { pointsForIndex, weeklyQuota } from '@/lib/accounts/weekly';
 import {
@@ -413,22 +418,56 @@ export async function issueAccount(
   const caller = callerResult.caller;
 
   const accounts = await listAccounts(caller.owner, now);
-  // Отдаём только аккаунты, у которых пара токенов уже добыта, ещё не отдана и НЕ
-  // ПРОТУХЛА: вход в MiniMax делает владелец (программного логина по паролю у MiniMax
-  // нет), а проект работает с нашей парой — аккаунт без токена ему бесполезен, а с
-  // мёртвым токеном (access живёт 12 часов) — тем более.
-  const tokenReady = await tokenReadyAccountIds(now);
+  // Отдаём только аккаунты, у которых пара токенов ЕСТЬ: протухший access мы
+  // оживим по refresh при выдаче (refresh остаётся у нас), а аккаунт без пары
+  // проекту бесполезен — вход в MiniMax делает владелец.
+  const tokenBacked = await tokenBackedAccountIds();
   // Класс очков выбираем МЫ — по потребителю (см. TIER_PREFERENCE); потребитель в
   // этом не участвует и никаких параметров не задаёт.
   const preferredTier = TIER_PREFERENCE[caller.roomSlug] ?? DEFAULT_TIER_PREFERENCE;
-  const picked = pickPoolAccount(accounts, now, {
-    ...filters,
-    tier: preferredTier,
-    tokenReadyIds: tokenReady,
-  });
   const today = moscowToday(now);
 
-  if (!picked.account) {
+  // Кандидатов перебираем: аккаунт может оказаться непригодным (цепочка токенов
+  // оборвана) или его только что забрал другой проект — тогда берём следующего, а
+  // не отдаём потребителю пустоту.
+  const excluded = new Set(filters.excludeIds ?? []);
+  const pick = () =>
+    pickPoolAccount(accounts, now, {
+      ...filters,
+      excludeIds: [...excluded],
+      tier: preferredTier,
+      tokenReadyIds: tokenBacked,
+    });
+  let picked = pick();
+  let handover: AccessHandover | null = null;
+  for (let attempt = 0; attempt < 5 && picked.account; attempt += 1) {
+    const candidate = picked.account;
+    // 1) Токен: протухший access оживляем по refresh; оборванная цепочка — кандидат
+    //    негоден, идём к следующему.
+    const token = await ensureLiveAccessToken(candidate.id, now);
+    if (!token) {
+      excluded.add(candidate.id);
+      picked = pick();
+      continue;
+    }
+    // 2) Захват аккаунта: если его только что забрал другой проект — тоже идём к
+    //    следующему (гонка закрыта на уровне БД, `onlyIfFree`).
+    const claimed = await activateAccount(
+      caller.owner,
+      { id: candidate.id, projectId: caller.projectId, source: 'api' },
+      now,
+      { onlyIfFree: true },
+    );
+    if (!claimed) {
+      excluded.add(candidate.id);
+      picked = pick();
+      continue;
+    }
+    handover = token;
+    break;
+  }
+
+  if (!picked.account || !handover) {
     await logAudit(
       caller.roomId,
       caller.tokenId,
@@ -441,10 +480,10 @@ export async function issueAccount(
     );
     return {
       ok: true,
-      offer: buildOffer(picked, {
-        project: caller.projectName,
-        today,
-      }),
+      offer: buildOffer(
+        { ...picked, account: null, tier: null, reason: picked.reason ?? 'no_free_accounts' },
+        { project: caller.projectName, today, now },
+      ),
     };
   }
 
@@ -452,65 +491,18 @@ export async function issueAccount(
   const offer = buildOffer(picked, {
     project: caller.projectName,
     today,
-  });
-
-  // **Активацию пишем МЫ, в момент выдачи** (мандат владельца 14.11: «Сарафан не
-  // должен сам записывать активацию нам в карман. Ты полностью заведуешь аккаунтами…
-  // сам его гасишь, и сам их ротируешь, и в статистику добавляешь»).
-  //
-  // Что это значит в журнале: аккаунт гаснет на 5 часов, очки уходят в строку дня,
-  // проект = комната, метка `source = 'api'` — расход проекта виден ОТДЕЛЬНО от
-  // расхода владельца на программирование. Сарафан после запроса ничего писать не
-  // должен: он получил аккаунт и access — и работает у себя.
-  //
-  // **Если у аккаунта уже есть строка за сегодня** (её записал владелец под своё
-  // программирование или сам проект раньше) — мы её НЕ переписываем: чужая запись
-  // остаётся (проект, очки, метка). Проверяется это ВНУТРИ транзакции записи
-  // (`activateAccount`), а не снаружи: иначе гонка «владелец активировал аккаунт, и
-  // тут же его отдали Сарафану» переписала бы проект строки.
-  const [existingToday] = await db
-    .select({ id: accountsUsage.id })
-    .from(accountsUsage)
-    .where(
-      and(
-        eq(accountsUsage.accountId, account.id),
-        eq(accountsUsage.usedOn, today),
-        eq(accountsUsage.userId, caller.owner.id),
-      ),
-    )
-    .limit(1);
-  const activated = await activateAccount(
-    caller.owner,
-    { id: account.id, projectId: caller.projectId, source: 'api' },
     now,
-  );
-  if (!activated) {
-    await logAudit(
-      caller.roomId,
-      caller.tokenId,
-      'minimax_denied',
-      `аккаунт #${account.id} не активирован — выдача отменена`,
-      ip,
-      caller.actor,
-    );
-    return {
-      ok: false,
-      error: { status: 500, error: 'Не удалось записать активацию аккаунта' },
-    };
-  }
+  });
   // Аккаунт только что погас — в счётчике свободных он больше не числится.
   offer.free = Math.max(0, offer.free - 1);
 
-  // Токен агента — отдаём ТОЛЬКО access (мандат владельца 14.11: «отдавай ему только
-  // по одному токену»). Refresh остаётся у нас: он одноразовый, и второй раз отдать
-  // его проект не должен. Цепочка токенов — наша, её продлением занимаемся мы, а не
-  // потребитель. Время — то же, что у подбора: протухший access (он жил 12 часов)
-  // не отдаём.
-  const handover = await handoverAccessToken(account.id, now);
-  if (handover) {
-    offer.access_token = handover.access_token;
-    offer.expires_at_ms = handover.expires_at_ms;
-  }
+  // Токен агента — отдаём ТОЛЬКО access (мандат владельца 14.11: «отдавай ему
+  // только по одному токену»). Refresh остаётся у нас: он одноразовый, и второй
+  // раз отдать его проект не должен. Цепочка токенов — наша, её продлением
+  // занимаемся мы, а не потребитель.
+  await markAccessHandedOver(account.id, now);
+  offer.access_token = handover.access_token;
+  offer.expires_at_ms = handover.expires_at_ms;
 
   // В аудит — без токена: что за аккаунт, кому, с каким прогнозом очков.
   await logAudit(
@@ -519,11 +511,9 @@ export async function issueAccount(
     'minimax_account_issued',
     `выдан аккаунт #${account.id} «${account.title}»: класс ${picked.tier ?? '-'}, клетка ${
       offer.account?.activation_index ?? '-'
-    }, очки ${offer.account?.points_next ?? '-'}${handover ? ', access отдан' : ''}, ${
-      existingToday ? 'активация за сегодня уже была' : 'активация записана'
-    }${filters.area ? `, область ${filters.area}` : ''}${
-      filters.project ? `, проект ${filters.project}` : ''
-    }, приоритет ${preferredTier}`,
+    }, очки ${offer.account?.points_next ?? '-'}, access отдан${
+      filters.area ? `, область ${filters.area}` : ''
+    }${filters.project ? `, проект ${filters.project}` : ''}, приоритет ${preferredTier}`,
     ip,
     caller.actor,
   );

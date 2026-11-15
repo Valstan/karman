@@ -80,7 +80,7 @@ afterEach(async () => {
 });
 
 const NOW = new Date('2026-11-03T12:00:00Z');
-/** Момент за 30 часов до NOW — аккаунт активирован, но его окно 10 ч истекло. */
+/** Момент за 30 часов до NOW — аккаунт активирован, но ночной сброс прошёл. */
 const LONG_AGO = new Date('2026-11-02T06:00:00Z');
 
 describe('мультиаккаунт: создание и пароль', () => {
@@ -108,7 +108,7 @@ describe('мультиаккаунт: создание и пароль', () => {
   });
 });
 
-describe('мультиаккаунт: активация и тушение на 10 часов', () => {
+describe('мультиаккаунт: активация и тушение до ночного сброса', () => {
   it('активация гасит аккаунт: он уходит вниз списка', async () => {
     const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
     const b = await createAccount(owner, { title: 'B', email: 'b@example.test', password: 'p' });
@@ -155,8 +155,8 @@ describe('мультиаккаунт: активация и тушение на 
     // 05:50 по Москве.
     const morning = new Date('2026-11-03T02:50:00Z');
     await activateAccount(owner, { id: a, projectId: null, tokens: 400 }, morning);
-    // 23:55 по Москве — тот же московский день, но окно простоя (6 ч) истекло:
-    // это новая сессия, и окно простоя начинается заново.
+    // 23:55 по Москве — тот же московский день, но ночной сброс ещё НЕ наступил:
+    // это продолжение той же сессии (бонус-то сутки один, очков она не даёт).
     const evening = new Date('2026-11-03T20:55:00Z');
     await activateAccount(owner, { id: a, projectId: null, tokens: undefined }, evening);
 
@@ -168,12 +168,34 @@ describe('мультиаккаунт: активация и тушение на 
     // Очки дня не затерлись: их не передавали — «не меняю».
     expect(rows[0]!.tokens).toBe(400);
 
-    // А момент активации — новый: окно простоя началось заново.
+    // А момент активации — прежний: сессия та же, окно не сдвинулось.
     const [row] = await refs.current!
       .select()
       .from(accountsAccount)
       .where(eq(accountsAccount.id, a));
-    expect(new Date(row!.usedAt!).getTime()).toBe(evening.getTime());
+    expect(new Date(row!.usedAt!).getTime()).toBe(morning.getTime());
+  });
+
+  it('после ночного сброса — новая сессия: своя строка журнала на новые сутки', async () => {
+    const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+    // 05:50 по Москве 3 ноября.
+    const morning = new Date('2026-11-03T02:50:00Z');
+    await activateAccount(owner, { id: a, projectId: null, tokens: 400 }, morning);
+    // 04:10 по Москве 4 ноября — ночной сброс (00:00 МСК) уже прошёл.
+    const afterReset = new Date('2026-11-04T01:10:00Z');
+    await activateAccount(owner, { id: a, projectId: null, tokens: undefined }, afterReset);
+
+    // Новые московские сутки — новая строка журнала.
+    const rows = await refs.current!.select().from(accountsUsage);
+    expect(rows.length).toBe(2);
+    expect(rows.map((row) => row.usedOn)).toEqual(['2026-11-03', '2026-11-04']);
+
+    // Момент активации — новый: окно началось заново.
+    const [row] = await refs.current!
+      .select()
+      .from(accountsAccount)
+      .where(eq(accountsAccount.id, a));
+    expect(new Date(row!.usedAt!).getTime()).toBe(afterReset.getTime());
   });
 
   it('активация с проеклем записывает проект в строку и в журнал', async () => {

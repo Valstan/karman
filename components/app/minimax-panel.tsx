@@ -37,6 +37,8 @@ import { ConfirmDialog } from './confirm-dialog';
 import { MinimaxToolbar } from './minimax-toolbar';
 import { MinimaxAccountRow } from './minimax-account-row';
 import { MinimaxAllAccountsDialog } from './minimax-all-accounts-dialog';
+import { MinimaxTokenTool } from './minimax-token-tool';
+import { TOKEN_STATE_LABEL, useMinimaxTokenFlow } from './minimax-token-flow';
 import { MinimaxActivationsByDay } from './minimax-activations-by-day';
 import { MinimaxDailySums } from './minimax-daily-sums';
 import { MinimaxApiUsage } from './minimax-api-usage';
@@ -54,6 +56,7 @@ import type {
   ProjectListItem,
   ProjectUsageDay,
 } from '@/lib/services/accounts';
+import type { TokenProgress } from '@/lib/services/account-tokens';
 import type { AccountRatingRow, DailyUsage } from '@/lib/accounts/stats';
 import { sortProjectsByUsage } from '@/lib/accounts/stats';
 import type { ProjectUsage } from '@/lib/accounts/rotation';
@@ -64,8 +67,8 @@ import type { ProjectUsage } from '@/lib/accounts/rotation';
  *
  * Правило: **копирование почты или пароля НЕ гасит аккаунт** (заказ владельца
  * 05.11). Гасит только явная кнопка «Активировать». Аккаунт после активации
- * гаснет на СВОИ 6 ЧАСОВ от момента активации (заказ 07.11) — не до полуночи:
- * каждый аккаунт отсчитывает своё время.
+ * гаснет ДО НОЧНОГО СБРОСА MiniMax (мандат 15.11): суточный бонус обновляется
+ * ночью, и до него аккаунт ни проекту не отдаётся, ни очков не даёт.
  *
  * Экран — две половины (04.11). Слева: кнопки (добавить проект, добавить
  * аккаунт, импорт) и статистика — «Расход по проектам», «Суммы по дням»,
@@ -87,6 +90,7 @@ export function MinimaxPanel({
   daily,
   rating,
   apiUsage,
+  tokenProgress,
   serverNow,
 }: {
   accounts: AccountListItem[];
@@ -99,10 +103,21 @@ export function MinimaxPanel({
   rating: AccountRatingRow[];
   /** Расход по запросам проектов по дням — отдельно от расхода на программирование (14.11). */
   apiUsage: ApiUsageDay[];
+  /** Состояние токенов аккаунтов (заказ 15.11: статусы «Без токена»/«Токен получен»). */
+  tokenProgress: TokenProgress;
   /** Момент, на котором сервер посчитал список (ISO) — для гидрации. */
   serverNow: string;
 }) {
   const router = useRouter();
+
+  // Добыча токенов — общий поток для карточки и кнопок «Токен» в строках
+  // (заказ владельца 15.11: всё в разделе «Минимакс», одной страницы).
+  const tokenFlow = useMinimaxTokenFlow();
+  const tokenStates = useMemo(() => {
+    const map = new Map<number, TokenProgress['rows'][number]>();
+    for (const row of tokenProgress.rows) map.set(row.account_id, row);
+    return map;
+  }, [tokenProgress]);
 
   // Часы раздела: обратный отсчёт окна тикает сам. До первого тика показываем
   // серверное время — иначе серверный HTML и первая отрисовка разойдутся.
@@ -342,7 +357,11 @@ export function MinimaxPanel({
       <div className="grid gap-6 lg:grid-cols-2">
         {/* ЛЕВАЯ ПОЛОВИНА: кнопки и статистика. */}
         <div className="flex flex-col gap-4">
-          <MinimaxToolbar />
+          <MinimaxToolbar onAccountCreated={(id) => tokenFlow.start(id)} />
+
+          {/* Токены аккаунтов — здесь же, на странице «Минимакс» (заказ 15.11:
+              отдельной страницы «Токены аккаунтов MiniMax» больше нет). */}
+          <MinimaxTokenTool progress={tokenProgress} flow={tokenFlow} />
 
           <div className="rounded-md border">
             <div className="p-4 pb-2">
@@ -503,6 +522,12 @@ export function MinimaxPanel({
                       : 'сегодня чек-ин уже был — очков сегодня не даст'}
                   </div>
                   <div className="text-xs text-muted-foreground">
+                    Токен:{' '}
+                    {tokenStates.get(next.id)
+                      ? TOKEN_STATE_LABEL[tokenStates.get(next.id)!.state]
+                      : '—'}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
                     Нажми — откроется окно, почта скопируется сама
                   </div>
                 </button>
@@ -523,7 +548,7 @@ export function MinimaxPanel({
                   {/* Активация — единственное, что гасит аккаунт (заказ 05.11). */}
                   <Button
                     variant="secondary"
-                    title="Активировать аккаунт: погаснет на 10 часов"
+                    title="Активировать аккаунт: погаснет до ночного сброса MiniMax"
                     onClick={() => handleActivate(next)}
                   >
                     <Zap className="mr-1 h-4 w-4" /> Активировать
@@ -583,6 +608,8 @@ export function MinimaxPanel({
                   onEdit={() => handleEdit(account)}
                   onDelete={() => removeAccount(account)}
                   onOpenWindow={() => openWindow(account.id)}
+                  onGetToken={(id) => tokenFlow.start(id)}
+                  tokenState={tokenStates.get(account.id)?.state}
                 />
               ))}
               {activated.length > preview.length ? (
@@ -639,13 +666,14 @@ export function MinimaxPanel({
           if (blocked) setEditTarget(blocked.account);
         }}
       />
-
       <MinimaxAllAccountsDialog
         open={allOpen}
         onOpenChange={setAllOpen}
         accounts={allAccounts}
         projects={orderedProjects}
         now={now}
+        tokenStates={tokenStates}
+        onGetToken={(id) => tokenFlow.start(id)}
         onCopy={(account, kind) => handleCopy(account, kind)}
         onEdit={(account) => handleEdit(account)}
         onDelete={(account) => removeAccount(account)}

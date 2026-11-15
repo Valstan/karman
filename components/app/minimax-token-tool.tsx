@@ -1,9 +1,7 @@
 'use client';
 
-import { useEffect, useState, useTransition } from 'react';
-import { useRouter } from 'next/navigation';
-import { toast } from 'sonner';
 import { KeyRound } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -12,197 +10,41 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import {
-  claimTokenAction,
-  cancelTokenFlowAction,
-  nextTokenFlowAction,
-} from '@/lib/actions/account-tokens';
 import { copyAccountSecret } from '@/components/app/minimax-activation';
-import { centeredWindowFeatures, TOKEN_WINDOW_SIZE } from '@/lib/accounts/window-features';
-import type { NextTokenFlow, TokenProgress } from '@/lib/services/account-tokens';
+import type { MinimaxTokenFlow } from './minimax-token-flow';
+import type { TokenProgress } from '@/lib/services/account-tokens';
 
 /**
- * Инструмент получения токенов аккаунтов MiniMax (заказ владельца 14.11).
+ * Карточка добычи токенов — в разделе «Минимакс» (заказ владельца 14.11 + 15.11).
  *
- * Сценарий: владелец жмёт «Следующий» → получает ссылку и код подтверждения MiniMax →
- * открывает ссылку, входит и подтверждает → страница сама опрашивает обмен кода и
- * кладёт пару токенов в базу. Аккаунты с уже добытым токеном пропускаются; когда
- * токены есть у всех — процесс останавливается и говорит об этом.
+ * Отдельной страницы «Токены аккаунтов MiniMax» больше нет: заказ 15.11 — «всё в
+ * одном месте, одна страница Минимакс». Здесь владелец жмёт «Следующий», открывает
+ * ссылку MiniMax, входит этим аккаунтом и подтверждает; страница сама забирает
+ * токен и кладёт пару в базу.
  *
- * Опрашивать можно и рукой («Забрать токен») — на случай, если браузер спит.
+ * Сам поток живёт в хуке `useMinimaxTokenFlow` — он общий для карточки и для
+ * кнопок «Получить токен» в строках аккаунтов (заказ 15.11: «у нас сейчас почти на
+ * все аккаунты есть токены… если нету, то предлагай его получить»).
  *
- * ## Ускорение рутины (заказ владельца 14.11, второй заход)
- *
- * «Нажми "Следующий" — сразу перейди по ссылке, скопируй почту в буфер, открой
- * окно с кнопкой копирования пароля; после копирования пароля окно закрывается».
- * Поэтому «Следующий» теперь делает всё сразу:
- *
- * 1) **кладёт почту аккаунта в буфер обмена** — вставьте её в окне MiniMax. Именно
- *    ПЕРВЫМ: clipboard API браузера требует фокуса документа, а открытое окно MiniMax
- *    уводит вкладку в фон, и копирование после этого падает;
- * 2) **открывает подтверждение MiniMax** вкладкой в том же окне браузера;
- * 3) **открывает отдельное окно ОС с кнопкой «Скопировать пароль»** — пароль нужен
- *    для входа в тот же MiniMax; после копирования окно закрывается сама.
- *
- * Почему окно ОС, а не диалог в странице (заказ владельца 14.11: «сделай такое
- * же, как и при активации аккаунта, чтобы это отдельное окно поверх браузера
- * было, чтобы я на клавиатуре мог быстро на него переключиться»): вкладка с
- * подтверждением MiniMax уводит фокус, и до диалога в соседней вкладке не
- * дотянуться — а до отдельного окна можно переключиться с клавиатуры (Alt+Tab).
- *
- * Вкладка подтверждения открывается ДО окна с паролем: `window.open(..., '_blank')`
- * кладёт вкладку в то окно, где жив открывающий документ, — то есть в главное.
- * Наоборот (окно с паролем первым) вкладка могла бы оказаться внутри всплывающего
- * окна и вытеснить его.
- *
- * Если браузер заблокировал всплывающее окно — остаётся запасной путь: диалог в
- * странице (он намеренно НЕ забирает фокус, `onOpenAutoFocus` отменён).
+ * Статусы токена — ровно два («Без токена» и «Токен получен»): состояние по
+ * аккаунтам видно в строках списка, здесь — счётчик и сам процесс.
  */
-
-type FlowState = 'idle' | 'waiting' | 'claimed' | 'expired';
-
-/** Аккаунт, для которого показываем модалку с паролем. */
-type PasswordPrompt = { id: number; title: string; email: string };
-
-const STATE_LABEL: Record<string, string> = {
-  none: 'нет токена',
-  pending: 'ждём подтверждения',
-  stored: 'токен получен',
-  handed_over: 'отдан проекту',
-  // Access живёт 12 часов: протухшая пара проекту бесполезна, аккаунт надо добыть заново.
-  expired: 'пара протухла — нужен новый вход',
-};
-
-/**
- * Состояние аккаунта «на сегодня» — видно, кому пара пригодится.
- *
- * «Очки сожжены» — у такого аккаунта сегодняшние очки уже израсходованы: добывать
- * для него токен бессмысленно (пара живёт 12 часов, а активировать его сегодня
- * уже нельзя).
- */
-const TODAY_LABEL: Record<string, string> = {
-  free: 'свободен',
-  burned: 'очки сожжены',
-  busy: 'занят (окно)',
-  week_exhausted: 'неделя кончилась',
-};
-
-export function MinimaxTokenTool({ progress }: { progress: TokenProgress }) {
-  const router = useRouter();
-  const [flow, setFlow] = useState<NextTokenFlow | null>(null);
-  const [state, setState] = useState<FlowState>('idle');
-  const [passwordPrompt, setPasswordPrompt] = useState<PasswordPrompt | null>(null);
-  const [busy, startTransition] = useTransition();
-  const [pending, startPending] = useTransition();
-  // Пауза между опросами обмена. Вендер сам задаёт её в `interval` (живая проба:
-  // 3 секунды), а на `slow_down` просит опрашивать реже — тогда отступаем вдвое.
-  const [pollMs, setPollMs] = useState(3000);
-
-  // Пока код жив — опрашиваем обмен: MiniMax отвечает «authorization_pending», пока
-  // владелец не подтвердил. Как только пара получена — останавливаемся.
-  useEffect(() => {
-    if (!flow || state !== 'waiting') return;
-    const timer = setInterval(() => {
-      void (async () => {
-        const result = await claimTokenAction(flow.flow_id);
-        if (!result.ok || !result.data) return;
-        const claim = result.data;
-        if (claim.ok) {
-          setState('claimed');
-          setFlow(null);
-          toast.success(`Токен получен: аккаунт #${claim.account_id} «${claim.title}»`);
-          router.refresh();
-          return;
-        }
-        if (claim.error === 'expired_token') {
-          setState('expired');
-          toast.error('Код истёк — жмите «Следующий» для нового');
-          router.refresh();
-          return;
-        }
-        if (claim.error === 'slow_down') {
-          // Вендер просит опрашивать реже — отступаем (до минуты).
-          setPollMs((prev) => Math.min(prev * 2, 60_000));
-        }
-      })();
-    }, pollMs);
-    return () => clearInterval(timer);
-  }, [flow, state, pollMs, router]);
-
-  function next() {
-    startTransition(async () => {
-      const result = await nextTokenFlowAction();
-      if (!result.ok || !result.data) {
-        toast.error(result.ok ? 'Пустой ответ' : result.error);
-        if (!result.ok && result.error.includes('Все токены')) setState('claimed');
-        return;
-      }
-      const next = result.data;
-      setFlow(next);
-      setState('waiting');
-      setPollMs(Math.max(3, next.interval_seconds) * 1000);
-
-      // 1) ПОЧТА — в буфер обмена, ПОКА вкладка активна. Clipboard API браузера
-      //    требует фокуса документа: если сначала открыть окно MiniMax, вкладка
-      //    останется на фоне и копирование упадёт («Document is not focused»).
-      let copied = false;
-      try {
-        await navigator.clipboard.writeText(next.email);
-        copied = true;
-      } catch {
-        toast.error('Не удалось скопировать почту — она показана в окне, скопируйте вручную');
-      }
-
-      // 2) ПОДТВЕРЖДЕНИЕ MINIMAX — вкладкой В ТОМ ЖЕ окне браузера, где сейчас
-      //    инструмент: сюда вставляется почта из буфера. Вкладку открываем
-      //    ДО всплывающего окна: `window.open(..., '_blank')` кладёт вкладку в
-      //    то окно, где жив открывающий документ, — а это главное окно.
-      const tab = window.open(next.verification_link, '_blank');
-      if (tab) {
-        // Обратное tabnabbing нам не нужно: страница вендора не должна видеть
-        // наше окно. `opener` — единственное, что можно занулить снаружи.
-        try {
-          tab.opener = null;
-        } catch {
-          // Браузер не дал — не страшно, на работу не влияет.
-        }
-      } else {
-        toast.info('Браузер заблокировал новое окно — откройте ссылку подтверждения ниже');
-      }
-
-      // 3) ОКНО С ПАРОЛЕМ — отдельное окно ОС поверх браузера (как «В окне» в
-      //    панели «Минимакс»): до кнопки можно дотянуться с клавиатуры, пока в
-      //    соседней вкладке идёт подтверждение MiniMax. Окно переиспользуется
-      //    (одно и то же имя), а не плодится на каждый аккаунт. Блокировщик
-      //    всплывающих окон отдаёт запасной путь — диалог в странице.
-      const passwordWindow = window.open(
-        `/minimax-token-window?flow=${next.flow_id}&copied=email`,
-        'karman-token-password',
-        centeredWindowFeatures(
-          {
-            x: window.screenX,
-            y: window.screenY,
-            width: window.outerWidth,
-            height: window.outerHeight,
-          },
-          TOKEN_WINDOW_SIZE,
-        ),
-      );
-      if (!passwordWindow) {
-        setPasswordPrompt({ id: next.account_id, title: next.title, email: next.email });
-        toast.info('Браузер заблокировал всплывающее окно — пароль скопируйте здесь');
-      }
-      if (copied) {
-        toast.info('Почта скопирована — вставьте её в окне MiniMax');
-      }
-    });
-  }
+export function MinimaxTokenTool({
+  progress,
+  flow,
+}: {
+  /** Счётчики по пулу: сколько пар есть, сколько осталось. */
+  progress: TokenProgress;
+  /** Текущий поток добычи (общий для карточки и строк списка). */
+  flow: MinimaxTokenFlow;
+}) {
+  const done = progress.complete;
 
   /** Пароль в буфер обмена; после копирования модалка закрывается. */
   async function copyPassword() {
-    if (!passwordPrompt) return;
+    if (!flow.passwordPrompt) return;
     const outcome = await copyAccountSecret(
-      { id: passwordPrompt.id, email: passwordPrompt.email },
+      { id: flow.passwordPrompt.id, email: flow.passwordPrompt.email },
       'password',
     );
     if (!outcome.ok) {
@@ -210,157 +52,89 @@ export function MinimaxTokenTool({ progress }: { progress: TokenProgress }) {
       return;
     }
     toast.success('Пароль скопирован — вставьте его в окне MiniMax');
-    setPasswordPrompt(null);
+    flow.setPasswordPrompt(null);
   }
-
-  function claimNow() {
-    if (!flow) return;
-    startPending(async () => {
-      const result = await claimTokenAction(flow.flow_id);
-      if (!result.ok || !result.data) {
-        toast.error(result.ok ? 'Пустой ответ' : result.error);
-        return;
-      }
-      const claim = result.data;
-      if (claim.ok) {
-        setState('claimed');
-        setFlow(null);
-        toast.success(`Токен получен: аккаунт #${claim.account_id} «${claim.title}»`);
-        router.refresh();
-      } else if (claim.error === 'expired_token') {
-        setState('expired');
-        toast.error('Код истёк — жмите «Следующий» для нового');
-        router.refresh();
-      } else if (claim.error === 'not_found') {
-        setState('expired');
-        toast.error('Поток не найден — жмите «Следующий»');
-      }
-    });
-  }
-
-  function cancel() {
-    if (!flow) return;
-    startPending(async () => {
-      await cancelTokenFlowAction(flow.flow_id);
-      setFlow(null);
-      setState('idle');
-      router.refresh();
-    });
-  }
-
-  const done = progress.complete;
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="rounded-lg border p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <p className="text-lg font-medium">
-              Токены: {progress.withToken} из {progress.total}
-            </p>
-            <p className="text-sm text-muted-foreground">
-              {done
-                ? 'Все токены получены — процесс завершён.'
-                : `Осталось ${progress.remaining}${
-                    progress.pending > 0 ? `, в ожидании подтверждения: ${progress.pending}` : ''
-                  }.`}
-            </p>
-          </div>
-          <div className="flex gap-2">
-            {flow ? (
-              <>
-                <Button variant="outline" onClick={claimNow} disabled={pending}>
-                  Забрать токен
-                </Button>
-                <Button variant="ghost" onClick={cancel} disabled={pending}>
-                  Отменить
-                </Button>
-              </>
-            ) : (
-              <Button onClick={next} disabled={busy || done}>
-                {done ? 'Все токены получены' : 'Следующий'}
-              </Button>
-            )}
-          </div>
+    <div className="rounded-md border p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-lg font-medium">
+            Токены: {progress.withToken} из {progress.total}
+          </p>
+          <p className="text-sm text-muted-foreground">
+            {done
+              ? 'Все токены получены — процесс завершён.'
+              : `Осталось ${progress.remaining}${
+                  progress.pending > 0 ? `, в ожидании подтверждения: ${progress.pending}` : ''
+                }.`}
+          </p>
         </div>
-
-        {flow ? (
-          <div className="mt-4 rounded-md bg-muted p-3 text-sm">
-            <p>
-              Аккаунт #{flow.account_id} «{flow.title || flow.email}» —{' '}
-              {flow.email}
-            </p>
-            <p className="mt-2">
-              Код подтверждения: <span className="font-mono text-base">{flow.user_code}</span>
-            </p>
-            <p className="mt-2">
-              <a
-                href={flow.verification_link}
-                target="_blank"
-                rel="noreferrer"
-                className="font-medium text-primary underline"
-              >
-                Открыть подтверждение MiniMax
-              </a>{' '}
-              — войдите этим аккаунтом и подтвердите. Код жив до{' '}
-              {new Date(flow.expires_at).toLocaleTimeString('ru-RU')}.
-            </p>
-            <p className="mt-2 text-muted-foreground">
-              {state === 'waiting' && 'Ждём подтверждения — страница забирает токен сама.'}
-            </p>
-          </div>
-        ) : null}
+        <div className="flex gap-2">
+          {flow.flow ? (
+            <>
+              <Button variant="outline" onClick={flow.claimNow} disabled={flow.pending}>
+                Забрать токен
+              </Button>
+              <Button variant="ghost" onClick={flow.cancel} disabled={flow.pending}>
+                Отменить
+              </Button>
+            </>
+          ) : (
+            <Button onClick={() => flow.start()} disabled={flow.busy || done}>
+              {done ? 'Все токены получены' : 'Следующий'}
+            </Button>
+          )}
+        </div>
       </div>
 
-      <div className="rounded-lg border">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b text-left">
-              <th className="p-2">id</th>
-              <th className="p-2">Аккаунт</th>
-              <th className="p-2">Почта</th>
-              <th className="p-2">Сегодня</th>
-              <th className="p-2">Очки</th>
-              <th className="p-2">Состояние</th>
-            </tr>
-          </thead>
-          <tbody>
-            {progress.rows.map((row) => (
-              <tr key={row.account_id} className="border-b last:border-0">
-                <td className="p-2 text-muted-foreground">{row.account_id}</td>
-                <td className="p-2">{row.title || '—'}</td>
-                <td className="p-2 text-muted-foreground">{row.email}</td>
-                <td className="p-2 text-muted-foreground">
-                  {TODAY_LABEL[row.today_status] ?? row.today_status}
-                </td>
-                <td className="p-2 text-muted-foreground">{row.points_next || '—'}</td>
-                <td className="p-2">{STATE_LABEL[row.state] ?? row.state}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {flow.flow ? (
+        <div className="mt-4 rounded-md bg-muted p-3 text-sm">
+          <p>
+            Аккаунт #{flow.flow.account_id} «{flow.flow.title || flow.flow.email}» —{' '}
+            {flow.flow.email}
+          </p>
+          <p className="mt-2">
+            Код подтверждения: <span className="font-mono text-base">{flow.flow.user_code}</span>
+          </p>
+          <p className="mt-2">
+            <a
+              href={flow.flow.verification_link}
+              target="_blank"
+              rel="noreferrer"
+              className="font-medium text-primary underline"
+            >
+              Открыть подтверждение MiniMax
+            </a>{' '}
+            — войдите этим аккаунтом и подтвердите. Код жив до{' '}
+            {new Date(flow.flow.expires_at).toLocaleTimeString('ru-RU')}.
+          </p>
+          <p className="mt-2 text-muted-foreground">
+            {flow.phase === 'waiting' && 'Ждём подтверждения — страница забирает токен сама.'}
+          </p>
+        </div>
+      ) : null}
 
       {/* Пароль от аккаунта: копируем и закрываемся. Фокус не забираем — ввод в
           только что открытом окне MiniMax должен остаться доступен. */}
       <Dialog
-        open={passwordPrompt !== null}
+        open={flow.passwordPrompt !== null}
         onOpenChange={(open) => {
-          if (!open) setPasswordPrompt(null);
+          if (!open) flow.setPasswordPrompt(null);
         }}
       >
         <DialogContent onOpenAutoFocus={(event) => event.preventDefault()}>
           <DialogHeader>
             <DialogTitle>Пароль от аккаунта</DialogTitle>
             <DialogDescription>
-              Аккаунт #{passwordPrompt?.id} «{passwordPrompt?.title || '—'}». Почта уже в
+              Аккаунт #{flow.passwordPrompt?.id} «{flow.passwordPrompt?.title || '—'}». Почта уже в
               буфере обмена — вставьте её в окне MiniMax. Пароль нужен там же для входа:
               нажмите кнопку, он попадёт в буфер, и окно закроется.
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-3">
             <p className="text-sm">
-              Почта: <span className="font-mono">{passwordPrompt?.email}</span>
+              Почта: <span className="font-mono">{flow.passwordPrompt?.email}</span>
             </p>
             <Button onClick={() => void copyPassword()}>
               <KeyRound className="mr-1 h-4 w-4" /> Скопировать пароль

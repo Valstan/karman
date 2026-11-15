@@ -48,6 +48,7 @@
 
 import {
   accountPoolSummary,
+  isSpent,
   isUnavailable,
   sortAccounts,
   type AccountRotationRow,
@@ -145,7 +146,6 @@ export type PoolRow = AccountRotationRow & {
   /** Недельная квота аккаунта — из неё берётся названное владельцем число. */
   week: WeeklyQuota;
 };
-
 /** Что мы советуем по этому аккаунту: клетка, очки и откуда они. */
 export type PoolHint = {
   index: number | null;
@@ -155,14 +155,18 @@ export type PoolHint = {
 };
 
 /**
- * Подсказка по аккаунту: клетка и очки.
+ * Что мы советуем по этому аккаунту: клетка, очки и откуда они.
  *
  * - **число, названное владельцем** (панель — истина) важнее нашей модели по датам:
  *   если владелец называл клетку для последней активации, следующая = его число + 1;
  * - если не называл — считаем по датам, как раньше;
  * - если аккаунт под вопросом — подсказки нет вовсе (`points_next: null`).
+ *
+ * Очки — ноль, если суточный бонус СОЖЖЁН: ночной сброс после активации ещё не
+ * наступил (мандат владельца 15.11) либо чек-ин за сегодня уже был. Такой аккаунт
+ * в выдачу не идёт вообще: потребитель получил бы «insufficient balance».
  */
-export function hintFor(row: PoolRow): PoolHint {
+export function hintFor(row: PoolRow, now: Date = new Date()): PoolHint {
   const quota = row.week ?? null;
   const unverified = UNVERIFIED_CELL_ACCOUNT_IDS.has(row.id);
   const modelIndex = quota?.nextIndex ?? null;
@@ -183,8 +187,11 @@ export function hintFor(row: PoolRow): PoolHint {
       unverified,
     };
   }
-  // Чек-ин за сегодня уже был — очков сегодня не будет ни при какой клетке.
-  const points = row.weekCheckedInToday ? 0 : index !== null ? pointsForIndex(index) : 0;
+  // Бонус сожжён (ночной сброс ещё не наступил) или чек-ин за сегодня уже был —
+  // очков сегодня не будет ни при какой клетке.
+  const burned = isSpent(row, now);
+  const points =
+    burned || row.weekCheckedInToday ? 0 : index !== null ? pointsForIndex(index) : 0;
   return {
     index,
     points,
@@ -238,16 +245,17 @@ export type PoolFilters = {
  * Верхний слот пула — тот же, что показывается владельцу наверху списка, но с
  * фильтром по очкам (правило владельца 13.11): проекту отдаётся аккаунт на **400**
  * очков; аккаунт на **1000** — только если свободных четырёхсотых не осталось.
- * Аккаунты, отмеченные СЕГОДНЯ (0 очков), **не выдаются вовсе** (просьба Сарафана
- * 14.11, id 146: «мы их всё равно пропускаем, и пул уменьшается зря» — чек-ин в сутки
- * один, очки у такого аккаунта уже сожжены); аккаунт под вопросом — в самом конце.
+ * Аккаунты, чей суточный бонус сожжён (ночной сброс после активации ещё не
+ * наступил), **не выдаются вовсе**: потребитель получил бы «insufficient balance».
+ * Аккаунт под вопросом — в самом конце.
  *
  * Класс очков можно задать запросом (`filters.tier`) — см. `PoolFilters.tier`.
  *
- * Правило выбора внутри класса — прежнее, из `rotation.ts`: сначала активация, которая
- * даст 1000 (клетка 4 или 7), потом та, до бонуса которой ближе всего, потом длинная
- * серия, потом давность. Занятые окном (5 ч) и аккаунты с исчерпанной неделей в выдачу
- * не попадают.
+ * Порядок выбора внутри класса — **«дольше всех не активировался»** (мандат
+ * владельца 15.11: «ты им даешь свежий токен, который, ну, условно, дольше всех не
+ * активировался»): внутри класса очки у всех одинаковые, поэтому решает давность
+ * — никогда не активированный первый, дальше тот, кто активировался раньше всех.
+ * Занятые (бонус сожжён) и аккаунты с исчерпанной неделей в выдачу не попадают.
  */
 export function pickPoolAccount<T extends PoolRow>(
   accounts: T[],
@@ -278,8 +286,13 @@ export function pickPoolAccount<T extends PoolRow>(
   // работать: вход в MiniMax делает владелец, пароля у проекта нет.
   const usable = tokenReady ? free.filter((account) => tokenReady.has(account.id)) : free;
 
-  const pick = (tier: PoolTier): T | null =>
-    usable.find((account) => tierOf(account) === tier) ?? null;
+  // Внутри класса — «дольше всех не активировался» (мандат владельца 15.11):
+  // очки у всех в классе одинаковые, решает давность активации.
+  const pick = (tier: PoolTier): T | null => {
+    const inTier = usable.filter((account) => tierOf(account, now) === tier);
+    if (inTier.length === 0) return null;
+    return [...inTier].sort(stalenessCompare)[0] ?? null;
+  };
 
   // Порядок классов: запрошенный — первым, потом обычный (400 → 1000 → под вопросом).
   // Класс «отмечен сегодня» (0 очков) в выдачу не входит вовсе (просьба Сарафана,
@@ -310,13 +323,27 @@ export function pickPoolAccount<T extends PoolRow>(
   };
 }
 
-/** Очковый класс аккаунта — по ПОДСКАЗКЕ (то, что покажет и панель). */
-function tierOf(account: PoolRow): PoolTier {
-  const hint = hintFor(account);
+/**
+ * Очковый класс аккаунта — по ПОДСКАЗКЕ (то, что покажет и панель).
+ */
+function tierOf(account: PoolRow, now: Date = new Date()): PoolTier {
+  const hint = hintFor(account, now);
   if (hint.unverified) return 'unverified';
   if (hint.points === 1000) return 'points_1000';
   if (hint.points === 400) return 'points_400';
   return 'points_0';
+}
+
+/**
+ * Давность активации: чем дольше аккаунт не активировался, тем он «свежее» для
+ * выдачи. Никогда не активированный — самый свежий.
+ */
+function stalenessCompare(a: PoolRow, b: PoolRow): number {
+  if (a.usedAt === null && b.usedAt === null) return a.id - b.id;
+  if (a.usedAt === null) return -1;
+  if (b.usedAt === null) return 1;
+  if (a.usedAt !== b.usedAt) return a.usedAt < b.usedAt ? -1 : 1;
+  return a.id - b.id;
 }
 
 /**
@@ -362,6 +389,8 @@ export function buildOffer(
   context: {
     project: string;
     today: string;
+    /** Момент, на котором считаем «сожжён ли бонус»; по умолчанию — сейчас. */
+    now?: Date;
   },
 ): PoolOffer {
   const account = picked.account;
@@ -378,7 +407,7 @@ export function buildOffer(
       today: context.today,
     };
   }
-  const hint = hintFor(account);
+  const hint = hintFor(account, context.now ?? new Date());
   return {
     account: {
       id: account.id,

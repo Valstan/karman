@@ -39,6 +39,14 @@ vi.mock('@/lib/db/client', () => ({
   },
 }));
 
+// Refresh одноразовый, но цепочку продлевает: при протухшем access мы обновляем
+// пару сами (мандат владельца 15.11 — «токены не протухли»).
+const oauth = vi.hoisted(() => ({ refreshAccessToken: vi.fn() }));
+vi.mock('@/lib/minimax/oauth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/minimax/oauth')>();
+  return { ...actual, refreshAccessToken: oauth.refreshAccessToken };
+});
+
 let pg: PGlite | undefined;
 
 const OWNER_ID = 1; // admin из scripts/bootstrap.sql
@@ -127,6 +135,11 @@ beforeEach(async () => {
   pg = t.pg;
   refs.current = t.db;
   await makeRoom('setka', 'SARAFAN', ROOM_TOKEN);
+  oauth.refreshAccessToken.mockReset();
+  oauth.refreshAccessToken.mockResolvedValue({
+    ok: true,
+    data: { accessToken: 'ACCESS-2', refreshToken: 'REFRESH-2', expiresInSeconds: 3600 },
+  });
 });
 
 afterEach(async () => {
@@ -365,26 +378,40 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     expect(result.offer.reason).toBe('no_tokens_ready');
   });
 
-  it('аккаунт с ПРОТУХШЕЙ парой в раздачу не идёт — отдать сломанный вход хуже, чем ничего', async () => {
-    // Access-токен MiniMax живёт 12 часов; протухшая пара проекту бесполезна, а наш
-    // refresh мы не крутим (цепочка одна). Значит такой аккаунт в выдаче — тихая
-    // поломка у проекта, и мы его не отдаём.
-    const accountId = await makeAccount('С протухшей парой', 'deadpair@example.test', null, null);
+  it('аккаунт с ПРОТУХШИМ access в раздачу идёт: access оживляется по refresh', async () => {
+    // Мандат владельца 15.11: «токены не протухли, протухло их использование на эти
+    // сутки». Access живёт 12 часов, но refresh одноразовый — и вместе с новым
+    // access вендор отдаёт новый refresh, то есть цепочка продлевается.
+    const accountId = await makeAccount('С протухшим access', 'deadpair@example.test', null, null);
     await makeCheckIn(accountId, '2026-11-12', 2);
-    await refs.current!.insert(accountToken).values({
-      userId: OWNER_ID,
-      accountId,
-      ciphertext: 'x',
-      iv: 'x',
-      authTag: 'x',
-      expiresAt: new Date(NOW.getTime() - 3_600_000).toISOString(),
-    });
+    await makeTokenPair(accountId, 'ACCESS-OLD', 'REFRESH-1');
+    await refs.current!
+      .update(accountToken)
+      .set({ expiresAt: new Date(NOW.getTime() - 3_600_000).toISOString() });
+
+    const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.offer.account?.id).toBe(accountId);
+    // Потребитель получает ЖИВОЙ access — обновлённый, а не протухший.
+    expect(result.offer.access_token).toBe('ACCESS-2');
+    // Refresh наружу не уходит: цепочка наша (мандат владельца 15.11).
+    expect('refresh_token' in result.offer).toBe(false);
+  });
+
+  it('оборванная цепочка — аккаунт в раздачу не идёт: честная пустота, а не сломанный вход', async () => {
+    const accountId = await makeAccount('С оборванной цепочкой', 'broken@example.test', null, null);
+    await makeCheckIn(accountId, '2026-11-12', 2);
+    await makeTokenPair(accountId, 'ACCESS-OLD', 'REFRESH-1');
+    await refs.current!
+      .update(accountToken)
+      .set({ expiresAt: new Date(NOW.getTime() - 3_600_000).toISOString() });
+    oauth.refreshAccessToken.mockResolvedValue({ ok: false, error: 'invalid_grant' });
 
     const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.offer.account).toBeNull();
-    expect(result.offer.reason).toBe('no_tokens_ready');
   });
 });
 

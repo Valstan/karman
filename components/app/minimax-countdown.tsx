@@ -1,6 +1,6 @@
 'use client';
 
-import { ACTIVATION_WINDOW_MS } from '@/lib/accounts/rotation';
+import { dailyResetAfter } from '@/lib/accounts/rotation';
 import { utcToMoscowLocal } from '@/lib/reminders/time';
 
 /**
@@ -57,9 +57,16 @@ export function formatAvailableAt(iso: string): string {
 }
 
 /**
- * Момент освобождения после ТЕКУЩЕЙ активации: окно 10 часов от момента
- * копирования. Нужен плавающему окну, где активация происходит на глазах.
+ * Момент освобождения после ТЕКУЩЕЙ активации: до ночного сброса MiniMax.
+ * Нужен плавающему окну, где активация происходит на глазах.
  */
 export function availableAtFromNow(at: number): string {
-  return new Date(at + ACTIVATION_WINDOW_MS).toISOString();
+  return dailyResetAfter(new Date(at)).toISOString();
+}
+
+/**
+ * Сколько осталось до освобождения (мс) — плавающему окну для обратного отсчёта.
+ */
+export function remainingUntilFree(at: number): number {
+  return Math.max(0, dailyResetAfter(new Date(at)).getTime() - at);
 }

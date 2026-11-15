@@ -7,7 +7,6 @@ import {
   type PoolOffer,
   type PoolRow,
 } from '@/lib/accounts/pool';
-import { ACTIVATION_WINDOW_MS } from '@/lib/accounts/rotation';
 import { weeklyQuota, type WeeklyCheckIn } from '@/lib/accounts/weekly';
 
 const TODAY = '2026-11-13';
@@ -29,7 +28,9 @@ function account(
     title: `Аккаунт ${id}`,
     email: `acc${id}@example.test`,
     usedOn: checkIns.length ? checkIns[checkIns.length - 1]!.date : null,
-    usedAt: null,
+    // Момент последней активации — по последней отметке: внутри класса порядок
+    // выдачи решает давность (мандат владельца 15.11).
+    usedAt: checkIns.length ? `${checkIns[checkIns.length - 1]!.date}T09:00:00.000Z` : null,
     projectId: null,
     projectName: null,
     lastTokens: 0,
@@ -90,16 +91,21 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     expect(picked.tier).toBe('points_400');
   });
 
-  it('внутри класса 400 очков действует прежний порядок: ближе к бонусу — раньше', () => {
-    const near = account(1, [auto('2026-11-11'), auto('2026-11-12')]);
-    const far = account(2, [auto('2026-11-12')]);
-    const picked = pickPoolAccount([far, near], NOW);
+  it('внутри класса — тот, кто дольше всех не активировался', () => {
+    // Мандат владельца 15.11: «ты им даешь свежий токен, который, ну, условно,
+    // дольше всех не активировался». Внутри класса очки у всех одинаковые, поэтому
+    // решает давность активации.
+    const old = account(1, [auto('2026-11-10')]);
+    const fresh = account(2, [auto('2026-11-12')]);
+    const picked = pickPoolAccount([fresh, old], NOW);
     expect(picked.account?.id).toBe(1);
     expect(picked.tier).toBe('points_400');
   });
 
-  it('занятый окном (5 ч) аккаунт не предлагается', () => {
-    const usedAt = new Date(NOW.getTime() - ACTIVATION_WINDOW_MS + 60_000).toISOString();
+  it('аккаунт с сожжённым бонусом не предлагается', () => {
+    // Бонус сожжён = ночной сброс после активации ещё не наступил (мандат
+    // владельца 15.11). Активирован час назад — точно сожжён.
+    const usedAt = new Date(NOW.getTime() - 60 * 60 * 1000).toISOString();
     const busy = account(1, [auto('2026-11-12')], { usedAt, usedOn: TODAY });
     const free = account(2, [auto('2026-11-12')]);
     const picked = pickPoolAccount([busy, free], NOW);
