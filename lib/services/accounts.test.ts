@@ -623,7 +623,7 @@ describe('мультиаккаунт: панель MiniMax возвращает 
     expect(list[0]!.panelStatus).toBeNull();
   });
 
-  it('активация забывает ответ панели: очки-то сожглись', async () => {
+  it('активация помечает ответ панели «очки сожжены» (ответ НЕ удаляется)', async () => {
     const a = await createAccount(owner, { title: 'A', email: 'forget@example.test', password: 'p' });
     await writePanelState(owner.id, a, OWNER_TIMEZONE, {
       cell_no: 2,
@@ -635,8 +635,16 @@ describe('мультиаккаунт: панель MiniMax возвращает 
     expect((await readPanelStates(owner.id, OWNER_TIMEZONE, [a])).size).toBe(1);
 
     await activateAccount(owner, { id: a, projectId: null, tokens: 400 }, NOW);
-    // Панель об этом ещё не знает — оставлять её ответ «очки есть» нельзя.
-    expect((await readPanelStates(owner.id, OWNER_TIMEZONE, [a])).size).toBe(0);
+
+    // Ответ помечен, а не удалён: удалённый ответ вернул бы строку к модели по
+    // датам, а модель с панелью разошлась (живьём 16.11 — у 48 аккаунтов из
+    // 109 разный класс очков) — и в каталоге появлялись «тысячные», которые
+    // на деле давали 400.
+    const stored = await readPanelStates(owner.id, OWNER_TIMEZONE, [a]);
+    expect(stored.size).toBe(1);
+    expect(stored.get(a)?.can_claim).toBe(false);
+    expect(stored.get(a)?.status).toBe(3);
+    expect(stored.get(a)?.points).toBe(0);
   });
 
   it('гонка за аккаунт: второй не получает занятый аккаунт (onlyIfFree)', async () => {

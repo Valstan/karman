@@ -316,7 +316,7 @@ export function pickPoolAccount<T extends PoolRow>(
   // Внутри класса — «дольше всех не активировался» (мандат владельца 15.11):
   // очки у всех в классе одинаковые, решает давность активации.
   const pick = (tier: PoolTier): T | null => {
-    const inTier = usable.filter((account) => tierOf(account, now) === tier);
+    const inTier = usable.filter((account) => poolTierOf(account, now) === tier);
     if (inTier.length === 0) return null;
     return [...inTier].sort(stalenessCompare)[0] ?? null;
   };
@@ -352,8 +352,13 @@ export function pickPoolAccount<T extends PoolRow>(
 
 /**
  * Очковый класс аккаунта — по ПОДСКАЗКЕ (то, что покажет и панель).
+ *
+ * Экспортируется наружу: выдача пересчитывает класс по ЖИВОМУ ответу панели
+ * (он может разойтись с моделью по датам — живьём 16.11 класс разошёлся у 48
+ * аккаунтов из 109), и обещать потребителю нужно тот класс, который
+ * подтвердила панель.
  */
-function tierOf(account: PoolRow, now: Date = new Date()): PoolTier {
+export function poolTierOf(account: PoolRow, now: Date = new Date()): PoolTier {
   const hint = hintFor(account, now);
   if (hint.unverified) return 'unverified';
   if (hint.points === 1000) return 'points_1000';

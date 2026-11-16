@@ -24,8 +24,8 @@ import {
   type ProjectUsage,
 } from '@/lib/accounts/rotation';
 import {
-  deletePanelState,
   isFreshPanelState,
+  markPanelStatesClaimed,
   readPanelStates,
   type PanelState,
 } from '@/lib/accounts/panel-state';
@@ -624,11 +624,13 @@ export async function activateAccount(
   });
 
   // Очки только что сожглись — панель MiniMax об этом ещё не знает (она узнает
-  // при следующей сверке). Пока её ответ «очки есть» жив, аккаунт вернулся бы в
-  // оборот, и потребитель получил бы «insufficient balance». Забываем ответ
-  // панели — до следующей сверки решает эвристика ночного сброса, а она после
-  // активации говорит «сожжён» (аккаунт только что активирован).
-  if (activated) await deletePanelState(input.id);
+  // при следующей сверке). Помечаем её ответ «очки сожжены», а НЕ удаляем:
+  // удалённый ответ означал бы возврат к модели по датам, а модель с панелью
+  // разошлась (живая сверка 16.11: класс очков расходится у 48 аккаунтов из
+  // 109) — в каталоге появлялись «тысячные», которые на деле давали 400.
+  // Помеченный ответ правдив сразу, а сверка вернёт «очки есть» после
+  // ночного сброса, и аккаунт вернётся в оборот сам.
+  if (activated) await markPanelStatesClaimed(input.id, now);
   return activated;
 }
 

@@ -2,6 +2,7 @@ import 'server-only';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { accountPanelState, accountsAccount } from '@/lib/db/schema';
+import { PANEL_STATUS_CLAIMED } from '@/lib/minimax/panel';
 
 /**
  * Состояние суток аккаунта по панели MiniMax — чтение и запись в БД.
@@ -211,6 +212,42 @@ export async function deletePanelState(accountId: number, timezoneId?: string): 
           )
         : eq(accountPanelState.accountId, accountId),
     );
+}
+
+/**
+ * Пометить ответ панели «очки сожжены» — после того, как аккаунт отдан
+ * потребителю или активирован владельцем.
+ *
+ * ## Почему не удаляем ответ, а помечаем
+ *
+ * Раньше ответ панели УДАЛЯЛСЯ, и строка аккаунта снова показывала модель по
+ * датам. А модель разошлась с панелью: живая сверка 16.11 — клетка панели и
+ * клетка модели расходятся у 73 аккаунтов из 109, а класс очков (400 или
+ * 1000) — у 48. То есть в каталоге появлялись «свободные 1000-очковые
+ * аккаунты», которые на деле давали 400: обещание расходилось с фактом, и
+ * Мозг получал «тысячные», которые тысячными не были.
+ *
+ * Помечаем — и в каталоге сразу видна правда («очки сожжены — ждём сброса»),
+ * а не догадка модели. Через автосверку панель ответит заново: после её
+ * ночного сброса — «очки есть», и аккаунт вернётся в оборот сам.
+ *
+ * Номер клетки сохраняем: это клетка, которая была забрана.
+ */
+export async function markPanelStatesClaimed(
+  accountId: number,
+  now: Date = new Date(),
+): Promise<void> {
+  const stamp = now.toISOString();
+  await db
+    .update(accountPanelState)
+    .set({
+      status: PANEL_STATUS_CLAIMED,
+      canClaim: false,
+      points: 0,
+      checkedAt: stamp,
+      updatedAt: stamp,
+    })
+    .where(eq(accountPanelState.accountId, accountId));
 }
 
 /**

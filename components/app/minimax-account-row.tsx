@@ -105,18 +105,20 @@ export function MinimaxAccountRow({
         ) : null}
         {/* Что даст ближайшая активация: клетка и очки (заказ владельца 11.11).
             Ответ панели MiniMax — источник правды (16.11): если он свежий, берём
-            его клетку и очки, а не модель по датам. */}
+            его клетку и очки. Если панель не отвечала — это ПРОГНОЗ по модели, и
+            он помечен: модель клетки с панелью разошлась (живьём 16.11 — класс
+            очков расходится у 48 аккаунтов из 109), и обещать её как факт нельзя. */}
         <div className="text-xs text-muted-foreground">
           {panel && panel.can_claim ? (
             `клетка ${panel.cell_no || '—'} — ${panel.points} очков (панель MiniMax)`
           ) : panel ? (
             'панель MiniMax: очки сегодня уже сожжены'
           ) : account.week.pointsToday > 0 ? (
-            `клетка ${account.week.nextIndex ?? '—'} — ${account.week.pointsToday} очков${
+            `по модели: клетка ${account.week.nextIndex ?? '—'} — ${account.week.pointsToday} очков${
               account.week.pointsToday === 1000
                 ? ' (бонус)'
                 : ` · до 1000 через ${account.week.daysToBonus - 1} дн.`
-            }`
+            } — панель не подтвердила`
           ) : (
             'сегодня чек-ин уже был — очков сегодня не даст'
           )}
