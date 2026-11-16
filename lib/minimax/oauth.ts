@@ -258,6 +258,110 @@ export async function refreshAccessToken(
   };
 }
 
+/**
+ * Состояние суток аккаунта по панели MiniMax — ЕДИНСТВЕННЫЙ источник правды
+ * о том, есть ли у аккаунта сегодняшние очки.
+ *
+ * Ответ панели: семь клеток недельного круга (`day_no`, `points`, `status`,
+ * `is_today`), где `status`: 1 — день не начался, 2 — **можно забрать**, 3 — забрано,
+ * 4 — недоступен.
+ *
+ * **Чтение ничего не тратит:** очки начисляются только `claim`ом (автоматически,
+ * когда рантайм начал работать под аккаунтом). Поэтому панель можно читать хоть
+ * для каждого аккаунта хоть каждый час — и знать, кто готов к выдаче.
+ *
+ * **Часовой пояс обязателен** (без него вендор отвечает «invalid timezone_id»):
+ * сутки MiniMax считаются по поясу ЗАПРОСА. Отсюда, кстати, наблюдение 15.11:
+ * панель владельца (Europe/Moscow) переходит на новые сутки в полночь, а запросы
+ * Сарафана (UTC) — в 03:00 МСК. В 00:25 МСК его «сегодня» ещё были вчерашние
+ * сутки, и чек-ин отдавал «insufficient balance».
+ */
+export type SigninDay = {
+  /** Номер клетки в недельном круге (1..7). */
+  day_no: number;
+  /** 1 — не начался, 2 — можно забрать, 3 — забрано, 4 — недоступен. */
+  status: number;
+  /** Сколько очков даёт клетка. */
+  points: number;
+  /** Это сегодняшняя клетка? */
+  is_today: boolean;
+};
+
+export type SigninStatusResult = {
+  /** Все семь клеток круга. */
+  days: SigninDay[];
+  /** Сегодняшняя клетка (по часовому поясу запроса) или null. */
+  today: SigninDay | null;
+  /** Можно ли забрать очки прямо сейчас. */
+  canClaim: boolean;
+  /** Сколько очков даст сегодняшняя клетка. */
+  points: number;
+};
+
+/** Статус клетки «можно забрать» — по панели MiniMax. */
+export const SIGNIN_STATUS_CLAIMABLE = 2;
+
+/**
+ * Прочитать состояние суток аккаунта (только чтение).
+ *
+ * Ответ вендора приходит как `{ data: { days: [...] }, base_resp: {...} }`; при
+ * негодном токене или сбое — `ok: false`, и это «не знаю», а не «очков нет».
+ */
+export async function signinStatus(
+  accessToken: string,
+  timezoneId: string,
+  signal?: AbortSignal,
+): Promise<OAuthResult<SigninStatusResult>> {
+  const url = `https://agent.minimax.io/minimax-cloud/api/v1/signin/status?timezone_id=${encodeURIComponent(timezoneId)}`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal,
+    });
+  } catch {
+    return { ok: false, error: 'network', message: 'MiniMax недоступен' };
+  }
+
+  const payload = await readJson(response);
+  if (!response.ok) {
+    const code = stringField(payload, 'error') ?? '';
+    return {
+      ok: false,
+      error: code === 'invalid_grant' ? 'invalid_grant' : 'unknown',
+      message: errorMessage(payload) ?? code ?? `HTTP ${response.status}`,
+    };
+  }
+
+  const data = (payload['data'] ?? {}) as { days?: unknown };
+  const rawDays = Array.isArray(data.days) ? data.days : [];
+  const days: SigninDay[] = rawDays
+    .map((item) => {
+      const day = (item ?? {}) as Record<string, unknown>;
+      return {
+        day_no: Number(day['day_no'] ?? 0),
+        status: Number(day['status'] ?? 0),
+        points: Number(day['points'] ?? 0),
+        is_today: day['is_today'] === true,
+      };
+    })
+    .filter((day) => day.day_no > 0);
+  if (days.length === 0) {
+    return { ok: false, error: 'unknown', message: 'Панель вернула пустое состояние' };
+  }
+
+  const today = days.find((day) => day.is_today) ?? null;
+  return {
+    ok: true,
+    data: {
+      days,
+      today,
+      canClaim: today?.status === SIGNIN_STATUS_CLAIMABLE,
+      points: today?.points ?? 0,
+    },
+  };
+}
+
 
 /** Ошибки вендера → наши коды. Неизвестное — 'unknown' с текстом вендера. */
 function mapError(code: string): DeviceFlowError {

@@ -19,6 +19,11 @@ import {
   type AccessHandover,
 } from '@/lib/services/account-tokens';
 import { moscowToday } from '@/lib/accounts/rotation';
+import {
+  dailyStateFor,
+  forgetDailyState,
+  timezoneForRoom,
+} from '@/lib/services/minimax-daily';
 import { pointsForIndex, weeklyQuota } from '@/lib/accounts/weekly';
 import {
   buildOffer,
@@ -450,6 +455,17 @@ export async function issueAccount(
       picked = pick();
       continue;
     }
+    // 1.5) Панель MiniMax: у потребителя в ЕГО сутках клетка уже забрана — значит
+    //      очков он не получит («insufficient balance»). Проверка только чтение,
+    //      очки при этом не тратятся. Панель не ответила — решает наша эвристика
+    //      ночной границы (не знаем — не отказываем).
+    const consumerTimezone = timezoneForRoom(caller.roomSlug);
+    const state = await dailyStateFor(candidate.id, consumerTimezone, now);
+    if (state && !state.can_claim) {
+      excluded.add(candidate.id);
+      picked = pick();
+      continue;
+    }
     // 2) Захват аккаунта: если его только что забрал другой проект — тоже идём к
     //    следующему (гонка закрыта на уровне БД, `onlyIfFree`).
     const claimed = await activateAccount(
@@ -464,6 +480,8 @@ export async function issueAccount(
       continue;
     }
     handover = token;
+    // Клетку только что забрали — состояние суток устарело.
+    forgetDailyState(candidate.id, consumerTimezone);
     break;
   }
 

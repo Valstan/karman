@@ -6,6 +6,7 @@ import {
   MINIMAX_OAUTH_GRANT_TYPE,
   pkcePair,
   refreshAccessToken,
+  signinStatus,
   startDeviceFlow,
   verificationLink,
 } from '@/lib/minimax/oauth';
@@ -14,8 +15,13 @@ import {
  * Гейт OAuth device-flow MiniMax (рецепт Сарафана, линия «Телефона», 14.11).
  *
  * Проверяем ровно то, на чём держится добыча токена: PKCE-пара (S256), форма запроса
- * device/code и обмена, и разбор ошибок вендера — `authorization_pending` это «жди», а
+ * device/code и обмена, разбор ошибок вендора — `authorization_pending` это «жди», а
  * не поломка, `expired_token` — нужен новый flow.
+ *
+ * С 15.11 добавились две вещи: **продление цепочки по refresh** (refresh одноразовый,
+ * но обновление возвращает новую пару целиком) и **чтение панели чекина**
+ * (`signin/status`) — источник правды о том, есть ли у аккаунта сегодняшние очки.
+ * Чтение ничего не тратит.
  */
 
 const originalFetch = globalThis.fetch;
@@ -169,8 +175,8 @@ describe('device-flow: обмен кода на пару', () => {
 
 describe('refresh: продление цепочки', () => {
   it('форма — grant_type=refresh_token, client_id, refresh_token', async () => {
-    // Refresh одноразовый, но вместе с новым access вендор отдаёт новый refresh —
-    // цепочка продлевается (живая проба 15.11: HTTP 200, оба токена).
+    // Refresh одноразовый, но вместе с новым access вендор отдаёт новый refresh:
+    // цепочка продлевается (живая проба 15.11).
     const spy = mockFetch(
       jsonResponse({ access_token: 'at-2', refresh_token: 'rt-2', expires_in: 43_200 }),
     );
@@ -201,6 +207,64 @@ describe('refresh: продление цепочки', () => {
   it('ответ без пары — ошибка: без нового refresh цепочка оборвётся', async () => {
     mockFetch(jsonResponse({ access_token: 'at-2' }));
     const result = await refreshAccessToken('rt-1');
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe('панель чекина: signin/status', () => {
+  const panel = {
+    data: {
+      scene: 2,
+      days: [
+        { day_no: 1, status: 3, points: 400, is_today: false, bonus_points: 0 },
+        { day_no: 2, status: 3, points: 400, is_today: false, bonus_points: 0 },
+        { day_no: 3, status: 3, points: 400, is_today: false, bonus_points: 0 },
+        { day_no: 4, status: 3, points: 1000, is_today: false, bonus_points: 0 },
+        { day_no: 5, status: 2, points: 400, is_today: true, bonus_points: 0 },
+        { day_no: 6, status: 1, points: 400, is_today: false, bonus_points: 0 },
+        { day_no: 7, status: 1, points: 1000, is_today: false, bonus_points: 0 },
+      ],
+    },
+    base_resp: { status_code: 0, status_msg: 'ok' },
+  };
+
+  it('читает состояние суток и понимает, что очки можно забрать', async () => {
+    const spy = mockFetch(jsonResponse(panel));
+    const result = await signinStatus('at-1', 'Europe/Moscow');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.days).toHaveLength(7);
+    // Клетка «сегодня» — status 2 («можно забрать»), очки 400.
+    expect(result.data.today?.day_no).toBe(5);
+    expect(result.data.canClaim).toBe(true);
+    expect(result.data.points).toBe(400);
+
+    const [url, init] = spy.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain('https://agent.minimax.io/minimax-cloud/api/v1/signin/status');
+    // Часовой пояс обязателен: без него вендор отвечает «invalid timezone_id».
+    expect(url).toContain('timezone_id=Europe%2FMoscow');
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer at-1');
+  });
+
+  it('клетка забрана — очков нет, аккаунт отдавать нельзя', async () => {
+    mockFetch(
+      jsonResponse({
+        ...panel,
+        data: {
+          ...panel.data,
+          days: panel.data.days.map((d) => (d.is_today ? { ...d, status: 3 } : d)),
+        },
+      }),
+    );
+    const result = await signinStatus('at-1', 'UTC');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.canClaim).toBe(false);
+  });
+
+  it('панель недоступна — это «не знаю», а не «очков нет»', async () => {
+    mockFetch(jsonResponse({ error: 'unauthorized' }, 401));
+    const result = await signinStatus('at-1', 'Europe/Moscow');
     expect(result.ok).toBe(false);
   });
 });

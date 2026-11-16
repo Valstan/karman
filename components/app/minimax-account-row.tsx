@@ -10,6 +10,20 @@ import type { ActivateKind } from './minimax-activation';
 import type { AccountListItem, ProjectListItem } from '@/lib/services/accounts';
 
 /**
+ * Состояние суток аккаунта по панели MiniMax (прочитано сверкой, очки не тратим).
+ */
+export type AccountDailyState = {
+  /** Можно ли забрать очки прямо сейчас. */
+  can_claim: boolean;
+  /** Сколько очков даст сегодняшняя клетка. */
+  points: number;
+  /** Статус клетки: 1 — не начался, 2 — можно забрать, 3 — забрано. */
+  status: number;
+  /** Когда прочитали (ISO). */
+  checked_at: string;
+};
+
+/**
  * Компактная строка аккаунта: название с почтой, статус токена, кнопки
  * «Почта»/«Пароль», «Правка» и корзинка. Под названием — обратный отсчёт до
  * освобождения (04.11: «сколько времени осталось»).
@@ -31,6 +45,7 @@ export function MinimaxAccountRow({
   onOpenWindow,
   onGetToken,
   tokenState,
+  dailyState,
   projects,
 }: {
   account: AccountListItem;
@@ -49,7 +64,8 @@ export function MinimaxAccountRow({
   onGetToken?: (accountId: number) => void;
   /** Статус токена аккаунта: «Без токена» или «Токен получен». */
   tokenState?: 'none' | 'obtained';
-  /** Проекты — для смены проекта в правке. */
+  /** Состояние суток по панели MiniMax: у кого очки реально есть (сверка 15.11). */
+  dailyState?: AccountDailyState;
   projects?: ProjectListItem[];
 }) {
   return (
@@ -85,6 +101,14 @@ export function MinimaxAccountRow({
         <div className="text-xs text-muted-foreground">
           Токен: {tokenState ? TOKEN_STATE_LABEL[tokenState] : '—'}
         </div>
+        {/* Очки по панели MiniMax — прочитано без траты (сверка 15.11). */}
+        {dailyState ? (
+          <div className="text-xs text-muted-foreground">
+            {dailyState.can_claim
+              ? `очки есть: ${dailyState.points}`
+              : 'очки сожжены — ждём сброса'}
+          </div>
+        ) : null}
         {/* Заказ владельца 05.11: по аккаунту — на какой проект он активирован,
             сколько очков ушло и сколько раз его брали. */}
         <div className="text-xs text-muted-foreground">
