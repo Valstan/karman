@@ -261,6 +261,8 @@ export async function sweepPanelStates(
       }
       const result = await syncDailyStates(owner.userId, timezoneId, now, {
         force: options.force,
+        // Остаток бюджета: одна пара «владелец + пояс» не должна съесть весь.
+        budgetMs: Math.max(0, deadline - Date.now()),
       }).catch(() => ({
         checked: 0,
         skipped: 0,
