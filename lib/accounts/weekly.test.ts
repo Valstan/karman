@@ -203,26 +203,76 @@ describe('сводка по запасу — строка лимитов', () =>
   it('за неделю — остаток календарной недели, темп и прогноз в днях', () => {
     const stats = weeklyPoolStats(
       [account(1, { quota: weeklyQuota([checkIn('2026-11-05')], today) }), account(2)],
-      [{ usedOn: '2026-11-09', activations: 4 }],
+      [{ usedOn: '2026-11-08', activations: 4, tokens: 1600 }],
       today,
       now,
     );
     // Оба аккаунта могут отметить все семь дней недели.
     expect(stats.week).toBe(14);
-    // Темп: 4 активации за один прошедший день недели.
-    expect(stats.perDay).toBe(4);
-    expect(stats.daysLeft).toBeCloseTo(3.5, 5);
-    expect(stats.daysToWeekEnd).toBe(7);
     // Сброс недельных лимитов — в ночь на понедельник следующей недели.
     expect(stats.weekResetsOn).toBe('2026-11-16');
+    expect(stats.daysToWeekEnd).toBe(7);
   });
 
-  it('без активаций темп неизвестен — прогноза нет, а не ноль', () => {
+  it('темп — по срезу 10 полных суток, а не по текущей неделе', () => {
+    // Срез — последние 10 ПОЛНЫХ суток: вчера и раньше (сегодняшние сутки
+    // ещё не закончились, а включение их занизило бы темп).
+    const stats = weeklyPoolStats(
+      [account(1)],
+      [
+        { usedOn: '2026-11-08', activations: 10, tokens: 4000 },
+        { usedOn: '2026-11-07', activations: 10, tokens: 4000 },
+        { usedOn: '2026-11-09', activations: 99, tokens: 99999 },
+      ],
+      today,
+      now,
+    );
+    expect(stats.sliceFrom).toBe('2026-10-30');
+    expect(stats.sliceTo).toBe('2026-11-08');
+    // Сегодняшние сутки в срез не входят, две строки по 4000 — делим на 2 дня.
+    expect(stats.pointsPerDay).toBe(4000);
+    // Неделя потребления: 4000 × 7 = 28 000 очков.
+    expect(stats.weekDemand).toBe(28000);
+  });
+
+  it('строки одного дня по разным проектам — это ОДИН день', () => {
+    // usageByDay приходит по проектам: без сборки по датам темп считался бы
+    // по числу строк и вышел бы заниженным в разы.
+    const stats = weeklyPoolStats(
+      [account(1)],
+      [
+        { usedOn: '2026-11-08', activations: 1, tokens: 400 },
+        { usedOn: '2026-11-08', activations: 1, tokens: 400 },
+      ],
+      today,
+      now,
+    );
+    expect(stats.pointsPerDay).toBe(800);
+  });
+
+  it('без расхода в срезе темп неизвестен — прогноза нет, а не ноль', () => {
     const stats = weeklyPoolStats([account(1)], [], today, now);
-    expect(stats.perDay).toBe(0);
-    expect(stats.daysLeft).toBeNull();
+    expect(stats.pointsPerDay).toBeNull();
+    expect(stats.weekDemand).toBeNull();
     expect(stats.coversWeek).toBeNull();
   });
+
+
+  it('«хватит ли на неделю» — запас против недели потребления', () => {
+    // Запас недельных квот двух аккаунтов: у каждого 7 дней клеток =
+    // 400+400+1000+400+400+1000+400 = 4000 очков, всего 8000.
+    const stats = weeklyPoolStats(
+      [account(1), account(2)],
+      [{ usedOn: '2026-11-08', activations: 10, tokens: 4000 }],
+      today,
+      now,
+    );
+    // Темп 4000 очков в сутки → неделя потребления 28 000 очков.
+    expect(stats.pointsPerDay).toBe(4000);
+    expect(stats.weekPoints).toBe(8000);
+    expect(stats.coversWeek).toBe(false);
+  });
+
 });
 
 describe('после седьмой клетки цикл начинается заново (решение владельца 11.11)', () => {

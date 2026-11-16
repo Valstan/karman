@@ -155,7 +155,7 @@ export function MinimaxPanel({
           checkedInToday: account.weekCheckedInToday,
           quota: account.week,
         })),
-        usageByDay.map((day) => ({ usedOn: day.usedOn, activations: day.activations })),
+        usageByDay.map((day) => ({ usedOn: day.usedOn, activations: day.activations, tokens: day.tokens })),
         moscowToday(new Date(clockMs)),
       ),
     [accounts, usageByDay, clockMs],
@@ -480,21 +480,24 @@ export function MinimaxPanel({
         <div className="flex flex-col gap-4">
           {/* Сводка по запасу — одна строка над верхним слотом (заказ владельца
               06.11): «Свободных - N, Скоро освободятся - M». Плюс недельная
-              квота (заказ владельца 09.11): «За день - X (в ближайшие 5 ч - Y)»,
-              «За неделю - Z (W очков, сброс <дата>)» и прогноз по текущему темпу —
-              хватит ли до конца недели. */}
+              квота (заказ 09.11): «За день - X (в ближайшие 5 ч - Y)»,
+              «За неделю - Z (W очков, сброс <дата>)». И прогноз по ТЕМПУ
+              ПОТРЕБЛЕНИЯ (заказ владельца 16.11): темп берётся не по текущей
+              неделе (в её первый день срез из одних суток — случайная цифра),
+              а по срезу последних 10 полных суток; «хватит ли на неделю» —
+              покрывает ли недельный запас неделю потребления. */}
           <div className="text-sm font-medium text-muted-foreground">
             Свободных - {pool.free}, Скоро освободятся - {pool.soon}, За день - {week.today}
             {week.freesIn5h > 0 ? ` (в ближайшие 5 ч - ${week.freesIn5h})` : ''},
             За неделю - {week.week} ({week.weekPoints} очков, сброс {week.weekResetsOn})
-            {week.perDay > 0 && week.daysLeft !== null
-              ? ` · темп ${week.perDay.toFixed(1)}/день, хватит на ${week.daysLeft.toFixed(1)} дней`
+            {week.pointsPerDay !== null
+              ? ` · темп ${Math.round(week.pointsPerDay).toLocaleString('ru-RU')} очков/день (срез ${week.sliceFrom}—${week.sliceTo})`
               : ''}
             {week.coversWeek === null
               ? ''
               : week.coversWeek
-                ? ' (до конца недели хватит)'
-                : ' (до конца недели не хватит)'}
+                ? ' (на неделю хватает)'
+                : ' (на неделю НЕ хватает)'}
           </div>
           {cohort.liveYesterday > 0 ? (
             <div className="-mt-3 text-sm font-medium text-muted-foreground">
