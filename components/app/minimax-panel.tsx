@@ -643,6 +643,7 @@ export function MinimaxPanel({
                   account={account}
                   spent
                   now={now}
+                  serverNow={serverNow}
                   projects={orderedProjects}
                   onCopy={(kind) => handleCopy(account, kind)}
                   onEdit={() => handleEdit(account)}

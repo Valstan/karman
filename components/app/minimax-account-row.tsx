@@ -46,6 +46,7 @@ export function MinimaxAccountRow({
   account,
   spent,
   now,
+  serverNow,
   onCopy,
   onEdit,
   onDelete,
@@ -60,6 +61,8 @@ export function MinimaxAccountRow({
   spent: boolean;
   /** Клиентские часы; null — показываем серверное значение. */
   now: number | null;
+  /** Серверное время рендера (ISO) — пока клиентские часы не пришли. */
+  serverNow: string;
   /** Копирование — гасить аккаунт больше не входит сюда (заказ 05.11). */
   onCopy: (kind: ActivateKind) => void;
   /** Правка: если задана — вызывает её, иначе открывается свой диалог. */
@@ -77,6 +80,10 @@ export function MinimaxAccountRow({
 }) {
   // Свежий ответ панели — источник правды; протухший — «не знаю».
   const panel = dailyState && !dailyState.stale ? dailyState : null;
+  // Возраст ответа панели считаем от тех же часов, что и остальной экран: пока
+  // клиентские часы не пришли, берём серверное время — иначе серверный HTML и
+  // первая отрисовка разошлись бы на минуту (гидрация).
+  const referenceMs = now ?? new Date(serverNow).getTime();
   return (
     <div
       className={`flex flex-wrap items-center justify-between gap-3 rounded-md border px-3 py-2 ${
@@ -122,10 +129,10 @@ export function MinimaxAccountRow({
         {dailyState ? (
           <div className="text-xs text-muted-foreground">
             {dailyState.stale
-              ? `панель MiniMax: ответ устарел (${formatCheckedAt(dailyState.checked_at)}) — ждём сверки`
+              ? `панель MiniMax: ответ устарел (${formatCheckedAt(dailyState.checked_at, referenceMs)}) — ждём сверки`
               : `панель MiniMax: ${
                   dailyState.can_claim ? `очки есть: ${dailyState.points}` : 'очки сожжены — ждём сброса'
-                } (${formatCheckedAt(dailyState.checked_at)})`}
+                } (${formatCheckedAt(dailyState.checked_at, referenceMs)})`}
           </div>
         ) : null}
         {/* Заказ владельца 05.11: по аккаунту — на какой проект он активирован,
@@ -205,16 +212,16 @@ export function MinimaxAccountRow({
 }
 
 /**
- * Когда панель читали — часами и минутами клиента («проверено 12:40»).
+ * Когда панель читали — «проверено 12 мин назад».
  *
- * Время московское у владельца, но браузер может быть в другом поясе — поэтому
- * подпись «в 12:40» без указания пояса вводила бы в заблуждение. Показываем
- * относительное время: «проверено 12 мин назад» — его нельзя прочитать неверно.
+ * Относительное время выбрано сознательно: абсолютное «в 12:40» без указания
+ * пояса вводило бы в заблуждение (часы в браузере владельца — московские, а у
+ * панели ответ по времени UTC).
  */
-function formatCheckedAt(checkedAt: string): string {
+function formatCheckedAt(checkedAt: string, referenceMs: number): string {
   const checked = new Date(checkedAt).getTime();
   if (Number.isNaN(checked)) return 'когда-то';
-  const minutes = Math.max(0, Math.round((Date.now() - checked) / 60_000));
+  const minutes = Math.max(0, Math.round((referenceMs - checked) / 60_000));
   if (minutes < 1) return 'только что';
   if (minutes < 60) return `${minutes} мин назад`;
   const hours = Math.round(minutes / 60);
