@@ -6,6 +6,7 @@ import { signinStatus, SIGNIN_STATUS_CLAIMABLE } from '@/lib/minimax/oauth';
 import { DEFAULT_TIMEZONE, OWNER_TIMEZONE } from '@/lib/minimax/panel';
 import { liveAccessToken } from '@/lib/services/account-tokens';
 import {
+  PANEL_REFRESH_AGE_MS,
   PANEL_STATE_TTL_MS,
   deletePanelState,
   isFreshPanelState,
@@ -118,7 +119,10 @@ export async function dailyStateFor(
     status: today?.status ?? 0,
     points: status.data.points,
     can_claim: status.data.canClaim,
-    checked_at: now.toISOString(),
+    // Отметка времени — момент ПРОЧТЕНИЯ, а не момент начала сверки: иначе
+    // весь пул получил бы одну и ту же отметку и состояние старело бы заново
+    // от общего начала (сотня аккаунтов, минуты на чтение).
+    checked_at: new Date().toISOString(),
   };
   await writePanelState(options.userId, accountId, timezoneId, {
     cell_no: state.cell_no,
@@ -172,7 +176,7 @@ export async function syncDailyStates(
   userId: number,
   timezoneId: string = OWNER_TIMEZONE,
   now: Date = new Date(),
-  options: { force?: boolean; budgetMs?: number } = {},
+  options: { force?: boolean; budgetMs?: number; maxAgeMs?: number } = {},
 ): Promise<{ checked: number; skipped: number; claimable: number; failed: number }> {
   const rows = await db
     .select({ accountId: accountToken.accountId })
@@ -182,6 +186,12 @@ export async function syncDailyStates(
   const stored: Map<number, PanelState> = options.force
     ? new Map()
     : await readPanelStates(userId, timezoneId);
+
+  // Порог обновления: состояние моложе него — не трогаем. По умолчанию это
+  // срок годности (кнопка владельца «сверить сейчас» обновляет всё), а
+  // автосверка берёт меньший порог — тогда ответы панели не подползают к
+  // границе годности и пул не скатывается на эвристику.
+  const refreshAfterMs = options.maxAgeMs ?? PANEL_STATE_TTL_MS;
 
   let checked = 0;
   let skipped = 0;
@@ -198,7 +208,7 @@ export async function syncDailyStates(
       batch.map(async (row) => {
         if (!options.force) {
           const state = stored.get(row.accountId) ?? null;
-          if (isFreshPanelState(state, now)) {
+          if (isFreshPanelState(state, now, refreshAfterMs)) {
             return { kind: 'skipped' as const, claimable: state!.can_claim };
           }
         }
@@ -263,6 +273,9 @@ export async function sweepPanelStates(
         force: options.force,
         // Остаток бюджета: одна пара «владелец + пояс» не должна съесть весь.
         budgetMs: Math.max(0, deadline - Date.now()),
+        // Обновляем ответы панели вдвое чаще её срока годности: тогда они не
+        // подползают к границе и пул всегда видит свежий ответ.
+        maxAgeMs: PANEL_REFRESH_AGE_MS,
       }).catch(() => ({
         checked: 0,
         skipped: 0,

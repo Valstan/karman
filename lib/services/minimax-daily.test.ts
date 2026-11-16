@@ -41,6 +41,7 @@ import {
   timezoneForRoom,
 } from '@/lib/services/minimax-daily';
 import { readPanelStates } from '@/lib/accounts/panel-state';
+import { PANEL_REFRESH_AGE_MS } from '@/lib/accounts/panel-state';
 
 let pg: PGlite | undefined;
 
@@ -240,5 +241,27 @@ describe('сверка суток: автосверка', () => {
     expect(stored.size).toBe(1);
     const storedUtc = await readPanelStates(owner.id, DEFAULT_TIMEZONE);
     expect(storedUtc.size).toBe(1);
+  });
+
+  it('состояние обновляется вдвое чаще срока годности — иначе пул скатывается на эвристику', async () => {
+    // Порог обновления (15 мин) — вдвое меньше срока годности (30 мин). Если бы
+    // автосверка обновляла по сроку годности, ответы подползали бы к границе:
+    // сверка пропускала бы «ещё годное», а пул уже считал бы «не знаю» — и
+    // аккаунты, которым панель вернула очки, выпадали бы из оборота.
+    await makeAccountWithPair('refresh-age@example.test');
+    oauth.signinStatus.mockResolvedValue(panelResponse(true));
+
+    const now = new Date();
+    await syncDailyStates(owner.id, OWNER_TIMEZONE, now, { force: true });
+    expect(oauth.signinStatus).toHaveBeenCalledTimes(1);
+
+    // Через 20 минут состояние ещё годное для пула (срок 30 мин), но для
+    // автосверки уже «подпорченное» (порог 15 мин) — перечитываем.
+    const later = new Date(now.getTime() + 20 * 60_000);
+    const refreshed = await syncDailyStates(owner.id, OWNER_TIMEZONE, later, {
+      maxAgeMs: PANEL_REFRESH_AGE_MS,
+    });
+    expect(refreshed.checked).toBe(1);
+    expect(oauth.signinStatus).toHaveBeenCalledTimes(2);
   });
 });
