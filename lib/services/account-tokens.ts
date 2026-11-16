@@ -642,6 +642,70 @@ export async function ensureLiveAccessToken(
 }
 
 /**
+ * Живой access для ЧТЕНИЯ состояния суток (панель MiniMax).
+ *
+ * Отличие от `ensureLiveAccessToken`: отданный access тоже годится — прочитать
+ * панель можно тем же токеном, который уже у потребителя. Refresh при этом не
+ * тратится зря: цепочку обновляем только когда access протух (тогда refresh и
+ * был бы использован один раз — и даёт новую пару).
+ */
+export async function liveAccessToken(
+  accountId: number,
+  now: Date = new Date(),
+): Promise<string | null> {
+  const [row] = await db
+    .select()
+    .from(accountToken)
+    .where(eq(accountToken.accountId, accountId))
+    .limit(1);
+  if (!row) return null;
+
+  let payload: { access?: string; refresh?: string };
+  try {
+    payload = JSON.parse(
+      decryptSecret(
+        { ciphertext: row.ciphertext, iv: row.iv, authTag: row.authTag },
+        accountTokenAad(accountId),
+      ),
+    ) as { access?: string; refresh?: string };
+  } catch {
+    return null;
+  }
+  if (!payload.access || !payload.refresh) return null;
+
+  if (new Date(row.expiresAt).getTime() > now.getTime()) return payload.access;
+
+  // Access протух — продлеваем цепочку (refresh одноразовый, но выдаёт новую пару).
+  const refreshed = await refreshAccessToken(payload.refresh);
+  if (!refreshed.ok) {
+    if (refreshed.error === 'invalid_grant') {
+      await db.delete(accountToken).where(eq(accountToken.id, row.id));
+    }
+    return null;
+  }
+
+  const newExpiresAt = new Date(now.getTime() + refreshed.data.expiresInSeconds * 1000);
+  const enc = encryptSecret(
+    JSON.stringify({ access: refreshed.data.accessToken, refresh: refreshed.data.refreshToken }),
+    accountTokenAad(accountId),
+  );
+  const updated = await db
+    .update(accountToken)
+    .set({
+      ciphertext: enc.ciphertext,
+      iv: enc.iv,
+      authTag: enc.authTag,
+      expiresAt: newExpiresAt.toISOString(),
+      handedOverAt: null,
+      updatedAt: now.toISOString(),
+    })
+    .where(and(eq(accountToken.id, row.id), eq(accountToken.ciphertext, row.ciphertext)))
+    .returning({ id: accountToken.id });
+  if (updated.length === 0) return null;
+  return refreshed.data.accessToken;
+}
+
+/**
  * Пометить, что access отдан проекту (мандат владельца 15.11: по одному токену за
  * один запрос).
  */

@@ -10,6 +10,7 @@ import {
   projectUsageByDay,
 } from '@/lib/services/accounts';
 import { tokenProgress } from '@/lib/services/account-tokens';
+import { dailyStates, OWNER_TIMEZONE } from '@/lib/services/minimax-daily';
 import { MinimaxPanel } from '@/components/app/minimax-panel';
 
 /**
@@ -17,9 +18,9 @@ import { MinimaxPanel } from '@/components/app/minimax-panel';
  * MiniMax, которыми переключается, пока программирует.
  *
  * С 15.11 здесь ВСЁ про MiniMax в одном месте (заказ владельца: «давай все
- * объединим в одно целое… будет одна страница мини макса»): аккаунты, их
- * активации, почта, пароль и токен. Отдельной страницы «Токены аккаунтов MiniMax»
- * больше нет — её адрес ведёт сюда.
+ * объединим в одно целое… будет одна страница мини макса, и там всё: активации,
+ * токен, почта, пароль… если токена нет — предлагай его получить»). Отдельной
+ * страницы «Токены аккаунтов MiniMax» больше нет — её адрес ведёт сюда.
  *
  * Раздел ТОЛЬКО владельца: там пароли. Проверка — здесь (не только в меню) и в
  * действиях; отказ — 404, как у раздела секретов. Второй фактор нужен не на
@@ -48,6 +49,13 @@ export default async function MinimaxPage() {
       tokenProgress(user, now),
     ]);
 
+  // Сверка суток с панелью MiniMax: что уже прочитано — показываем в строках.
+  // Остальное владелец запускает кнопкой «Сверить сутки с MiniMax» (чтение
+  // панели очки не тратит).
+  const states = Object.fromEntries(
+    [...dailyStates(OWNER_TIMEZONE)].map(([id, state]) => [id, state]),
+  );
+
   return (
     <div className="flex flex-col gap-6">
       <div>
@@ -68,6 +76,7 @@ export default async function MinimaxPage() {
         rating={rating}
         apiUsage={apiUsage}
         tokenProgress={tokens}
+        dailyStates={states}
         serverNow={now.toISOString()}
       />
     </div>

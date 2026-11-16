@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { Copy, KeyRound, LayoutList, Trash2, Zap } from 'lucide-react';
+import { Copy, KeyRound, LayoutList, RefreshCw, Trash2, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Table,
@@ -35,10 +35,11 @@ import {
 } from './minimax-already-activated-dialog';
 import { ConfirmDialog } from './confirm-dialog';
 import { MinimaxToolbar } from './minimax-toolbar';
-import { MinimaxAccountRow } from './minimax-account-row';
+import { MinimaxAccountRow, type AccountDailyState } from './minimax-account-row';
 import { MinimaxAllAccountsDialog } from './minimax-all-accounts-dialog';
 import { MinimaxTokenTool } from './minimax-token-tool';
 import { TOKEN_STATE_LABEL, useMinimaxTokenFlow } from './minimax-token-flow';
+import { syncDailyStatesAction } from '@/lib/actions/minimax-daily';
 import { MinimaxActivationsByDay } from './minimax-activations-by-day';
 import { MinimaxDailySums } from './minimax-daily-sums';
 import { MinimaxApiUsage } from './minimax-api-usage';
@@ -91,6 +92,7 @@ export function MinimaxPanel({
   rating,
   apiUsage,
   tokenProgress,
+  dailyStates,
   serverNow,
 }: {
   accounts: AccountListItem[];
@@ -105,6 +107,8 @@ export function MinimaxPanel({
   apiUsage: ApiUsageDay[];
   /** Состояние токенов аккаунтов (заказ 15.11: статусы «Без токена»/«Токен получен»). */
   tokenProgress: TokenProgress;
+  /** Состояние суток по панели MiniMax: у кого очки реально есть (сверка 15.11). */
+  dailyStates: Record<number, AccountDailyState>;
   /** Момент, на котором сервер посчитал список (ISO) — для гидрации. */
   serverNow: string;
 }) {
@@ -339,6 +343,15 @@ export function MinimaxPanel({
     router.refresh();
   }
 
+  // Сверка суток с панелью: идёт в фоне (после ответа сервера), поэтому страницу
+  // обновляем по таймеру — иначе состояние появилось бы только после ручного F5.
+  const [syncing, setSyncing] = useState(false);
+  useEffect(() => {
+    if (!syncing) return;
+    const timer = setInterval(() => router.refresh(), 5000);
+    return () => clearInterval(timer);
+  }, [syncing, router]);
+
   const preview = activated.slice(0, ACTIVATED_PREVIEW_LIMIT);
   const allAccounts = useMemo(
     () => [...(next ? [next] : []), ...queued, ...activated],
@@ -358,6 +371,30 @@ export function MinimaxPanel({
         {/* ЛЕВАЯ ПОЛОВИНА: кнопки и статистика. */}
         <div className="flex flex-col gap-4">
           <MinimaxToolbar onAccountCreated={(id) => tokenFlow.start(id)} />
+
+          {/* Сверка суток с панелью MiniMax: читаем, сколько очков у кого реально
+              есть. Проверка ничего не тратит (очки начисляет claim) — зато видно,
+              кого можно отдавать потребителю, а у кого бонус уже сожжён. */}
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={syncing}
+            onClick={() => {
+              setSyncing(true);
+              void syncDailyStatesAction().then((result) => {
+                if (!result.ok) {
+                  toast.error(result.error);
+                  setSyncing(false);
+                  return;
+                }
+                toast.success('Сверка идёт — состояние появится в строках через минуту');
+                window.setTimeout(() => setSyncing(false), 90_000);
+              });
+            }}
+          >
+            <RefreshCw className="mr-1 h-4 w-4" />
+            {syncing ? 'Сверяем сутки…' : 'Сверить сутки с MiniMax'}
+          </Button>
 
           {/* Токены аккаунтов — здесь же, на странице «Минимакс» (заказ 15.11:
               отдельной страницы «Токены аккаунтов MiniMax» больше нет). */}
@@ -610,6 +647,7 @@ export function MinimaxPanel({
                   onOpenWindow={() => openWindow(account.id)}
                   onGetToken={(id) => tokenFlow.start(id)}
                   tokenState={tokenStates.get(account.id)?.state}
+                  dailyState={dailyStates[account.id]}
                 />
               ))}
               {activated.length > preview.length ? (
