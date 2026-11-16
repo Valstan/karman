@@ -15,6 +15,8 @@ import { encryptSecret } from '@/lib/secrets/crypto';
 import { accountPasswordAad } from '@/lib/services/accounts';
 import { accountTokenAad } from '@/lib/services/account-tokens';
 import { issueAccount, recordObservation } from '@/lib/services/minimax';
+import { writePanelState } from '@/lib/accounts/panel-state';
+import { OWNER_TIMEZONE } from '@/lib/minimax/panel';
 
 /**
  * Гейт машинного доступа к пулу MiniMax (заказ владельца 13.11).
@@ -40,11 +42,12 @@ vi.mock('@/lib/db/client', () => ({
 }));
 
 // Refresh одноразовый, но цепочку продлевает: при протухшем access мы обновляем
-// пару сами (мандат владельца 15.11 — «токены не протухли»).
-const oauth = vi.hoisted(() => ({ refreshAccessToken: vi.fn() }));
+// пару сами (мандат владельца 15.11 — «токены не протухли»). Панель читаем при
+// выдаче — она источник правды про очки.
+const oauth = vi.hoisted(() => ({ refreshAccessToken: vi.fn(), signinStatus: vi.fn() }));
 vi.mock('@/lib/minimax/oauth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/minimax/oauth')>();
-  return { ...actual, refreshAccessToken: oauth.refreshAccessToken };
+  return { ...actual, refreshAccessToken: oauth.refreshAccessToken, signinStatus: oauth.signinStatus };
 });
 
 let pg: PGlite | undefined;
@@ -52,6 +55,7 @@ let pg: PGlite | undefined;
 const OWNER_ID = 1; // admin из scripts/bootstrap.sql
 const ROOM_TOKEN = 'skm_test_room_token_0123456789abcdef';
 const OTHER_ROOM_TOKEN = 'skm_test_other_room_token_0123456789';
+const BRAIN_TOKEN = 'skm_test_brain_room_token_0123456789abc';
 const PASSWORD = 'пароль-из-vault';
 const NOW = new Date('2026-11-13T12:00:00Z'); // 15:00 по Москве
 const TODAY = '2026-11-13';
@@ -126,6 +130,25 @@ async function makeTokenPair(accountId: number, access = 'ACCESS-1', refresh = '
   });
 }
 
+/**
+ * Ответ панели MiniMax: сегодняшняя клетка забираема, очки — сколько скажем.
+ *
+ * Панель — источник правды про очки (заказ владельца 16.11): модель клетки с
+ * панелью разошлась (живьём 16.11 класс очков разошёлся у 48 аккаунтов из
+ * 109), поэтому ответ выдачи считается по панели.
+ */
+function panelAnswer(points: number, dayNo = 4) {
+  return {
+    ok: true as const,
+    data: {
+      days: [{ day_no: dayNo, status: 2, points, is_today: true }],
+      today: { day_no: dayNo, status: 2, points, is_today: true },
+      canClaim: true,
+      points,
+    },
+  };
+}
+
 // Свежая схема на каждый кейс: пул общий, и один кейс не должен видеть аккаунты
 // другого (иначе «тысячник отдаётся, когда четырёхсотых нет» ловит чужой аккаунт).
 // Комната Сарафана с пишущим токеном — на каждый кейс своя.
@@ -139,6 +162,16 @@ beforeEach(async () => {
   oauth.refreshAccessToken.mockResolvedValue({
     ok: true,
     data: { accessToken: 'ACCESS-2', refreshToken: 'REFRESH-2', expiresInSeconds: 3600 },
+  });
+  oauth.signinStatus.mockReset();
+  oauth.signinStatus.mockResolvedValue({
+    ok: true,
+    data: {
+      days: [{ day_no: 2, status: 2, points: 400, is_today: true }],
+      today: { day_no: 2, status: 2, points: 400, is_today: true },
+      canClaim: true,
+      points: 400,
+    },
   });
 });
 
@@ -179,6 +212,8 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     await makeCheckIn(thousand, '2026-11-11', 2);
     await makeCheckIn(thousand, '2026-11-12', 3);
     await makeTokenPair(thousand);
+    // Панель подтверждает: сегодня клетка 4 — 1000 очков.
+    oauth.signinStatus.mockResolvedValue(panelAnswer(1000, 4));
 
     const result = await issueAccount(OTHER_ROOM_TOKEN, '127.0.0.1', {}, NOW);
     expect(result.ok).toBe(true);
@@ -186,6 +221,82 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     expect(result.offer.account?.id).toBe(thousand);
     expect(result.offer.tier).toBe('points_1000');
     expect(result.offer.account?.points_next).toBe(1000);
+  });
+
+  /**
+   * Очки и класс в ответе — ИЗ ПАНЕЛИ, а не из модели по датам.
+   *
+   * Модель клетки с панелью разошлась: живая сверка 16.11 — класс очков
+   * (400 или 1000) расходится у 48 аккаунтов из 109. Значит обещание «1000
+   * очков» от модели может оказаться пустым, и Мозг получил бы «тысячный»
+   * аккаунт, который на деле даёт 400.
+   */
+  it('очки и класс в ответе — из панели, даже когда модель обещает тысячи', async () => {
+    // Модель по датам: три отметки подряд → сегодня клетка 4 → 1000 очков.
+    const accountId = await makeAccount('Модель врёт', 'lie@example.test', null, null);
+    await makeCheckIn(accountId, '2026-11-10', 1);
+    await makeCheckIn(accountId, '2026-11-11', 2);
+    await makeCheckIn(accountId, '2026-11-12', 3);
+    await makeTokenPair(accountId);
+
+    const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Панель ответила: сегодня клетка 2, 400 очков.
+    expect(result.offer.account?.id).toBe(accountId);
+    expect(result.offer.account?.points_next).toBe(400);
+    expect(result.offer.tier).toBe('points_400');
+    expect(result.offer.account?.activation_index).toBe(2);
+  });
+
+  /**
+   * Мозг (комната brain) получает тысячные ПЕРВЫМИ — по панели.
+   *
+   * Мандат владельца 14.11: «панели программирования предлагать в приоритете
+   * 1000 токоны». Заказ 16.11: тысячные — это программирование, значит они
+   * должны уходить Мозгу, и в первую очередь.
+   */
+  it('Мозгу (brain) — тысячные по панели идут первыми', async () => {
+    await makeRoom('brain', 'brain', BRAIN_TOKEN);
+    const thousand = await makeAccount('Тысячник', 'thousand@example.test', null, null);
+    const four = await makeAccount('Четырёхсот', 'four@example.test', null, null);
+    await makeTokenPair(thousand, 'ACCESS-T');
+    await makeTokenPair(four, 'ACCESS-F');
+    // Панель: у тысячника сегодня клетка 4 (1000 очков), у второго клетка 2 (400).
+    await writePanelState(OWNER_ID, thousand, OWNER_TIMEZONE, {
+      cell_no: 4,
+      status: 2,
+      points: 1000,
+      can_claim: true,
+      checked_at: NOW.toISOString(),
+    });
+    await writePanelState(OWNER_ID, four, OWNER_TIMEZONE, {
+      cell_no: 2,
+      status: 2,
+      points: 400,
+      can_claim: true,
+      checked_at: NOW.toISOString(),
+    });
+    oauth.signinStatus.mockImplementation(async (access: string) => {
+      const points = access === 'ACCESS-T' ? 1000 : 400;
+      return {
+        ok: true as const,
+        data: {
+          days: [{ day_no: points === 1000 ? 4 : 2, status: 2, points, is_today: true }],
+          today: { day_no: points === 1000 ? 4 : 2, status: 2, points, is_today: true },
+          canClaim: true,
+          points,
+        },
+      };
+    });
+
+    const result = await issueAccount(BRAIN_TOKEN, '127.0.0.1', {}, NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.offer.account?.id).toBe(thousand);
+    expect(result.offer.tier).toBe('points_1000');
+    expect(result.offer.account?.points_next).toBe(1000);
+    expect(result.offer.account?.activation_index).toBe(4);
   });
 
   it('read-only токен не получает аккаунт', async () => {
@@ -336,10 +447,14 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     await makeCheckIn(thousand, '2026-11-10', 1);
     await makeCheckIn(thousand, '2026-11-11', 2);
     await makeCheckIn(thousand, '2026-11-12', 3);
-    await makeTokenPair(thousand);
+    await makeTokenPair(thousand, 'ACCESS-T');
     const four = await makeAccount('Четырёхсотый', 'four@example.test', null, null);
     await makeCheckIn(four, '2026-11-12', 1);
-    await makeTokenPair(four);
+    await makeTokenPair(four, 'ACCESS-F');
+    // Панель подтверждает модель: у тысячника сегодня 1000, у четырёхсотого 400.
+    oauth.signinStatus.mockImplementation(async (access: string) =>
+      access === 'ACCESS-T' ? panelAnswer(1000, 4) : panelAnswer(400, 2),
+    );
 
     // Комната Сарафана (setka) — четырёхсотовые первыми.
     const sarafan = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);

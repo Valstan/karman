@@ -21,13 +21,13 @@ import {
 import { moscowToday } from '@/lib/accounts/rotation';
 import {
   dailyStateFor,
-  forgetDailyState,
   timezoneForRoom,
 } from '@/lib/services/minimax-daily';
 import { pointsForIndex, weeklyQuota } from '@/lib/accounts/weekly';
 import {
   buildOffer,
   pickPoolAccount,
+  poolTierOf,
   resolveActivation,
   type PoolFilters,
   type PoolOffer,
@@ -470,6 +470,21 @@ export async function issueAccount(
       picked = pick();
       continue;
     }
+    // Ответ панели — источник правды про очки. Обещаем потребителю ровно то,
+    // что подтвердила панель: модель по датам с панелью разошлась (живая
+    // сверка 16.11: класс очков расходится у 48 аккаунтов из 109), и
+    // обещание «1000 очков» от модели оказалось бы пустым — Мозг получил бы
+    // «тысячный» аккаунт, который даёт 400.
+    if (state) {
+      const verified = {
+        ...candidate,
+        panelStatus: state.status,
+        panelPoints: state.points,
+        panelCellNo: state.cell_no,
+        panelCheckedAt: state.checked_at,
+      };
+      picked = { ...picked, account: verified, tier: poolTierOf(verified, now) };
+    }
     // 2) Захват аккаунта: если его только что забрал другой проект — тоже идём к
     //    следующему (гонка закрыта на уровне БД, `onlyIfFree`).
     const claimed = await activateAccount(
@@ -484,9 +499,8 @@ export async function issueAccount(
       continue;
     }
     handover = token;
-    // Клетку только что забрали — состояние суток устарело. Забываем ответ
-    // панели (панель об этом ещё не знает), иначе аккаунт остался бы «с очками».
-    await forgetDailyState(candidate.id);
+    // Клетку только что забрали — ответ панели помечен «очки сожжены» (это делает
+    // activateAccount: панель об этом ещё не знает, а обещать «очки есть» нельзя).
     break;
   }
 
