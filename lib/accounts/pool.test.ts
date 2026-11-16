@@ -8,6 +8,7 @@ import {
   type PoolRow,
 } from '@/lib/accounts/pool';
 import { weeklyQuota, type WeeklyCheckIn } from '@/lib/accounts/weekly';
+import { accountPoolSummary } from '@/lib/accounts/rotation';
 
 const TODAY = '2026-11-13';
 const NOW = new Date('2026-11-13T12:00:00Z');
@@ -271,5 +272,87 @@ describe('пул MiniMax: запись активации по ответу пр
     expect(resolution.index).toBe(1);
     expect(resolution.points).toBe(400);
     expect(resolution.mismatch).toBe(true);
+  });
+});
+
+/**
+ * Панель MiniMax — источник правды (заказ владельца 16.11: «сделать аккаунты
+ * активными, когда очки появятся»).
+ *
+ * Час ночного сброса у MiniMax точно не известен, поэтому наша эвристика
+ * ошибается в обе стороны: то держит аккаунт вне оборота, когда очки уже есть,
+ * то отдаёт аккаунт, у которого очков ещё нет (ровно из-за этого 15.11 пятнадцать
+ * аккаунтов подряд отказали с «insufficient balance»). Панель отвечает точно.
+ */
+describe('пул MiniMax: панель как источник правды', () => {
+  it('панель сказала «очки есть» — аккаунт возвращается в оборот', () => {
+    // Активирован час назад: наша эвристика ночного сброса говорит «сожжён».
+    const usedAt = new Date(NOW.getTime() - 60 * 60 * 1000).toISOString();
+    const returned = account(1, [auto('2026-11-12')], {
+      usedAt,
+      usedOn: TODAY,
+      panelStatus: 2,
+      panelPoints: 400,
+      panelCellNo: 2,
+    });
+    const picked = pickPoolAccount([returned], NOW);
+    expect(picked.account?.id).toBe(1);
+    expect(picked.tier).toBe('points_400');
+    expect(picked.free).toBe(1);
+  });
+
+  it('панель сказала «очки сожжены» — аккаунт из оборота выходит', () => {
+    // Свободный по эвристике (активирован давно), но панель говорит, что
+    // сегодняшние очки уже забрали: отдавать такой нельзя.
+    const burned = account(1, [auto('2026-11-12')], {
+      usedAt: new Date(NOW.getTime() - 48 * 60 * 60 * 1000).toISOString(),
+      panelStatus: 3,
+      panelPoints: 400,
+      panelCellNo: 2,
+    });
+    const picked = pickPoolAccount([burned], NOW);
+    expect(picked.account).toBeNull();
+    expect(picked.free).toBe(0);
+  });
+
+  it('подсказка по очкам — из панели: клетка и очки её', () => {
+    const row = account(1, [auto('2026-11-12')], {
+      panelStatus: 2,
+      panelPoints: 1000,
+      panelCellNo: 7,
+    });
+    const hint = hintFor(row);
+    expect(hint.source).toBe('panel');
+    expect(hint.index).toBe(7);
+    expect(hint.points).toBe(1000);
+    expect(hint.unverified).toBe(false);
+  });
+
+  it('панель ответила «очки сожжены» — подсказка по очкам нулевая', () => {
+    const row = account(1, [auto('2026-11-12')], { panelStatus: 3, panelPoints: 400 });
+    const hint = hintFor(row);
+    expect(hint.source).toBe('panel');
+    expect(hint.points).toBe(0);
+  });
+
+  it('счётчик свободных считает аккаунт, возвращённый панелью', () => {
+    const usedAt = new Date(NOW.getTime() - 60 * 60 * 1000).toISOString();
+    const returned = account(1, [auto('2026-11-12')], {
+      usedAt,
+      usedOn: TODAY,
+      panelStatus: 2,
+      panelPoints: 400,
+      panelCellNo: 2,
+    });
+    const summary = accountPoolSummary([returned], NOW);
+    expect(summary.free).toBe(1);
+    expect(summary.soon).toBe(0);
+  });
+
+  it('без ответа панели всё остаётся как было: решает эвристика ночного сброса', () => {
+    const usedAt = new Date(NOW.getTime() - 60 * 60 * 1000).toISOString();
+    const spent = account(1, [auto('2026-11-12')], { usedAt, usedOn: TODAY });
+    expect(pickPoolAccount([spent], NOW).account).toBeNull();
+    expect(hintFor(spent).source).toBe('model');
   });
 });

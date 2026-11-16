@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { PANEL_STATUS_CLAIMABLE } from '@/lib/minimax/panel';
 
 /**
  * OAuth device-flow MiniMax Code — добыча токена агента для аккаунта.
@@ -299,7 +300,7 @@ export type SigninStatusResult = {
 };
 
 /** Статус клетки «можно забрать» — по панели MiniMax. */
-export const SIGNIN_STATUS_CLAIMABLE = 2;
+export const SIGNIN_STATUS_CLAIMABLE = PANEL_STATUS_CLAIMABLE;
 
 /**
  * Прочитать состояние суток аккаунта (только чтение).

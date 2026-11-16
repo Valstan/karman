@@ -422,7 +422,7 @@ export async function issueAccount(
   if (!callerResult.ok) return callerResult;
   const caller = callerResult.caller;
 
-  const accounts = await listAccounts(caller.owner, now);
+  const accounts = await listAccounts(caller.owner, now, { timezoneId: timezoneForRoom(caller.roomSlug) });
   // Отдаём только аккаунты, у которых пара токенов ЕСТЬ: протухший access мы
   // оживим по refresh при выдаче (refresh остаётся у нас), а аккаунт без пары
   // проекту бесполезен — вход в MiniMax делает владелец.
@@ -431,6 +431,9 @@ export async function issueAccount(
   // этом не участвует и никаких параметров не задаёт.
   const preferredTier = TIER_PREFERENCE[caller.roomSlug] ?? DEFAULT_TIER_PREFERENCE;
   const today = moscowToday(now);
+  // Пояс потребителя: его «сегодня» и наше «сегодня» — разные дни в ночном
+  // окне между 00:00 и 03:00 МСК, поэтому состояние панели берём для ЕГО пояса.
+  const consumerTimezone = timezoneForRoom(caller.roomSlug);
 
   // Кандидатов перебираем: аккаунт может оказаться непригодным (цепочка токенов
   // оборвана) или его только что забрал другой проект — тогда берём следующего, а
@@ -459,8 +462,9 @@ export async function issueAccount(
     //      очков он не получит («insufficient balance»). Проверка только чтение,
     //      очки при этом не тратятся. Панель не ответила — решает наша эвристика
     //      ночной границы (не знаем — не отказываем).
-    const consumerTimezone = timezoneForRoom(caller.roomSlug);
-    const state = await dailyStateFor(candidate.id, consumerTimezone, now);
+    const state = await dailyStateFor(candidate.id, consumerTimezone, now, {
+      userId: caller.owner.id,
+    });
     if (state && !state.can_claim) {
       excluded.add(candidate.id);
       picked = pick();
@@ -480,8 +484,9 @@ export async function issueAccount(
       continue;
     }
     handover = token;
-    // Клетку только что забрали — состояние суток устарело.
-    forgetDailyState(candidate.id, consumerTimezone);
+    // Клетку только что забрали — состояние суток устарело. Забываем ответ
+    // панели (панель об этом ещё не знает), иначе аккаунт остался бы «с очками».
+    await forgetDailyState(candidate.id);
     break;
   }
 

@@ -60,7 +60,7 @@
 поэтому гейт «суперпользователь» на операции, возвращающей пароль открытым текстом, не
 удерживал ничего.
 
-## 3. HTTP-роуты — `app/api/**/route.ts` (30 файла, 42 обработчиков, 24 пишущих)
+## 3. HTTP-роуты — `app/api/**/route.ts` (31 файла, 43 обработчиков, 25 пишущих)
 
 | Роут | Методы | Пишет | Авторизация |
 |---|---|---|---|
@@ -78,6 +78,7 @@
 | `/api/secrets/grants/[id]/accept` | **POST** | `secrets_grant` → `active`, `secrets_item` получателя | `Bearer skm_…` **получателя** с правом записи (вторая рука, D-061) |
 | `/api/secrets/policies` | GET, **POST**, **DELETE** | `secrets_grant_policy`, аудит | `Bearer skm_…` **получателя** (POST/DELETE — право записи; политика — его согласие, S2 D-119), через `grantsGate` |
 | `/api/reminders/dispatch` | **POST** | `reminder` (слот сработавшего), отправка в Telegram | внутренний Bearer (`REMINDERS_INTERNAL_SECRET`) — зовёт воркер |
+| `/api/internal/minimax/panel-sync` | **POST** | `account_panel_state` (ответ панели MiniMax по аккаунтам — только чтение панели, очки не тратятся) | внутренний Bearer (`REMINDERS_INTERNAL_SECRET`) — зовёт воркер раз в 15 минут; сама сверка уходит в фон (`after`), ответ сразу |
 | `/api/telegram/ingest` | **POST** | по команде: `reminder`, привязки, профиль | внутренний Bearer; `proxy.ts` не трогает `/api/*`, поэтому защита здесь |
 | `/api/hotline` | GET, **POST** | `hotline_message` (POST), чтение ленты (GET) | общий секрет relay (`HOTLINE_RELAY_SECRET`, `checkHotlineBearer`, fail-closed 503 без секрета); POST — rate-limit по IP + серверный deny-линт до записи |
 | `/api/hotline/presence` | GET, **POST** | `hotline_presence` (upsert по метке) + сторож линии: GET/POST гасят протухшие `on_line` → `offline` (два пропуска по 30с, мандат 05.10) | тот же секрет relay; чтение присутствия — тем же Bearer |
@@ -97,7 +98,7 @@
 
 | Процесс | Что пишет | Чем защищён |
 |---|---|---|
-| `scripts/reminders-worker.mjs` (systemd `karman-reminders`) | в нашу БД **не пишет**: long-poll Telegram → `POST /api/telegram/ingest`, таймер → `POST /api/reminders/dispatch` | `REMINDERS_INTERNAL_SECRET` в Bearer; на боксе запускается юнитом |
+| `scripts/reminders-worker.mjs` (systemd `karman-reminders`) | в нашу БД **не пишет**: long-poll Telegram → `POST /api/telegram/ingest`, таймер → `POST /api/reminders/dispatch`, таймер → `POST /api/internal/minimax/panel-sync` | `REMINDERS_INTERNAL_SECRET` в Bearer; на боксе запускается юнитом |
 | `scripts/cloudflare/karman-tg.js` (Cloudflare Worker) | в нашу БД **не пишет**: реле к `api.telegram.org` (обход RKN), allowlist методов | `X-Relay-Secret` без переменной — 503 (fail-closed); деплоит владелец руками |
 | cron `scripts/backup_vault.sh` (03:30) | `vault.sql` (перечень таблиц явный), `media.tar.gz`, `MANIFEST.txt`, зашифрованные на Диск | pg_dump из env сервиса; права на бэкап — у юнита |
 | cron `scripts/health_watch.sh` (каждые 10 мин) | кэш `chat_id` на диск, сообщение в Telegram **только при смене состояния** | `curl /api/health` + токен бота |
@@ -138,7 +139,7 @@
 - **Каждая точка входа описана.** Каждый файл `app/api/**/route.ts` и каждый
   `lib/actions/*.ts` обязан встречаться в этом документе: новая точка записи без строки
   в таблице роняет сборку. Считать руками ничего не нужно — тест сам пересчитывает числа
-  из кода (30 роутов / 42 обработчиков / 19 модулей действий / 90 действий) и сверяет их с
+  из кода (31 роутов / 43 обработчиков / 19 модулей действий / 90 действий) и сверяет их с
   числами из заголовка документа.
 - **Каждое действие гейтит сессию.** У каждого экспорта в первых восьми строках обязан быть
   один из вызовов `currentUserOrNull()` / `requireSecretsAccess()` / `requireUser()` /

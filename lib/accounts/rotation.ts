@@ -101,6 +101,7 @@
  */
 
 import { moscowLocalToUtcIso, utcToMoscowLocal } from '@/lib/reminders/time';
+import { panelClaimable, panelClaimed } from '@/lib/minimax/panel';
 
 /**
  * Часы ночного сброса суточного лимита MiniMax (московское время).
@@ -232,14 +233,30 @@ export function availableAt(usedAt: string | null): string | null {
 }
 
 /**
- * Сожжён ли аккаунт: не наступил ли ещё ночной сброс после активации.
+ * Сожжён ли аккаунт: очки сегодня уже забраны.
+ *
+ * **Панель MiniMax — источник правды** (заказ владельца 16.11: «сделать
+ * аккаунты активными, когда очки появятся»). Если панель сказала, что очки
+ * ЕСТЬ (status 2), аккаунт снова в обороте — даже когда наша эвристика ночного
+ * сброса считает его сожжённым. Если панель сказала, что очки СОЖЖЕНЫ
+ * (status 3), аккаунт из оборота выходит, даже когда эвристика считает его
+ * свободным: час ночного сброса у MiniMax мы знаем неточно, а панель знает
+ * точно.
+ *
+ * Протухшее состояние (панель не ответила или её ответ старше получаса) — это
+ * «не знаю»: тогда решает эвристика, как и раньше.
  *
  * Сравнение с МОМЕНТОМ активации, а не с датой: у каждого аккаунта своё
  * окно (правило владельца 04.11), и с 15.11 это окно упирается в ночной
  * сброс MiniMax (см. шапку модуля). Пока сброс не наступил — суточный бонус
  * сожжён: аккаунт не отдаётся проекту и очков не даёт.
  */
-export function isSpent(account: { usedAt: string | null }, now: Date = new Date()): boolean {
+export function isSpent(
+  account: { usedAt: string | null; panelStatus?: number | null },
+  now: Date = new Date(),
+): boolean {
+  if (panelClaimable(account.panelStatus)) return false;
+  if (panelClaimed(account.panelStatus)) return true;
   if (!account.usedAt) return false;
   return dailyResetAfter(new Date(account.usedAt)).getTime() > now.getTime();
 }
@@ -341,6 +358,22 @@ export type AccountRotationRow = {
    * 400, а 400 — уже вхолостую.
    */
   weekPointsNext: number;
+  /**
+   * Статус сегодняшней клетки по панели MiniMax: 2 — очки можно забрать,
+   * 3 — очки сожжены; null — «не знаю» (панель не ответила или её ответ
+   * старше получаса).
+   *
+   * Панель — источник правды (заказ владельца 16.11). Значение приходит из БД
+   * (`account_panel_state`) и бывает протухшим — протухшее состояние равно
+   * «не знаю», а не «очков нет».
+   */
+  panelStatus?: number | null;
+  /** Очки сегодняшней клетки по панели (null — неизвестно). */
+  panelPoints?: number | null;
+  /** Номер сегодняшней клетки по панели (null — неизвестно). */
+  panelCellNo?: number | null;
+  /** Когда панель читали (ISO) или null. */
+  panelCheckedAt?: string | null;
   /**
    * Сколько активаций подряд (включая ближайшую) до следующей бонусной клетки:
    * 1 — бонус сегодня, 4 — бонус через три дня.

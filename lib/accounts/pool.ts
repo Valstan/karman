@@ -58,6 +58,7 @@ import {
   pointsForIndex,
   type WeeklyQuota,
 } from './weekly';
+import { panelClaimable, panelClaimed } from '@/lib/minimax/panel';
 
 /**
  * Аккаунты с открытым вопросом по правилу клетки: подсказку по очкам для них НЕ
@@ -87,8 +88,8 @@ export type PoolHandout = {
   quota_exhausted: boolean;
   /** Аккаунт под вопросом по правилу клетки — подсказку по очкам не даём. */
   unverified: boolean;
-  /** Откуда взялась клетка-подсказка: число, названное владельцем, или наша модель. */
-  hint_source: 'owner_confirmed' | 'model';
+  /** Откуда взялась клетка-подсказка: панель MiniMax, число, названное владельцем, или наша модель. */
+  hint_source: 'owner_confirmed' | 'model' | 'panel';
 };
 
 /** Ответ на «дай аккаунт»: аккаунт (или честная пустота) + состояние пула. */
@@ -150,13 +151,16 @@ export type PoolRow = AccountRotationRow & {
 export type PoolHint = {
   index: number | null;
   points: number | null;
-  source: 'owner_confirmed' | 'model';
+  source: 'owner_confirmed' | 'model' | 'panel';
   unverified: boolean;
 };
 
 /**
  * Что мы советуем по этому аккаунту: клетка, очки и откуда они.
  *
+ * - **панель MiniMax** — источник правды: она знает и клетку, и очки, и говорит
+ *   прямо «очки можно забрать» (заказ владельца 16.11). Если панель ответила
+ *   свежим ответом — советуем ровно то, что она сказала;
  * - **число, названное владельцем** (панель — истина) важнее нашей модели по датам:
  *   если владелец называл клетку для последней активации, следующая = его число + 1;
  * - если не называл — считаем по датам, как раньше;
@@ -168,7 +172,6 @@ export type PoolHint = {
  */
 export function hintFor(row: PoolRow, now: Date = new Date()): PoolHint {
   const quota = row.week ?? null;
-  const unverified = UNVERIFIED_CELL_ACCOUNT_IDS.has(row.id);
   const modelIndex = quota?.nextIndex ?? null;
   // Число, названное владельцем на панели, — истина; наша модель по датам с ним тогда
   // расходилась (36 переопределений из 39 на 09.11). Берём его, только если серия жива
@@ -179,6 +182,30 @@ export function hintFor(row: PoolRow, now: Date = new Date()): PoolHint {
       ? (quota.confirmedIndex % WEEKLY_ACTIVATION_LIMIT) + 1
       : null;
   const index = ownerIndex ?? modelIndex;
+
+  // Панель MiniMax ответила — верю ей (заказ владельца 16.11). Она знает и
+  // сегодняшнюю клетку, и её очки; наша модель по датам с ней расходилась
+  // (отсюда и «аккаунт под вопросом»).
+  if (panelClaimable(row.panelStatus)) {
+    return {
+      index: row.panelCellNo ?? index,
+      points: row.panelPoints ?? 0,
+      source: 'panel',
+      unverified: false,
+    };
+  }
+  if (panelClaimed(row.panelStatus)) {
+    // Панель сказала: очки сегодня уже забраны.
+    return {
+      index: row.panelCellNo ?? index,
+      points: 0,
+      source: 'panel',
+      unverified: false,
+    };
+  }
+
+  // Панели нет (или её ответ протух — это «не знаю»): старая логика.
+  const unverified = UNVERIFIED_CELL_ACCOUNT_IDS.has(row.id);
   if (unverified) {
     return {
       index,

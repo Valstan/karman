@@ -26,7 +26,9 @@ export async function syncDailyStatesAction(): Promise<
   // аккаунтов осталась бы без состояния, а владелец видел бы пустую сводку.
   after(async () => {
     try {
-      await syncDailyStates(user, OWNER_TIMEZONE);
+      // force: кнопка владельца — «сверить сейчас», то есть перечитать панель по
+      // всем аккаунтам, даже по тем, чей ответ ещё свежий.
+      await syncDailyStates(user.id, OWNER_TIMEZONE, new Date(), { force: true });
     } catch {
       // Сверка — вспомогательная: её сбой не должен ломать страницу.
     }

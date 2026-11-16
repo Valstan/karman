@@ -19,6 +19,7 @@ import {
   jsonb,
   numeric,
   pgTable,
+  primaryKey,
   serial,
   smallint,
   text,
@@ -1036,6 +1037,50 @@ export const accountToken = pgTable('account_token', {
 
 export type AccountTokenFlowRow = typeof accountTokenFlow.$inferSelect;
 export type AccountTokenRow = typeof accountToken.$inferSelect;
+
+// --- Состояние суток аккаунта по панели MiniMax (заказ владельца 16.11) ------
+// Панель MiniMax — единственный источник правды о том, есть ли у аккаунта
+// сегодняшние очки («сделать аккаунты активными, когда очки появятся»).
+//
+// Состояние живёт в БД, а не в памяти процесса: в памяти оно не переживало
+// рестарт, и — главное — action и страница попадали в разные чанки Turbopack,
+// то есть видели РАЗНОЕ состояние одних и тех же аккаунтов.
+//
+// Схема — миграция 0034_account_panel_state.sql. Одна строка на пару
+// «аккаунт + пояс»: сутки MiniMax считаются по поясу ЗАПРОСА, поэтому у панели
+// владельца и у панели проекта «сегодня» — разные дни в ночном окне между
+// 00:00 и 03:00 МСК (именно там 15.11 отказали пятнадцать аккаунтов).
+
+export const accountPanelState = pgTable(
+  'account_panel_state',
+  {
+    accountId: bigint('account_id', { mode: 'number' })
+      .notNull()
+      .references(() => accountsAccount.id, { onDelete: 'cascade' }),
+    /** Пояс, которым спрашивали панель: «сегодня» считается по нему. */
+    timezoneId: varchar('timezone_id', { length: 64 }).notNull().default('UTC'),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => authUser.id, { onDelete: 'cascade' }),
+    /** Номер клетки в недельном круге (1..7) — какую панель считает сегодняшней. */
+    cellNo: smallint('cell_no').notNull().default(0),
+    /** Статус клетки панели: 1 — не начался, 2 — можно забрать, 3 — забрано,
+     *  4 — недоступен. */
+    status: smallint('status').notNull().default(0),
+    /** Сколько очков даст сегодняшняя клетка (400 или 1000). */
+    points: integer('points').notNull().default(0),
+    /** «Очки можно забрать прямо сейчас» (status = 2). */
+    canClaim: boolean('can_claim').notNull().default(false),
+    /** Когда панель читали: протухшее состояние — это «не знаю». */
+    checkedAt: timestamp('checked_at', { withTimezone: true, mode: 'string' }).notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'string' })
+      .notNull()
+      .$defaultFn(isoNow),
+  },
+  (table) => [primaryKey({ columns: [table.accountId, table.timezoneId] })],
+);
+
+export type AccountPanelStateRow = typeof accountPanelState.$inferSelect;
 
 // --- Промты (заказ владельца 2026-11-06) -------------------------------------
 // Библиотерия промтов, разложенных по проектам: Мозг раскладывает
