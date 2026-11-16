@@ -11,6 +11,7 @@ import {
 } from '@/lib/services/accounts';
 import { tokenProgress } from '@/lib/services/account-tokens';
 import { dailyStates, OWNER_TIMEZONE } from '@/lib/services/minimax-daily';
+import { isFreshPanelState } from '@/lib/accounts/panel-state';
 import { MinimaxPanel } from '@/components/app/minimax-panel';
 
 /**
@@ -49,11 +50,22 @@ export default async function MinimaxPage() {
       tokenProgress(user, now),
     ]);
 
-  // Сверка суток с панелью MiniMax: что уже прочитано — показываем в строках.
-  // Остальное владелец запускает кнопкой «Сверить сутки с MiniMax» (чтение
-  // панели очки не тратит).
+  // Состояние суток по панели MiniMax: что уже прочитано — показываем в строках.
+  // Состояние живёт в БД (не в памяти процесса), поэтому страница и выдача видят
+  // одно и то же. Протухшее состояние — это «не знаю», а не «очков нет»: в
+  // интерфейсе оно помечено отдельно.
   const states = Object.fromEntries(
-    [...dailyStates(OWNER_TIMEZONE)].map(([id, state]) => [id, state]),
+    [...(await dailyStates(user.id, OWNER_TIMEZONE))].map(([id, state]) => [
+      id,
+      {
+        can_claim: state.can_claim,
+        points: state.points,
+        status: state.status,
+        cell_no: state.cell_no,
+        checked_at: state.checked_at,
+        stale: !isFreshPanelState(state, now),
+      },
+    ]),
   );
 
   return (

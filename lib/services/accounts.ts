@@ -24,6 +24,13 @@ import {
   type ProjectUsage,
 } from '@/lib/accounts/rotation';
 import {
+  deletePanelState,
+  isFreshPanelState,
+  readPanelStates,
+  type PanelState,
+} from '@/lib/accounts/panel-state';
+import { OWNER_TIMEZONE } from '@/lib/minimax/panel';
+import {
   WEEKLY_ACTIVATION_LIMIT,
   pointsForIndex,
   weeklyQuota,
@@ -97,7 +104,9 @@ const accountColumns = {
   lastTokens: accountsAccount.lastTokens,
 };
 
-/** Строка списка: аккаунт + состояние окна простоя + недельная квота. */
+/**
+ * Строка списка: аккаунт + состояние окна простоя + недельная квота.
+ */
 function toListItem(
   row: AccountRotationRow,
   now: Date,
@@ -116,6 +125,50 @@ function toListItem(
     week: week ?? weeklyQuota([], moscowToday(now)),
     weekTodayIndex,
   };
+}
+
+/**
+ * Панель MiniMax в строке аккаунта — только свежий ответ.
+ *
+ * Протухший ответ панели — это «не знаю», а не «очков нет»: иначе аккаунт,
+ * у которого очки давно появились, навсегда остался бы вне оборота (ровно та
+ * беда, которую чинит заказ владельца 16.11). Поэтому свежесть решает всё:
+ * ответ старше получаса не попадает в строку вовсе.
+ */
+function panelFields(
+  panel: PanelState | undefined,
+  now: Date,
+): Pick<
+  AccountRotationRow,
+  'panelStatus' | 'panelPoints' | 'panelCellNo' | 'panelCheckedAt'
+> {
+  if (!isFreshPanelState(panel, now)) {
+    return { panelStatus: null, panelPoints: null, panelCellNo: null, panelCheckedAt: null };
+  }
+  return {
+    panelStatus: panel!.status,
+    panelPoints: panel!.points,
+    panelCellNo: panel!.cell_no,
+    panelCheckedAt: panel!.checked_at,
+  };
+}
+
+/**
+ * Очки следующей активации: панель знает их точно, модель — приблизительно.
+ *
+ * Панель ответила «очки можно забрать» — верим ей; ответила «очки сожжены» —
+ * ноль (и аккаунт из оборота выходит). Панели нет или её ответ протух —
+ * считаем по недельной квоте, как раньше.
+ */
+function pointsNext(
+  row: { usedAt: string | null; panelStatus?: number | null },
+  panel: PanelState | undefined,
+  quota: WeeklyQuota | undefined,
+  now: Date,
+): number {
+  if (panel && isFreshPanelState(panel, now) && panel.can_claim) return panel.points;
+  if (isSpent(row, now)) return 0;
+  return quota?.pointsToday ?? 0;
 }
 
 /**
@@ -191,10 +244,21 @@ async function accountUsageStats(
   return new Map(rows.map((row) => [row.accountId, { activations: row.activations, tokens: row.tokens }]));
 }
 
-/** Все аккаунты пользователя в порядке «доступные сверху, израсходованные снизу». */
-export async function listAccounts(user: SessionUser, now: Date = new Date()): Promise<AccountListItem[]> {
+/**
+ * Все аккаунты пользователя в порядке «доступные сверху, израсходованные снизу».
+ *
+ * `timezoneId` — пояс, по которому берётся ответ панели MiniMax: у панели
+ * владельца (Europe/Moscow) и у панели проекта (UTC) «сегодня» — разные дни в
+ * ночном окне между 00:00 и 03:00 МСК. По умолчанию — пояс владельца.
+ */
+export async function listAccounts(
+  user: SessionUser,
+  now: Date = new Date(),
+  options: { timezoneId?: string } = {},
+): Promise<AccountListItem[]> {
   const today = moscowToday(now);
-  const [rows, stats, checkIns] = await Promise.all([
+  const timezoneId = options.timezoneId ?? OWNER_TIMEZONE;
+  const [rows, stats, checkIns, panelStates] = await Promise.all([
     db
       .select(accountColumns)
       .from(accountsAccount)
@@ -202,12 +266,15 @@ export async function listAccounts(user: SessionUser, now: Date = new Date()): P
       .where(ownership(user, accountsAccount.userId)),
     accountUsageStats(user),
     accountCheckIns(user),
+    readPanelStates(user.id, timezoneId),
   ]);
   const states = weekStates(checkIns, today);
   const enriched = rows.map((row) => {
     const state = states.get(row.id);
+    const panel = panelStates.get(row.id);
+    const withPanel = { ...row, ...panelFields(panel, now) };
     return {
-      ...row,
+      ...withPanel,
       weekUsed: state?.week.used ?? 0,
       weekExhausted: state?.week.exhausted ?? false,
       // Чек-ин за сегодня уже был → сегодняшнего бонуса у аккаунта нет, и в
@@ -215,9 +282,10 @@ export async function listAccounts(user: SessionUser, now: Date = new Date()): P
       weekCheckedInToday: state?.checkedInToday ?? false,
       // Очки следующей активации и расстояние до бонусной клетки — по ним
       // выбирается, кого активировать (заказ владельца 11.11).
-      // Бонус сожжён (ночной сброс после активации ещё не наступил) — очков
-      // сегодня не будет, сколько бы клетка ни обещала.
-      weekPointsNext: isSpent(row, now) ? 0 : (state?.week.pointsToday ?? 0),
+      // Панель ответила — верим ей (заказ владельца 16.11); иначе считаем по
+      // недельной квоте, а сожжённый бонус (ночной сброс после активации ещё
+      // не наступил) даёт ноль.
+      weekPointsNext: pointsNext(withPanel, panel, state?.week, now),
       weekDaysToBonus: state?.week.daysToBonus ?? WEEKLY_ACTIVATION_LIMIT,
       weekStreak: state?.week.streak ?? 0,
     };
@@ -242,8 +310,10 @@ export async function listAccount(
   user: SessionUser,
   accountId: number,
   now: Date = new Date(),
+  options: { timezoneId?: string } = {},
 ): Promise<AccountListItem | null> {
   const today = moscowToday(now);
+  const timezoneId = options.timezoneId ?? OWNER_TIMEZONE;
   const [row] = await db
     .select(accountColumns)
     .from(accountsAccount)
@@ -251,20 +321,23 @@ export async function listAccount(
     .where(and(eq(accountsAccount.id, accountId), ownership(user, accountsAccount.userId)))
     .limit(1);
   if (!row) return null;
-  const [stats, checkIns] = await Promise.all([
+  const [stats, checkIns, panelStates] = await Promise.all([
     accountUsageStats(user, accountId),
     accountCheckIns(user),
+    readPanelStates(user.id, timezoneId, [accountId]),
   ]);
   const state = weekStates(checkIns, today).get(accountId);
+  const panel = panelStates.get(accountId);
+  const withPanel = { ...row, ...panelFields(panel, now) };
   return toListItem(
     {
-      ...row,
+      ...withPanel,
       weekUsed: state?.week.used ?? 0,
       weekExhausted: state?.week.exhausted ?? false,
       weekCheckedInToday: state?.checkedInToday ?? false,
-      // Бонус сожжён (ночной сброс после активации ещё не наступил) — очков
-      // сегодня не будет, сколько бы клетка ни обещала.
-      weekPointsNext: isSpent({ usedAt: row.usedAt }, now) ? 0 : (state?.week.pointsToday ?? 0),
+      // Панель ответила — верим ей (заказ владельца 16.11); иначе считаем по
+      // недельной квоте, а сожжённый бонус даёт ноль.
+      weekPointsNext: pointsNext(withPanel, panel, state?.week, now),
       weekDaysToBonus: state?.week.daysToBonus ?? WEEKLY_ACTIVATION_LIMIT,
       weekStreak: state?.week.streak ?? 0,
     },
@@ -404,7 +477,7 @@ export async function activateAccount(
   const tokens = input.tokens;
   const today = moscowToday(now);
 
-  await db.transaction(async (tx) => {
+  const activated = await db.transaction(async (tx) => {
     const [account] = await tx
       .select({
         id: accountsAccount.id,
@@ -414,7 +487,7 @@ export async function activateAccount(
       .from(accountsAccount)
       .where(and(eq(accountsAccount.id, input.id), ownership(user, accountsAccount.userId)))
       .limit(1);
-    if (!account) return;
+    if (!account) return false;
 
     // Окно ещё открыто → продолжение той же сессии: окно не сдвигается, строка
     // Сессия ещё открыта → продолжение той же сессии: окно не сдвигается,
@@ -547,8 +620,16 @@ export async function activateAccount(
         source,
       });
     }
+    return true;
   });
-  return true;
+
+  // Очки только что сожглись — панель MiniMax об этом ещё не знает (она узнает
+  // при следующей сверке). Пока её ответ «очки есть» жив, аккаунт вернулся бы в
+  // оборот, и потребитель получил бы «insufficient balance». Забываем ответ
+  // панели — до следующей сверки решает эвристика ночного сброса, а она после
+  // активации говорит «сожжён» (аккаунт только что активирован).
+  if (activated) await deletePanelState(input.id);
+  return activated;
 }
 
 /**

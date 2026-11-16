@@ -1,9 +1,12 @@
 // KARMAN reminders worker (P0) — тонкое реле Telegram ↔ Next.
 //
-// Делает две вещи и НИЧЕГО больше (никаких импортов lib/ — только node built-ins
+// Делает три вещи и НИЧЕГО больше (никаких импортов lib/ — только node built-ins
 // и global fetch, поэтому файл едет в артефакт как есть, без сборки):
 //   1) long-poll Telegram getUpdates → POST /api/telegram/ingest (Bearer);
-//   2) по таймеру POST /api/reminders/dispatch (Bearer).
+//   2) по таймеру POST /api/reminders/dispatch (Bearer);
+//   3) по таймеру POST /api/internal/minimax/panel-sync (Bearer) — автосверка
+//      суток аккаунтов с панелью MiniMax (заказ владельца 16.11: «сделать
+//      аккаунты активными, когда очки появятся»).
 // Вся работа с БД/сервисами — внутри Next-роутов. Запускается systemd-сервисом
 // karman-reminders.service из текущего релиза (симлинк current). См. docs/telegram-reminders.md.
 
@@ -18,6 +21,10 @@ const TG_API = (process.env.TELEGRAM_API_BASE || 'https://api.telegram.org').rep
 const RELAY_SECRET = process.env.TELEGRAM_RELAY_SECRET || '';
 const TG_HEADERS = RELAY_SECRET ? { 'x-relay-secret': RELAY_SECRET } : {};
 const DISPATCH_INTERVAL_MS = Number(process.env.REMINDERS_DISPATCH_INTERVAL_MS || 25000);
+// Автосверка панели MiniMax: раз в 15 минут (состояние панели живёт полчаса,
+// поэтому за протухание никто не заметит). Роут отвечает сразу — сама сверка
+// идёт в фоне, так что таймаут здесь короткий.
+const PANEL_SYNC_INTERVAL_MS = Number(process.env.MINIMAX_PANEL_SYNC_INTERVAL_MS || 15 * 60_000);
 const POLL_TIMEOUT_S = 25;
 
 function log(...args) {
@@ -47,6 +54,26 @@ function startDispatchLoop() {
     }
   };
   setInterval(tick, DISPATCH_INTERVAL_MS);
+  tick();
+}
+
+/**
+ * Автосверка суток аккаунтов с панелью MiniMax.
+ *
+ * Панель — источник правды о том, есть ли у аккаунта сегодня очки; без
+ * регулярной сверки аккаунты, у которых очки появились после ночного сброса,
+ * остались бы вне оборота до нажатия кнопки владельцем (заказ 16.11).
+ */
+function startPanelSyncLoop() {
+  const tick = async () => {
+    try {
+      const res = await postInternal('/api/internal/minimax/panel-sync', {});
+      if (!res.ok) log('panel-sync HTTP', res.status);
+    } catch (error) {
+      log('panel-sync error', String(error));
+    }
+  };
+  setInterval(tick, PANEL_SYNC_INTERVAL_MS);
   tick();
 }
 
@@ -96,7 +123,8 @@ if (!TOKEN || !SECRET) {
   log('TELEGRAM_BOT_TOKEN / REMINDERS_INTERNAL_SECRET не заданы — простаиваю (настройте env).');
   setInterval(() => log('ожидаю настройки env...'), 10 * 60_000);
 } else {
-  log(`старт: base=${BASE}, dispatch каждые ${DISPATCH_INTERVAL_MS}ms, poll timeout ${POLL_TIMEOUT_S}s`);
+  log(`старт: base=${BASE}, dispatch каждые ${DISPATCH_INTERVAL_MS}ms, сверка панели каждые ${PANEL_SYNC_INTERVAL_MS}ms, poll timeout ${POLL_TIMEOUT_S}s`);
   startDispatchLoop();
+  startPanelSyncLoop();
   startPollLoop();
 }

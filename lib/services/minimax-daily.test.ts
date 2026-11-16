@@ -7,11 +7,14 @@ import { encryptSecret } from '@/lib/secrets/crypto';
 import type { SessionUser } from '@/lib/auth/rbac';
 
 /**
- * Гейт сверки суток с панелью MiniMax (15.11).
+ * Гейт сверки суток с панелью MiniMax (15.11; durable-состояние — 16.11).
  *
  * Проверяем главное: чтение панели НЕ ТРАТИТ очки и даёт честный ответ «очки
  * можно забрать» / «очки сожжены» — а именно этот ответ решает, кому отдавать
  * аккаунт. Модель панели в `lib/minimax/oauth.test.ts`.
+ *
+ * С 16.11 состояние лежит в БД (`account_panel_state`), а не в памяти процесса:
+ * переживает рестарт и одинаково видно выдаче, странице и автосверке.
  */
 
 const oauth = vi.hoisted(() => ({ signinStatus: vi.fn() }));
@@ -29,13 +32,15 @@ vi.mock('@/lib/db/client', () => ({
 }));
 
 import {
-  cachedDailyState,
   dailyStateFor,
   dailyStates,
   DEFAULT_TIMEZONE,
   OWNER_TIMEZONE,
+  sweepPanelStates,
+  syncDailyStates,
   timezoneForRoom,
 } from '@/lib/services/minimax-daily';
+import { readPanelStates } from '@/lib/accounts/panel-state';
 
 let pg: PGlite | undefined;
 
@@ -86,7 +91,9 @@ async function makeAccountWithPair(email: string): Promise<number> {
     ciphertext: enc.ciphertext,
     iv: enc.iv,
     authTag: enc.authTag,
-    expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    // Access живёт долго: тесты двигают «сейчас» на часы вперёд, и протухший
+    // access ушёл бы в refresh (сеть в тесте недоступна).
+    expiresAt: new Date(Date.now() + 30 * 24 * 3_600_000).toISOString(),
   });
   return id;
 }
@@ -117,28 +124,41 @@ describe('сверка суток: часовые пояса', () => {
 });
 
 describe('сверка суток: чтение панели', () => {
-  it('читает состояние клетки и кладёт его в кэш', async () => {
+  it('читает состояние клетки и сохраняет его в БД', async () => {
     const accountId = await makeAccountWithPair('panel@example.test');
     oauth.signinStatus.mockResolvedValue(panelResponse(true));
 
-    const state = await dailyStateFor(accountId, OWNER_TIMEZONE, new Date(), { force: true });
+    const state = await dailyStateFor(accountId, OWNER_TIMEZONE, new Date(), {
+      force: true,
+      userId: owner.id,
+    });
     expect(state).not.toBeNull();
     expect(state!.can_claim).toBe(true);
     expect(state!.points).toBe(400);
     expect(state!.cell_no).toBe(5);
 
-    // Повторное чтение — из кэша, без похода в MiniMax.
-    const cached = cachedDailyState(accountId, OWNER_TIMEZONE);
+    // Повторное чтение — из БД, без похода в MiniMax: состояние живёт между
+    // запросами (и переживает рестарт процесса).
+    const cached = await dailyStateFor(accountId, OWNER_TIMEZONE, new Date(), {
+      userId: owner.id,
+    });
     expect(cached?.can_claim).toBe(true);
     expect(oauth.signinStatus).toHaveBeenCalledTimes(1);
-    expect(dailyStates(OWNER_TIMEZONE).get(accountId)?.points).toBe(400);
+
+    // Состояние видно и по чужому вызову (страница, автосверка) — это общая БД.
+    const stored = await readPanelStates(owner.id, OWNER_TIMEZONE, [accountId]);
+    expect(stored.get(accountId)?.can_claim).toBe(true);
+    expect((await dailyStates(owner.id, OWNER_TIMEZONE)).get(accountId)?.points).toBe(400);
   });
 
   it('клетка забрана — очков нет, отдавать аккаунт нельзя', async () => {
     const accountId = await makeAccountWithPair('burned@example.test');
     oauth.signinStatus.mockResolvedValue(panelResponse(false));
 
-    const state = await dailyStateFor(accountId, DEFAULT_TIMEZONE, new Date(), { force: true });
+    const state = await dailyStateFor(accountId, DEFAULT_TIMEZONE, new Date(), {
+      force: true,
+      userId: owner.id,
+    });
     expect(state?.can_claim).toBe(false);
   });
 
@@ -146,16 +166,79 @@ describe('сверка суток: чтение панели', () => {
     const accountId = await makeAccountWithPair('silent@example.test');
     oauth.signinStatus.mockResolvedValue({ ok: false, error: 'network' });
 
-    const state = await dailyStateFor(accountId, OWNER_TIMEZONE, new Date(), { force: true });
+    const state = await dailyStateFor(accountId, OWNER_TIMEZONE, new Date(), {
+      force: true,
+      userId: owner.id,
+    });
     expect(state).toBeNull();
+    // И в БД ничего не записано: неизвестное состояние не должно выдавать себя
+    // за прочитанное.
+    expect((await readPanelStates(owner.id, OWNER_TIMEZONE, [accountId])).size).toBe(0);
   });
 
   it('пара токенов удалена — читать нечего', async () => {
     const accountId = await makeAccountWithPair('nopair@example.test');
     await refs.current!.delete(accountToken).where(eq(accountToken.accountId, accountId));
 
-    const state = await dailyStateFor(accountId, OWNER_TIMEZONE, new Date(), { force: true });
+    const state = await dailyStateFor(accountId, OWNER_TIMEZONE, new Date(), {
+      force: true,
+      userId: owner.id,
+    });
     expect(state).toBeNull();
     expect(oauth.signinStatus).not.toHaveBeenCalled();
+  });
+
+  it('протухшее состояние перечитывается, а не выдаётся за свежее', async () => {
+    const accountId = await makeAccountWithPair('stale@example.test');
+    oauth.signinStatus.mockResolvedValue(panelResponse(true));
+
+    const now = new Date();
+    await dailyStateFor(accountId, OWNER_TIMEZONE, now, { force: true, userId: owner.id });
+    expect(oauth.signinStatus).toHaveBeenCalledTimes(1);
+
+    // Через два часа состояние протухло (живёт полчаса) — читаем заново.
+    const later = new Date(now.getTime() + 2 * 60 * 60_000);
+    await dailyStateFor(accountId, OWNER_TIMEZONE, later, { userId: owner.id });
+    expect(oauth.signinStatus).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('сверка суток: автосверка', () => {
+  it('свежая сверка обновляет только протухшее, force — всё', async () => {
+    await makeAccountWithPair('sweep@example.test');
+    oauth.signinStatus.mockResolvedValue(panelResponse(true));
+
+    const now = new Date();
+    const first = await syncDailyStates(owner.id, OWNER_TIMEZONE, now);
+    expect(first.checked).toBe(1);
+    expect(first.skipped).toBe(0);
+
+    // Тот же момент: состояние свежее — вендор не дёргаем.
+    const second = await syncDailyStates(owner.id, OWNER_TIMEZONE, now);
+    expect(second.checked).toBe(0);
+    expect(second.skipped).toBe(1);
+    expect(oauth.signinStatus).toHaveBeenCalledTimes(1);
+
+    // Кнопка владельца — «сверить сейчас»: перечитываем всё.
+    const forced = await syncDailyStates(owner.id, OWNER_TIMEZONE, now, { force: true });
+    expect(forced.checked).toBe(1);
+    expect(oauth.signinStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('обход читает панель в обоих рабочих поясах и по всем владельцам', async () => {
+    await makeAccountWithPair('sweep-two@example.test');
+    oauth.signinStatus.mockResolvedValue(panelResponse(true));
+
+    const result = await sweepPanelStates(new Date());
+    expect(result.owners).toBe(1);
+    // Один аккаунт × два пояса.
+    expect(result.checked).toBe(2);
+    expect(result.claimable).toBe(2);
+    expect(result.failed).toBe(0);
+
+    const stored = await readPanelStates(owner.id, OWNER_TIMEZONE);
+    expect(stored.size).toBe(1);
+    const storedUtc = await readPanelStates(owner.id, DEFAULT_TIMEZONE);
+    expect(storedUtc.size).toBe(1);
   });
 });

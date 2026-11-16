@@ -19,6 +19,8 @@ import {
   projectUsage,
 } from '@/lib/services/accounts';
 import { splitAccounts } from '@/lib/accounts/rotation';
+import { readPanelStates, writePanelState } from '@/lib/accounts/panel-state';
+import { OWNER_TIMEZONE } from '@/lib/minimax/panel';
 import type { SessionUser } from '@/lib/auth/rbac';
 
 /**
@@ -571,5 +573,86 @@ describe('мультиаккаунт: свод по дням и рейтинг',
     expect(limited).toHaveLength(3);
     expect(limited[0]!.id).toBe(many);
     expect(limited[0]!.activations).toBe(11);
+  });
+});
+
+/**
+ * Панель MiniMax как источник правды (заказ владельца 16.11: «сделать аккаунты
+ * активными, когда очки появятся»).
+ *
+ * Панель лежит в БД (`account_panel_state`), её ответ — истина о наличии очков;
+ * протухший ответ — «не знаю», и тогда решает старая эвристика.
+ */
+describe('мультиаккаунт: панель MiniMax возвращает аккаунты в оборот', () => {
+  it('панель сказала «очки есть» — аккаунт снова свободен', async () => {
+    const a = await createAccount(owner, { title: 'A', email: 'panel@example.test', password: 'p' });
+    await activateAccount(owner, { id: a, projectId: null, tokens: 400 }, NOW);
+
+    // Без панели аккаунт сожжён: ночной сброс после активации ещё не наступил.
+    const before = await listAccounts(owner, NOW);
+    expect(before[0]!.spent).toBe(true);
+    expect(before[0]!.panelStatus).toBeNull();
+
+    await writePanelState(owner.id, a, OWNER_TIMEZONE, {
+      cell_no: 2,
+      status: 2,
+      points: 400,
+      can_claim: true,
+      checked_at: NOW.toISOString(),
+    });
+
+    const after = await listAccounts(owner, NOW);
+    expect(after[0]!.spent).toBe(false);
+    expect(after[0]!.panelStatus).toBe(2);
+    expect(after[0]!.weekPointsNext).toBe(400);
+  });
+
+  it('протухший ответ панели — «не знаю»: решает эвристика', async () => {
+    const a = await createAccount(owner, { title: 'A', email: 'stale@example.test', password: 'p' });
+    await activateAccount(owner, { id: a, projectId: null, tokens: 400 }, NOW);
+    await writePanelState(owner.id, a, OWNER_TIMEZONE, {
+      cell_no: 2,
+      status: 2,
+      points: 400,
+      can_claim: true,
+      checked_at: new Date(NOW.getTime() - 2 * 60 * 60_000).toISOString(),
+    });
+
+    const list = await listAccounts(owner, NOW);
+    expect(list[0]!.spent).toBe(true);
+    expect(list[0]!.panelStatus).toBeNull();
+  });
+
+  it('активация забывает ответ панели: очки-то сожглись', async () => {
+    const a = await createAccount(owner, { title: 'A', email: 'forget@example.test', password: 'p' });
+    await writePanelState(owner.id, a, OWNER_TIMEZONE, {
+      cell_no: 2,
+      status: 2,
+      points: 400,
+      can_claim: true,
+      checked_at: NOW.toISOString(),
+    });
+    expect((await readPanelStates(owner.id, OWNER_TIMEZONE, [a])).size).toBe(1);
+
+    await activateAccount(owner, { id: a, projectId: null, tokens: 400 }, NOW);
+    // Панель об этом ещё не знает — оставлять её ответ «очки есть» нельзя.
+    expect((await readPanelStates(owner.id, OWNER_TIMEZONE, [a])).size).toBe(0);
+  });
+
+  it('гонка за аккаунт: второй не получает занятый аккаунт (onlyIfFree)', async () => {
+    const a = await createAccount(owner, { title: 'A', email: 'race@example.test', password: 'p' });
+    await activateAccount(owner, { id: a, projectId: null, tokens: 400 }, NOW);
+
+    // Второй проект в ту же минуту: аккаунт уже занят — захват не проходит.
+    const claimed = await activateAccount(
+      owner,
+      { id: a, projectId: null, tokens: 400 },
+      NOW,
+      { onlyIfFree: true },
+    );
+    expect(claimed).toBe(false);
+
+    const rows = await refs.current!.select().from(accountsUsage);
+    expect(rows.length).toBe(1);
   });
 });
