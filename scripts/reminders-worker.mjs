@@ -6,7 +6,10 @@
 //   2) по таймеру POST /api/reminders/dispatch (Bearer);
 //   3) по таймеру POST /api/internal/minimax/panel-sync (Bearer) — автосверка
 //      суток аккаунтов с панелью MiniMax (заказ владельца 16.11: «сделать
-//      аккаунты активными, когда очки появятся»).
+//      аккаунты активными, когда очки появятся»);
+//   4) по таймеру POST /api/internal/minimax/reconcile (Bearer) — сверка журнала
+//      активаций с панелью: ошибочно погашенные аккаунты возвращаются в оборот,
+//      а наши предсказания очков уточняются по панели (заказ владельца 17.11).
 // Вся работа с БД/сервисами — внутри Next-роутов. Запускается systemd-сервисом
 // karman-reminders.service из текущего релиза (симлинк current). См. docs/telegram-reminders.md.
 
@@ -25,6 +28,10 @@ const DISPATCH_INTERVAL_MS = Number(process.env.REMINDERS_DISPATCH_INTERVAL_MS |
 // поэтому за протухание никто не заметит). Роут отвечает сразу — сама сверка
 // идёт в фоне, так что таймаут здесь короткий.
 const PANEL_SYNC_INTERVAL_MS = Number(process.env.MINIMAX_PANEL_SYNC_INTERVAL_MS || 15 * 60_000);
+// Сверка журнала активаций с панелью: раз в полчаса (заказ владельца 17.11).
+// Вендора она не дёргает — работает по ответам панели, которые уже прочитала
+// автосверка; сверка их сама освобождает и уточняет.
+const RECONCILE_INTERVAL_MS = Number(process.env.MINIMAX_RECONCILE_INTERVAL_MS || 30 * 60_000);
 const POLL_TIMEOUT_S = 25;
 
 function log(...args) {
@@ -77,6 +84,30 @@ function startPanelSyncLoop() {
   tick();
 }
 
+/**
+ * Сверка журнала активаций с панелью MiniMax (заказ владельца 17.11).
+ *
+ * Запись активации пишется в момент выдачи аккаунта, а очки потребитель забирает
+ * позже — когда его рантайм реально стартует. Всё это время журнал считает аккаунт
+ * израсходованным (17.11: 111 записей против 53 реально забранных по панели).
+ *
+ * Сверка освобождает ошибочно погашенные аккаунты и уточняет нашу статистику
+ * предсказаний по панели. Вендора не дёргает — берёт ответы автосверки, поэтому
+ * раз в полчаса обходится бесплатно.
+ */
+function startReconcileLoop() {
+  const tick = async () => {
+    try {
+      const res = await postInternal('/api/internal/minimax/reconcile', {});
+      if (!res.ok) log('reconcile HTTP', res.status);
+    } catch (error) {
+      log('reconcile error', String(error));
+    }
+  };
+  setInterval(tick, RECONCILE_INTERVAL_MS);
+  tick();
+}
+
 async function startPollLoop() {
   let offset = 0;
   for (;;) {
@@ -123,8 +154,9 @@ if (!TOKEN || !SECRET) {
   log('TELEGRAM_BOT_TOKEN / REMINDERS_INTERNAL_SECRET не заданы — простаиваю (настройте env).');
   setInterval(() => log('ожидаю настройки env...'), 10 * 60_000);
 } else {
-  log(`старт: base=${BASE}, dispatch каждые ${DISPATCH_INTERVAL_MS}ms, сверка панели каждые ${PANEL_SYNC_INTERVAL_MS}ms, poll timeout ${POLL_TIMEOUT_S}s`);
+  log(`старт: base=${BASE}, dispatch каждые ${DISPATCH_INTERVAL_MS}ms, сверка панели каждые ${PANEL_SYNC_INTERVAL_MS}ms, сверка журнала каждые ${RECONCILE_INTERVAL_MS}ms, poll timeout ${POLL_TIMEOUT_S}s`);
   startDispatchLoop();
   startPanelSyncLoop();
+  startReconcileLoop();
   startPollLoop();
 }
