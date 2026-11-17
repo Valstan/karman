@@ -111,7 +111,7 @@
   `added: 2026-11-13` `last-touch: 2026-11-17`
 
 - **D-219 — продление цепочки MiniMax по запросу потребителя (письмо brain 17.11).**
-  **Сделано и в проде** (PR #339): `POST /api/minimax/renew {account_id}` → `{account_id, email,
+  **Сделано и в проде** (PR #339; контракт уточнён в PR #343): `POST /api/minimax/renew {account_id}` → `{account_id, email,
   access_token, expires_at_ms, renewed}`. Пара наружу не уходит (refresh у нас), учёт не
   трогаем, продлить может только та комната, которой аккаунт выдан (иначе 409). Гейт — 13
   кейсов в `lib/services/minimax-renew.test.ts` (включая контракт G54). **Живая проба с бокса:**
