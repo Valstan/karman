@@ -108,6 +108,28 @@ export const minimaxObservationSchema = z
     message: 'Нужен account_id или email аккаунта',
   });
 
+/**
+ * Продление цепочки токенов аккаунта (D-219, мандат владельца 17.11).
+ *
+ * Проект просит у нас **свежий access того же аккаунта**, который мы ему уже
+ * выдали: его access истёк (вендорские 12 часов), а новый вход — это два минуты
+ * ручной работы владельца в браузере. Продлеваем цепочку мы, refresh наружу не
+ * уходит никогда.
+ *
+ * - `account_id` — какой аккаунт (внутренний id Кармана); `email` — тот же
+ *   аккаунт ПОЧТОЙ (проект не обязан знать наши внутренние id). Если заданы оба —
+ *   они должны указывать на один аккаунт.
+ * - Никаких полей про токены: пару мы не принимаем и не отдаём.
+ */
+export const minimaxRenewSchema = z
+  .object({
+    account_id: z.coerce.number().int().positive().optional(),
+    email: z.string().trim().min(3, 'Укажите почту').max(320, 'Слишком длинная почта').optional(),
+  })
+  .refine((value) => value.account_id !== undefined || value.email !== undefined, {
+    message: 'Нужен account_id или email аккаунта',
+  });
+
 export type AccountCreateInput = z.infer<typeof accountCreateSchema>;
 export type AccountUpdateInput = z.infer<typeof accountUpdateSchema>;
 
@@ -135,3 +157,4 @@ export type AccountActivateInput = z.infer<typeof accountActivateSchema> & {
 export type AccountActivationIndexInput = z.infer<typeof accountActivationIndexSchema>;
 export type ProjectCreateInput = z.infer<typeof projectCreateSchema>;
 export type MinimaxObservationInput = z.infer<typeof minimaxObservationSchema>;
+export type MinimaxRenewInput = z.infer<typeof minimaxRenewSchema>;

@@ -15,6 +15,7 @@ import { activateAccount, listAccounts } from '@/lib/services/accounts';
 import {
   ensureLiveAccessToken,
   markAccessHandedOver,
+  renewAccountToken,
   tokenBackedAccountIds,
   type AccessHandover,
 } from '@/lib/services/account-tokens';
@@ -45,7 +46,9 @@ import {
  *   что и в интерфейсе владельца, — с почтой, паролем, ожидаемой клеткой и ожидаемыми
  *   очками;
  * - `POST /api/minimax/activations` → запись факта: аккаунт активирован, вот столько
- *   очков, вот какая клетка была на панели.
+ *   очков, вот какая клетка была на панели;
+ * - `POST /api/minimax/renew` → **продление цепочки**: тот же аккаунт, свежий access
+ *   (D-219, мандат владельца 17.11).
  *
  * Учёт при этом НЕ переписывается: подбор — `lib/accounts/rotation.ts`, клетка и очки —
  * `lib/accounts/weekly.ts`, запись — тот же `activateAccount`, что и кнопка владельца.
@@ -556,4 +559,164 @@ export async function issueAccount(
   );
 
   return { ok: true, offer };
+}
+
+/** Что отдаём при продлении цепочки. */
+export type RenewResult = {
+  account_id: number;
+  email: string;
+  /** Только access: refresh остаётся у нас (мандат владельца 14.11, D-219). */
+  access_token: string;
+  expires_at_ms: number;
+  /** true — цепочку продлили новой парой; false — access ещё жил, отдали тот же. */
+  renewed: boolean;
+};
+
+/**
+ * «Продли то, что уже наше» (D-219, мандат владельца 17.11).
+ *
+ * Мозг: «продлевайте цепочку у себя и отдавайте нам свежий вход того же аккаунта —
+ * пара нам не уходит, граница D-219 цела». То есть потребитель возвращается за
+ * **тем же** аккаунтом, у которого истёк access, а получает **новый** access.
+ *
+ * Что здесь важно:
+ *
+ * - **тот же аккаунт и тот же потребитель.** Аккаунт закреплён за комнатой, которой
+ *   мы его выдали (`accounts_account.used_project_id`); чужая комната продлить его
+ *   не может — иначе «продление» стало бы вторым путём раздать чужой аккаунт
+ *   ([G627]: один аккаунт — один потребитель);
+ * - **пара наружу не уходит.** Наружу — только access; refresh остаётся у нас, и
+ *   продлеваем цепочку мы (`renewAccountToken`);
+ * - **активация не трогается.** Клетка и номинал в докладе активации не меняются:
+ *   продление — это про токен, а не про учёт.
+ */
+export async function renewAccountAccess(
+  rawToken: string,
+  ip: string | null,
+  input: {
+    accountId?: number | null;
+    email?: string | null;
+  },
+  now: Date = new Date(),
+): Promise<{ ok: true; renewal: RenewResult } | { ok: false; error: PoolCallError }> {
+  const callerResult = await resolveCaller(rawToken, ip);
+  if (!callerResult.ok) return callerResult;
+  const caller = callerResult.caller;
+
+  if ((input.accountId === undefined || input.accountId === null) && !input.email) {
+    return {
+      ok: false,
+      error: { status: 400, error: 'Нужен account_id или email аккаунта' },
+    };
+  }
+
+  // Аккаунт по id ИЛИ по почте: проект не обязан знать наши внутренние id.
+  const [byId] = input.accountId
+    ? await db
+        .select({
+          id: accountsAccount.id,
+          email: accountsAccount.email,
+          usedProjectId: accountsAccount.usedProjectId,
+        })
+        .from(accountsAccount)
+        .where(
+          and(
+            eq(accountsAccount.id, input.accountId),
+            eq(accountsAccount.userId, caller.owner.id),
+          ),
+        )
+        .limit(1)
+    : [];
+  const [byEmail] = input.email
+    ? await db
+        .select({
+          id: accountsAccount.id,
+          email: accountsAccount.email,
+          usedProjectId: accountsAccount.usedProjectId,
+        })
+        .from(accountsAccount)
+        .where(
+          and(
+            sql`lower(${accountsAccount.email}) = lower(${input.email})`,
+            eq(accountsAccount.userId, caller.owner.id),
+          ),
+        )
+        .limit(1)
+    : [];
+  const account = byId ?? byEmail;
+  if (!account) {
+    await logAudit(
+      caller.roomId,
+      caller.tokenId,
+      'minimax_denied',
+      `аккаунт ${input.accountId ?? input.email ?? '?'} в пуле не найден`,
+      ip,
+      caller.actor,
+    );
+    return { ok: false, error: { status: 404, error: 'Аккаунт не найден в пуле' } };
+  }
+
+  // Один аккаунт — один потребитель: продлить может только та комната, которой мы
+  // этот аккаунт выдали. Если аккаунт выдавали не этой комнате — отказ.
+  if (account.usedProjectId !== caller.projectId) {
+    await logAudit(
+      caller.roomId,
+      caller.tokenId,
+      'minimax_denied',
+      `продление аккаунта #${account.id} отклонено: аккаунт за другой комнатой`,
+      ip,
+      caller.actor,
+    );
+    return {
+      ok: false,
+      error: {
+        status: 409,
+        error:
+          account.usedProjectId === null
+            ? 'Этот аккаунт мы вашей комнате не выдавали — продлевать нечего'
+            : 'Этот аккаунт выдан другой комнате — продлить его нельзя',
+      },
+    };
+  }
+
+  const handover = await renewAccountToken(account.id, now);
+  if (!handover) {
+    await logAudit(
+      caller.roomId,
+      caller.tokenId,
+      'minimax_denied',
+      `продление аккаунта #${account.id} невозможно: цепочка токенов оборвана`,
+      ip,
+      caller.actor,
+    );
+    return {
+      ok: false,
+      error: {
+        status: 409,
+        error: 'Цепочка токенов аккаунта оборвана — нужен новый вход владельца',
+      },
+    };
+  }
+
+  await logAudit(
+    caller.roomId,
+    caller.tokenId,
+    'minimax_account_renewed',
+    `продлён аккаунт #${account.id} «${account.email}»: ${
+      handover.renewed ? 'цепочка продлена новой парой' : 'access ещё жил, отдан тот же'
+    }, access до ${new Date(handover.expires_at_ms).toISOString()}`,
+    ip,
+    caller.actor,
+  );
+
+  return {
+    ok: true,
+    renewal: {
+      account_id: account.id,
+      email: account.email,
+      access_token: handover.access_token,
+      expires_at_ms: handover.expires_at_ms,
+      renewed: handover.renewed,
+    },
+  };
 }

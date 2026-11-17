@@ -706,6 +706,110 @@ export async function liveAccessToken(
 }
 
 /**
+ * Продление цепочки токенов аккаунта (D-219, мандат владельца 17.11).
+ *
+ * Отличие от `ensureLiveAccessToken`: там access, который уже отдан проекту, второй
+ * раз не отдаётся («тот же вход двоим не нужен, баланс у аккаунта общий»). Здесь
+ * отдаём СНОВА — тому же потребителю, который пришёл за продолжением: по мандату
+ * brain'а «продление — это тот же аккаунт и тот же потребитель», а один аккаунт —
+ * один потребитель ([G627]).
+ *
+ * - **access жив** → отдаём тот же самый, refresh не трогаем: он одноразовый, а
+ *   жечь его ради запроса «дай ещё раз» незачем;
+ * - **access протух** → продлеваем цепочку: вендор отдаёт новую пару целиком, кладём
+ *   её в базу и отдаём новый access. **Refresh наружу не уходит никогда** — цепочка
+ *   наша (мандат владельца 14.11, D-219).
+ *
+ * null — пары нет вовсе или цепочка оборвана (вендор больше не принимает refresh):
+ * аккаунту нужен новый вход, а это делает владелец (device-flow), не проект.
+ */
+export type RenewedAccess = {
+  access_token: string;
+  expires_at_ms: number;
+  /** true — цепочку продлили новой парой; false — access ещё жил, отдали тот же. */
+  renewed: boolean;
+};
+
+export async function renewAccountToken(
+  accountId: number,
+  now: Date = new Date(),
+): Promise<RenewedAccess | null> {
+  const [row] = await db
+    .select()
+    .from(accountToken)
+    .where(eq(accountToken.accountId, accountId))
+    .limit(1);
+  if (!row) return null;
+
+  let payload: { access?: string; refresh?: string };
+  try {
+    payload = JSON.parse(
+      decryptSecret(
+        { ciphertext: row.ciphertext, iv: row.iv, authTag: row.authTag },
+        accountTokenAad(accountId),
+      ),
+    ) as { access?: string; refresh?: string };
+  } catch {
+    // Пара не читается (повреждена или сменился мастер-ключ): молча переписать её
+    // нельзя — аккаунту нужен новый вход, и это должен сделать владелец.
+    return null;
+  }
+  const access = payload.access;
+  const refresh = payload.refresh;
+  if (!access || !refresh) return null;
+
+  const expiresAtMs = new Date(row.expiresAt).getTime();
+  if (expiresAtMs > now.getTime()) {
+    // Access ещё жив — отдаём его же. Отдача помечается: пара у этого потребителя.
+    await markAccessHandedOver(accountId, now);
+    return { access_token: access, expires_at_ms: expiresAtMs, renewed: false };
+  }
+
+  // Access мёртв — оживляем цепочку. Refresh одноразовый, поэтому вендор отдаёт
+  // новый вместе с новым access: в базу кладём пару целиком.
+  const refreshed = await refreshAccessToken(refresh);
+  if (!refreshed.ok) {
+    if (refreshed.error === 'invalid_grant') {
+      // Цепочка оборвана: refresh вендор больше не примет. Аккаунту нужен новый
+      // вход — пара удаляется, а отвечаем честно (null).
+      await db.delete(accountToken).where(eq(accountToken.id, row.id));
+    }
+    return null;
+  }
+
+  const newExpiresAt = new Date(now.getTime() + refreshed.data.expiresInSeconds * 1000);
+  const enc = encryptSecret(
+    JSON.stringify({
+      access: refreshed.data.accessToken,
+      refresh: refreshed.data.refreshToken,
+    }),
+    accountTokenAad(accountId),
+  );
+  // Оптимистичная блокировка — как в `ensureLiveAccessToken`: если пару в тот же
+  // момент обновили (два проекта позвали продление одновременно), наша запись
+  // не должна затереть чужую.
+  const updated = await db
+    .update(accountToken)
+    .set({
+      ciphertext: enc.ciphertext,
+      iv: enc.iv,
+      authTag: enc.authTag,
+      expiresAt: newExpiresAt.toISOString(),
+      handedOverAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    })
+    .where(and(eq(accountToken.id, row.id), eq(accountToken.ciphertext, row.ciphertext)))
+    .returning({ id: accountToken.id });
+  if (updated.length === 0) return null;
+
+  return {
+    access_token: refreshed.data.accessToken,
+    expires_at_ms: newExpiresAt.getTime(),
+    renewed: true,
+  };
+}
+
+/**
  * Пометить, что access отдан проекту (мандат владельца 15.11: по одному токену за
  * один запрос).
  */
