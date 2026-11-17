@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, asc, count, desc, eq, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { db } from '@/lib/db/client';
 import {
@@ -18,6 +18,11 @@ import { projectDeletedDetail } from '@/lib/secrets/audit-detail';
 import { grantState, type GrantState } from '@/lib/secrets/grant-state';
 import { isUniqueViolation } from '@/lib/db/pg-error';
 import { matchGrantPolicy } from './secrets/policy';
+import {
+  clearDerivationsSourceUnavailable,
+  markDerivationsOrphaned,
+  markDerivationsSourceUnavailable,
+} from './secrets/derive';
 import type {
   SecretProjectCreateInput,
   SecretProjectUpdateInput,
@@ -176,6 +181,12 @@ export async function updateProject(user: SessionUser, input: SecretProjectUpdat
  * есть строка, откатилось — нет ни того, ни другого. В detail — то, что каскад
  * уничтожит и о чём потом спросят (D-078: «комната исчезла, сколько в ней было»):
  * slug, число строк аудита, число токенов. Рекомендация Мозга 12.09.
+ *
+ * Смерть источника (D-191): перед удалением помечаем осиротевшими ВСЕ копии, чей
+ * источник лежал в этой комнате, и — отдельно — копии, сделанные ИЗ ключей этой
+ * комнаты (сама комната с её копиями уходит в каскад, а их собственные копии
+ * остаются сиротами). Пометку ставит код удаления, в той же операции и в том же
+ * аудите, что и сама смерть (G600: триггер БД правит строки молча, а след там и нужен).
  */
 export async function deleteProject(user: SessionUser, id: number): Promise<boolean> {
   return db.transaction(async (tx) => {
@@ -191,6 +202,20 @@ export async function deleteProject(user: SessionUser, id: number): Promise<bool
       tx.select({ n: count() }).from(secretsToken).where(eq(secretsToken.projectId, id)),
       tx.select({ n: count() }).from(secretsItem).where(eq(secretsItem.projectId, id)),
     ]);
+
+    // Ключи комнаты: по каждому ищем копии, которые осиротеют вместе с ним.
+    const keys = await tx
+      .select({ key: secretsItem.key })
+      .from(secretsItem)
+      .where(eq(secretsItem.projectId, id));
+    for (const k of keys) {
+      await markDerivationsOrphaned(
+        tx as unknown as typeof db,
+        project.id,
+        k.key,
+        actorOwner(user.id),
+      );
+    }
 
     await tx.insert(secretsAudit).values({
       projectId: null,
@@ -336,6 +361,12 @@ export async function upsertItem(user: SessionUser, input: SecretItemUpsertInput
   return true;
 }
 
+/**
+ * Удаление секрета. Смерть источника (D-191): копии этого ключа помечаются
+ * осиротевшими — в той же транзакции и в том же аудите, что и сама смерть (G600).
+ * Сами копии при этом НЕ удаляются: каскад по умолчанию «пометить», а не «убить»
+ * (мандат brain 08.11) — копия к тому моменту может быть рабочим секретом прода.
+ */
 export async function deleteItem(user: SessionUser, itemId: number): Promise<boolean> {
   // Удаляем только если родительский проект принадлежит пользователю.
   const [item] = await db
@@ -344,11 +375,26 @@ export async function deleteItem(user: SessionUser, itemId: number): Promise<boo
     .where(eq(secretsItem.id, itemId))
     .limit(1);
   if (!item || (await ownedProjectId(user, item.projectId)) === null) return false;
-  await db.delete(secretsItem).where(eq(secretsItem.id, itemId));
-  // Удаление секрета — операция того же веса, что раскрытие, и до 02.11 оно не
-  // оставляло в аудите ни строки: «кто удалил» было недоказуемо (инцидент 12.10 —
-  // HOTLINE_RELAY_SECRET исчез из комнаты молча, выручил только env-фолбэк).
-  await logAudit(item.projectId, null, 'item_deleted', `key=${item.key}`, null, actorOwner(user.id));
+  await db.transaction(async (tx) => {
+    await markDerivationsOrphaned(
+      tx as unknown as typeof db,
+      item.projectId,
+      item.key,
+      actorOwner(user.id),
+    );
+    await tx.delete(secretsItem).where(eq(secretsItem.id, itemId));
+    // Удаление секрета — операция того же веса, что раскрытие, и до 02.11 оно не
+    // оставляло в аудите ни строки: «кто удалил» было недоказуемо (инцидент 12.10 —
+    // HOTLINE_RELAY_SECRET исчез из комнаты молча, выручил только env-фолбэк).
+    await tx.insert(secretsAudit).values({
+      projectId: item.projectId,
+      tokenId: null,
+      action: 'item_deleted',
+      detail: `key=${item.key}`,
+      ip: null,
+      actor: actorOwner(user.id),
+    });
+  });
   return true;
 }
 
@@ -376,35 +422,56 @@ export async function revealItem(user: SessionUser, itemId: number): Promise<str
 
 // --- Токены доступа ---------------------------------------------------------
 
-/** Создаёт токен; возвращает сам токен ОДИН раз (в БД только хэш). null — нет доступа. */
+/**
+ * Создаёт токен; возвращает сам токен ОДИН раз (в БД только хэш). null — нет доступа.
+ *
+ * Новый живой токен означает, что комната снова доступна, — снимается пометка
+ * «источник недоступен» на копиях её секретов (D-191). Смертью источника это не
+ * является: `orphaned` не трогаем.
+ */
 export async function createToken(
   user: SessionUser,
   input: SecretTokenCreateInput,
 ): Promise<string | null> {
   if ((await ownedProjectId(user, input.projectId)) === null) return null;
   const t = generateToken();
-  const [created] = await db
-    .insert(secretsToken)
-    .values({
+  await db.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(secretsToken)
+      .values({
+        projectId: input.projectId,
+        name: input.name,
+        tokenPrefix: t.prefix,
+        tokenHash: t.hash,
+        canWrite: input.canWrite,
+      })
+      .returning({ id: secretsToken.id });
+    // Выпуск токена владельцем — вторая GUI-операция из долга ADR-0012 §6.
+    await tx.insert(secretsAudit).values({
       projectId: input.projectId,
-      name: input.name,
-      tokenPrefix: t.prefix,
-      tokenHash: t.hash,
-      canWrite: input.canWrite,
-    })
-    .returning({ id: secretsToken.id });
-  // Выпуск токена владельцем — вторая GUI-операция из долга ADR-0012 §6.
-  await logAudit(
-    input.projectId,
-    created?.id ?? null,
-    'token_created',
-    `${input.canWrite ? 'rw' : 'ro'}-токен «${input.name}» (${t.prefix})`,
-    null,
-    actorOwner(user.id),
-  );
+      tokenId: created?.id ?? null,
+      action: 'token_created',
+      detail: `${input.canWrite ? 'rw' : 'ro'}-токен «${input.name}» (${t.prefix})`,
+      ip: null,
+      actor: actorOwner(user.id),
+    });
+    await clearDerivationsSourceUnavailable(
+      tx as unknown as typeof db,
+      input.projectId,
+      actorOwner(user.id),
+    );
+  });
   return t.token;
 }
 
+/**
+ * Отзыв токена. Отзыв — НЕ смерть источника (мандат brain 12.11): комнату можно
+ * перевыпустить, поэтому копии её секретов получают пометку «источник недоступен»
+ * (без `orphaned`) и подъём в аудите.
+ *
+ * Пометка ставится, когда комната осталась БЕЗ живых токенов: отзыв одного токена
+ * при живых соседях ничего не меняет — источник по-прежнему доступен.
+ */
 export async function revokeToken(user: SessionUser, tokenId: number): Promise<boolean> {
   const [tok] = await db
     .select({ id: secretsToken.id, projectId: secretsToken.projectId })
@@ -412,8 +479,34 @@ export async function revokeToken(user: SessionUser, tokenId: number): Promise<b
     .where(eq(secretsToken.id, tokenId))
     .limit(1);
   if (!tok || (await ownedProjectId(user, tok.projectId)) === null) return false;
-  await db.update(secretsToken).set({ revokedAt: isoNow() }).where(eq(secretsToken.id, tokenId));
-  await logAudit(tok.projectId, tokenId, 'token_revoked', null, null, actorOwner(user.id));
+  await db.transaction(async (tx) => {
+    await tx.update(secretsToken).set({ revokedAt: isoNow() }).where(eq(secretsToken.id, tokenId));
+    await tx.insert(secretsAudit).values({
+      projectId: tok.projectId,
+      tokenId,
+      action: 'token_revoked',
+      detail: null,
+      ip: null,
+      actor: actorOwner(user.id),
+    });
+    const live = await tx
+      .select({ n: count() })
+      .from(secretsToken)
+      .where(
+        and(
+          eq(secretsToken.projectId, tok.projectId),
+          isNull(secretsToken.revokedAt),
+          or(isNull(secretsToken.expiresAt), gt(secretsToken.expiresAt, isoNow())),
+        ),
+      );
+    if ((live[0]?.n ?? 0) === 0) {
+      await markDerivationsSourceUnavailable(
+        tx as unknown as typeof db,
+        tok.projectId,
+        actorOwner(user.id),
+      );
+    }
+  });
   return true;
 }
 

@@ -224,7 +224,47 @@ export const passportIdentityCreateSchema = z.object({
   note: optionalNote,
 });
 
-/** Тело POST /api/secrets — машинная запись секретов по токену (bulk upsert). */
+/**
+ * Тело POST /api/secrets/derive — вывод производной (D-191).
+ *
+ * `source_key` — то имя, под которым источник видит потребитель: алиас выданной
+ * ему выдачи (по умолчанию — то же имя, что и у оригинала). Истинный источник
+ * (комната и ключ оригинала) сервис дочитывает сам — по выданной выдаче, и в
+ * родословной лежит ОРИГИНАЛ, а не то имя, под которым источник увидел
+ * потребитель. `source_slug` — та же комната-источник, но явно: если она
+ * указана и не совпадает с комнатой выдачи, вывод отклоняется (409).
+ *
+ * `note` — основание вывода; уходит в аудит обеих комнат (в комнате-источнике
+ * это строка реестра домов: «дом: комната X, ключ Y, создано Z»).
+ */
+export const secretDeriveSchema = z.object({
+  source_key: secretKeyName,
+  source_slug: secretProjectCreateSchema.shape.slug.optional(),
+  target_key: secretKeyName,
+  note: z.string().trim().max(500).optional(),
+});
+
+/**
+ * Тело POST /api/secrets/derivations/restore — снять пометку «источник умер»
+ * с производной (мандат brain 08.11: «Отмена: снять пометку, если копия ещё
+ * жива и нужна»). Ключ — имя копии В МОЕЙ комнате.
+ */
+export const secretDeriveRestoreSchema = z.object({
+  key: secretKeyName,
+});
+
+/**
+ * Запрос GET /api/secrets/derivations — без source_key получатель смотрит свои
+ * производные (родословная каждой копии), с source_key — «дома» своего ключа:
+ * кто и когда завёл копии (реестр домов, #226).
+ */
+export const secretDerivationsQuerySchema = z.object({
+  source_key: secretKeyName.optional(),
+});
+
+/**
+ * Тело POST /api/secrets — машинная запись секретов по токену (bulk upsert).
+ */
 export const secretPushSchema = z.object({
   secrets: z
     .record(secretKeyName, secretValue)
@@ -247,3 +287,6 @@ export type SecretGrantCreateInput = z.infer<typeof secretGrantCreateSchema>;
 export type SecretGrantProposeInput = z.infer<typeof secretGrantProposeSchema>;
 export type PassportIdentityCreateInput = z.infer<typeof passportIdentityCreateSchema>;
 export type SecretBootstrapCreateInput = z.infer<typeof secretBootstrapCreateSchema>;
+export type SecretDeriveInput = z.infer<typeof secretDeriveSchema>;
+export type SecretDeriveRestoreInput = z.infer<typeof secretDeriveRestoreSchema>;
+export type SecretDerivationsQueryInput = z.infer<typeof secretDerivationsQuerySchema>;

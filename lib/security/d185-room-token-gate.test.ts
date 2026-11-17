@@ -15,6 +15,10 @@ import {
   revokePolicyByToken,
 } from '@/lib/services/secrets';
 import { listTokenInventory } from '@/lib/services/secrets';
+import {
+  deriveSecretByToken,
+  restoreDerivationByToken,
+} from '@/lib/services/secrets/derive';
 import { claimBootstrap } from '@/lib/services/bootstrap';
 import { generateToken, hashToken } from '@/lib/secrets/token';
 
@@ -90,6 +94,16 @@ const WRITE_PATHS: WritePath[] = [
     route: 'DELETE /api/secrets/session',
     op: 'закрыть паспортную сессию (своим токеном)',
     auth: 'room-token-self',
+  },
+  {
+    route: 'POST /api/secrets/derive',
+    op: 'вывести производную (копию чужого ключа к себе)',
+    auth: 'room-token',
+  },
+  {
+    route: 'POST /api/secrets/derivations/restore',
+    op: 'снять пометку «источник умер» с производной',
+    auth: 'room-token',
   },
 ];
 
@@ -300,6 +314,11 @@ async function runWritePath(
       });
     case 'DELETE /api/secrets/policies':
       return revokePolicyByToken(src.roToken, null, policyId);
+    case 'POST /api/secrets/derive':
+      // Производную выводят по действующей выдаче; read-only токен не может.
+      return deriveSecretByToken(src.roToken, null, { source_key: 'K', target_key: 'COPY' });
+    case 'POST /api/secrets/derivations/restore':
+      return restoreDerivationByToken(src.roToken, null, { key: 'COPY' });
     default:
       throw new Error(`путь ${route} не покрыт прогоном`);
   }

@@ -280,8 +280,11 @@ export async function pushByToken(
  * Действующие выдачи, по которым комната-получатель читает чужие ключи.
  * Предложения (`accepted_at IS NULL`) сюда НЕ входят — в этом и состоит
  * согласие получателя: до accept чужое имя в его окружении не появляется.
+ *
+ * Экспортируется для зоны производных (`./derive`): вывод копии разрешён только
+ * по действующей выдаче, и она же — единственный путь к чужому источнику.
  */
-async function activeGrantsFor(targetProjectId: number): Promise<GrantAlias[]> {
+export async function activeGrantsFor(targetProjectId: number): Promise<GrantAlias[]> {
   return db
     .select({
       id: secretsGrant.id,

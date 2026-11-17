@@ -471,6 +471,30 @@ export const secretsItem = pgTable('secrets_item', {
   ciphertext: text('ciphertext').notNull(),
   iv: varchar('iv', { length: 32 }).notNull(),
   authTag: varchar('auth_tag', { length: 32 }).notNull(),
+  // --- Родословная производной (D-191, миграция 0031) -----------------------
+  // У обычного секрета все шесть полей NULL — он не производная. У производной
+  // заполнены origin_project_id + origin_key (где лежит оригинал), derived_by
+  // (кто вывел) и derived_at; orphaned_at означает, что источник УМЕР, а
+  // source_unavailable_at — что источник ЖИВ, но недоступен (отозвали последний
+  // токен комнаты). Признак «это производная» — заполненный origin_key: ссылка
+  // на комнату-источник обнуляется каскадом при её удалении, и производная с
+  // умершей комнатой-источником обязана остаться производной.
+  /** Комната-источник оригинала. null — комната-источник удалена. */
+  originProjectId: bigint('origin_project_id', { mode: 'number' }).references(() => secretsProject.id, {
+    onDelete: 'set null',
+  }),
+  /** Ключ оригинала в комнате-источнике. Заполнен ⇒ строка — производная. */
+  originKey: varchar('origin_key', { length: 200 }),
+  /** Комната, которая завела копию (по построению совпадает с project_id). */
+  derivedBy: bigint('derived_by', { mode: 'number' }).references(() => secretsProject.id, {
+    onDelete: 'set null',
+  }),
+  /** Когда копию вывели. */
+  derivedAt: tstz('derived_at'),
+  /** Когда источник умер; не NULL — копия осиротела. */
+  orphanedAt: tstz('orphaned_at'),
+  /** Когда источник стал недоступен (отозвали последний токен комнаты). */
+  sourceUnavailableAt: tstz('source_unavailable_at'),
   createdAt: tstz('created_at').notNull().defaultNow(),
   updatedAt: tstz('updated_at').notNull().defaultNow().$onUpdate(isoNow),
 });
