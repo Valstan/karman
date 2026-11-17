@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import type { PGlite } from '@electric-sql/pglite';
 import { eq } from 'drizzle-orm';
 import { createTestDb, type TestDb } from '@/lib/db/test-db';
-import { accountsAccount, accountsUsage, authUser } from '@/lib/db/schema';
+import { accountsAccount, accountsUsage, authUser, secretsProject, secretsToken } from '@/lib/db/schema';
 import {
   activateAccount,
   correctActivationIndex,
@@ -11,11 +12,14 @@ import {
   listAccounts,
   updateAccount,
 } from '@/lib/services/accounts';
+import { recordObservation } from '@/lib/services/minimax';
+import { hashToken } from '@/lib/secrets/token';
 import {
   accountActivateSchema,
   accountActivationIndexSchema,
   accountCreateSchema,
   accountUpdateSchema,
+  minimaxObservationSchema,
 } from '@/lib/validation/account';
 import type { SessionUser } from '@/lib/auth/rbac';
 
@@ -369,5 +373,205 @@ describe('G54: контракт проходит все слои целиком'
     expect(bad.success).toBe(false);
     const zero = accountActivationIndexSchema.safeParse({ id: 1, activationIndex: 0 });
     expect(zero.success).toBe(false);
+  });
+});
+
+/**
+ * G54 — контракт наблюдения потребителя (`minimaxObservationSchema`).
+ *
+ * Отдельный контракт и отдельный вызов — значит и отдельный гейт: правка 13–15.11
+ * (машинный доступ к пулу) добавила схему со ВСЕМИ optional-полями
+ * (`account_id`, `email`, `points`, `activation_index`), а живого round-trip на ней не
+ * было: схема встречалась только в `lib/validation/account.ts` и в роуте, теста-
+ * контракта не существовало. Класс дефекта — тот же, что ловит G54: strip-схема молча
+ * срезает новое optional-поле, и юнит-зелёный этого НЕ видит.
+ *
+ * Проверяем полный путь: **тип → клиент → route-валидатор → сервис → хранилище →
+ * обратное чтение**. Плюс негативный контроль: снятие поля из схемы молча срезает
+ * значение — гейт это различает.
+ */
+describe('G54: контракт наблюдения потребителя проходит все слои', () => {
+  const ROOM_TOKEN = 'skm_test_room_token_0123456789abcdef';
+
+  /**
+   * Комната с пишущим токеном: без него сервис потребителя не признаёт.
+   *
+   * Идемпотентно: комната одна на файл (слаг уникален в пределах владельца), а
+   * токен в ней — один.
+   */
+  async function makeRoom(slug: string, name: string, token: string) {
+    const [existing] = await refs.current!
+      .select({ id: secretsProject.id })
+      .from(secretsProject)
+      .where(eq(secretsProject.slug, slug))
+      .limit(1);
+    if (existing) return existing.id;
+    const [room] = await refs.current!
+      .insert(secretsProject)
+      .values({ userId: owner.id, name, slug })
+      .returning({ id: secretsProject.id });
+    await refs.current!.insert(secretsToken).values({
+      projectId: room!.id,
+      name: 'rw',
+      tokenPrefix: token.slice(0, 12),
+      tokenHash: hashToken(token),
+      canWrite: true,
+    });
+    return room!.id;
+  }
+
+  /** Аккаунт, выданный сегодня: строку дня пишем мы при выдаче. */
+  async function makeIssuedAccount(email: string) {
+    const id = await createAccount(owner, { title: 'Наблюдаемый', email, password: 'пароль' });
+    const activated = accountActivateSchema.safeParse({ id, activationIndex: 1 });
+    expect(activated.success).toBe(true);
+    if (!activated.success) throw new Error('активация не прошла');
+    await activateAccount(owner, activated.data, NOW);
+    return id;
+  }
+
+  it('названный номер клетки доезжает до журнала, очки считаются по нему, и это читается обратно', async () => {
+    await makeRoom('setka', 'SARAFAN', ROOM_TOKEN);
+    const id = await makeIssuedAccount('observe@example.test');
+
+    // Клиент → валидатор: ровно то, что прислал потребитель.
+    const parsed = minimaxObservationSchema.safeParse({
+      account_id: id,
+      points: 400,
+      activation_index: 4,
+    });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    // Поля не срезаны — это и есть предмет G54.
+    expect(parsed.data.account_id).toBe(id);
+    expect(parsed.data.points).toBe(400);
+    expect(parsed.data.activation_index).toBe(4);
+
+    const result = await recordObservation(
+      ROOM_TOKEN,
+      '127.0.0.1',
+      {
+        accountId: parsed.data.account_id ?? null,
+        email: parsed.data.email ?? null,
+        points: parsed.data.points ?? null,
+        activationIndex: parsed.data.activation_index ?? null,
+      },
+      NOW,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Номер назвал потребитель — он истина, очки считаются ПО НЕМУ (4-я клетка — 1000).
+    expect(result.record.activation_index).toBe(4);
+    expect(result.record.points).toBe(1000);
+    expect(result.record.source).toBe('client_index');
+    // Наше предсказание (2-я клетка, 400) разошлось с фактом — это сигнал, не ошибка.
+    expect(result.record.cell_expected).toBe(2);
+    expect(result.record.mismatch).toBe(true);
+
+    // Хранилище: строка журнала переписана фактом.
+    const rows = await refs.current!
+      .select()
+      .from(accountsUsage)
+      .where(eq(accountsUsage.accountId, id));
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.activationIndex).toBe(4);
+    expect(rows[0]!.tokens).toBe(1000);
+
+    // Очки в строке аккаунта — те же, что в журнале.
+    const [account] = await refs.current!
+      .select()
+      .from(accountsAccount)
+      .where(eq(accountsAccount.id, id));
+    expect(account!.lastTokens).toBe(1000);
+
+    // Обратное чтение: недельная квота аккаунта знает названный номер.
+    const list = await listAccounts(owner, NOW);
+    expect(list.find((r) => r.id === id)!.week.confirmedIndex).toBe(4);
+  });
+
+  it('присланные очки без номера пишутся как есть — номер считаем мы', async () => {
+    await makeRoom('gonba', 'GONBA', 'skm_test_gonba_room_token_0123456789');
+    const id = await makeIssuedAccount('points-only@example.test');
+
+    const parsed = minimaxObservationSchema.safeParse({
+      email: 'points-only@example.test',
+      points: 400,
+    });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+
+    const result = await recordObservation(
+      'skm_test_gonba_room_token_0123456789',
+      '127.0.0.1',
+      {
+        accountId: parsed.data.account_id ?? null,
+        email: parsed.data.email ?? null,
+        points: parsed.data.points ?? null,
+        activationIndex: parsed.data.activation_index ?? null,
+      },
+      NOW,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.record.source).toBe('client_points');
+    expect(result.record.points).toBe(400);
+    // Номер клетки при этом считаем сами — по недельной квоте.
+    expect(result.record.activation_index).toBe(2);
+
+    const rows = await refs.current!
+      .select()
+      .from(accountsUsage)
+      .where(eq(accountsUsage.accountId, id));
+    expect(rows[0]!.tokens).toBe(400);
+    expect(rows[0]!.activationIndex).toBe(2);
+  });
+
+  it('наблюдение аккаунта, который мы не выдавали, честно отклоняется', async () => {
+    await makeRoom('setka', 'SARAFAN', ROOM_TOKEN);
+    const id = await createAccount(owner, {
+      title: 'Не выдан',
+      email: 'not-issued@example.test',
+      password: 'пароль',
+    });
+
+    const parsed = minimaxObservationSchema.safeParse({ account_id: id, points: 400 });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+
+    const result = await recordObservation(
+      ROOM_TOKEN,
+      '127.0.0.1',
+      {
+        accountId: parsed.data.account_id ?? null,
+        email: parsed.data.email ?? null,
+        points: parsed.data.points ?? null,
+        activationIndex: parsed.data.activation_index ?? null,
+      },
+      NOW,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.status).toBe(404);
+  });
+
+  it('негативный контроль: снятие поля из схемы молча срезает значение', () => {
+    // Если бы `activation_index` убрали из схемы, значение пропало бы по дороге к
+    // сервису: zod срезает неизвестные ключи, и юнит-зелёный бы этого не заметил.
+    const schemaWithoutIndex = z.object({
+      account_id: z.coerce.number().int().positive().optional(),
+      email: z.string().trim().min(3).max(320).optional(),
+      points: z.coerce.number().int().min(0).max(100_000).optional(),
+    });
+    const stripped = schemaWithoutIndex.parse({ account_id: 7, activation_index: 4 });
+    expect('activation_index' in stripped).toBe(false);
+    // Наша схема поле сохраняет — и гейт это различает.
+    expect(minimaxObservationSchema.parse({ account_id: 7, activation_index: 4 }).activation_index).toBe(4);
+    // Неизвестное поле (в т.ч. попытка подсунуть пару токенов) до сервиса не доходит.
+    const parsed = minimaxObservationSchema.parse({
+      account_id: 7,
+      activation_index: 4,
+      refresh_token: 'подсунуть',
+    });
+    expect('refresh_token' in parsed).toBe(false);
   });
 });
