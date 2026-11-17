@@ -12,13 +12,18 @@ export const dynamic = 'force-dynamic';
  * **Продление цепочки токенов аккаунта** (D-219, мандат владельца 17.11).
  *
  *   POST /api/minimax/renew
- *     { account_id | email }
+ *     { account_id }
  *     → { account_id, email, access_token, expires_at_ms, renewed }
  *
  * Зачем: access живёт 12 часов (вендорские `expires_in = 43 200`), а новый вход —
  * это две минуты ручной работы владельца в браузере. Мозг просит: **продлеваем
  * цепочку у себя и отдаём свежий access того же аккаунта**, а пара (access +
  * refresh) наружу не уходит — граница D-219 цела.
+ *
+ * **Аккаунт — только по `account_id`** (уточнение владельца 17.11): почта это способ
+ * АВТОРИЗАЦИИ на сайте MiniMax (вход владельца по коду с почты), а не способ опознать
+ * аккаунт. `account_id` потребитель знает — мы отдаём его в ответе выдачи
+ * (`GET /api/minimax/accounts/available` → `account.id`).
  *
  * Что ручка НЕ делает:
  *
@@ -31,7 +36,8 @@ export const dynamic = 'force-dynamic';
  *   стало бы вторым путём раздать чужой аккаунт.
  *
  * Честные отказы: 409 — аккаунт за другой комнатой или цепочка оборвана (нужен
- * новый вход владельца); 404 — аккаунта нет в пуле; 403 — токен только для чтения.
+ * новый вход владельца); 404 — аккаунта нет в пуле; 403 — токен только для чтения;
+ * 400 — в теле нет `account_id`.
  *
  * Авторизация: `Authorization: Bearer skm_…` — токен комнаты **с правом записи**
  * (продление выдаёт учётные данные и пишет в аудит — операция класса записи).
@@ -57,7 +63,6 @@ export async function POST(req: Request) {
 
   const result = await renewAccountAccess(token, ip, {
     accountId: parsed.data.account_id ?? null,
-    email: parsed.data.email ?? null,
   });
   if (!result.ok) {
     return NextResponse.json({ error: result.error.error }, { status: result.error.status });
