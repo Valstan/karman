@@ -552,12 +552,99 @@ export type AccessHandover = {
 };
 
 /**
+ * Порог остатка жизни access, ниже которого отдавать его потребителю нельзя.
+ *
+ * Находка Мозга (17.11, «access с остатком 9 минут»): в 09:49 МСК мы отдали аккаунт,
+ * у которого access истекал через 9 минут. Потребитель (десктоп) отверг токен и **стёр
+ * запись входа** (`auth.json` 671 → 42 байта), а access одноразовый — вернуть его
+ * нельзя, аккаунт при этом всё равно сгорал: минус один аккаунт пула вместо одного
+ * выданного.
+ *
+ * Значит короткий остаток — не «почти работает», а брак: такой access отдавать нельзя.
+ * Порог — 2 часа (Мозг просил именно два; у себя отсекал 30 минут). Лучше отдать
+ * следующий аккаунт, чем отдать тот, который сдохнет у потребителя.
+ *
+ * Следствие для обеих ручек: и выдача, и продление цепочки при нехватке остатка
+ * продлевают пару по refresh — «остаток 9 минут» становится невозможен в принципе.
+ */
+export const MIN_HANDOVER_ACCESS_LIFETIME_MS = 2 * 60 * 60 * 1000;
+
+/** Сколько жизни осталось у access (мс). Отрицательное — он уже мёртв. */
+export function accessLifetimeLeftMs(expiresAtMs: number, now: Date): number {
+  return expiresAtMs - now.getTime();
+}
+
+/** Access протух или доживает до порога — отдавать его нельзя. */
+export function accessTooShortToHandOver(expiresAtMs: number, now: Date): boolean {
+  return accessLifetimeLeftMs(expiresAtMs, now) < MIN_HANDOVER_ACCESS_LIFETIME_MS;
+}
+
+/**
+ * Продлить цепочку токенов аккаунта по refresh и положить новую пару в базу.
+ *
+ * Refresh одноразовый, но вендор вместе с новым access отдаёт и новый refresh — то
+ * есть цепочка продлевается (живая проба 15.11: HTTP 200, оба токена).
+ *
+ * `handedOverAt` — что пометить в строке: `null` для пути выдачи (отдача помечается
+ * позже, отдельным вызовом) и время — для пути продления (там отдача происходит
+ * сразу). Оптимистичная блокировка по `ciphertext`: если пару в тот же момент
+ * обновили (два проекта позвали продление одновременно), наша запись не должна
+ * затереть чужую.
+ *
+ * null — refresh не сработал: цепочка оборвана (вендор больше не примет refresh) и
+ * аккаунту нужен новый вход владельца. Пару удаляем, чтобы пул не предлагал
+ * мёртвый аккаунт.
+ */
+async function refreshTokenChain(
+  row: typeof accountToken.$inferSelect,
+  refresh: string,
+  now: Date,
+  handedOverAt: string | null,
+): Promise<{ access_token: string; expires_at_ms: number } | null> {
+  const refreshed = await refreshAccessToken(refresh);
+  if (!refreshed.ok) {
+    if (refreshed.error === 'invalid_grant') {
+      // Цепочка оборвана: refresh вендор больше не примет. Аккаунту нужен новый
+      // вход — пара удаляется, а мы говорим об этом честно (null).
+      await db.delete(accountToken).where(eq(accountToken.id, row.id));
+    }
+    return null;
+  }
+
+  const newExpiresAt = new Date(now.getTime() + refreshed.data.expiresInSeconds * 1000);
+  const enc = encryptSecret(
+    JSON.stringify({ access: refreshed.data.accessToken, refresh: refreshed.data.refreshToken }),
+    accountTokenAad(row.accountId),
+  );
+  const updated = await db
+    .update(accountToken)
+    .set({
+      ciphertext: enc.ciphertext,
+      iv: enc.iv,
+      authTag: enc.authTag,
+      expiresAt: newExpiresAt.toISOString(),
+      handedOverAt,
+      updatedAt: now.toISOString(),
+    })
+    .where(and(eq(accountToken.id, row.id), eq(accountToken.ciphertext, row.ciphertext)))
+    .returning({ id: accountToken.id });
+  if (updated.length === 0) return null;
+
+  return { access_token: refreshed.data.accessToken, expires_at_ms: newExpiresAt.getTime() };
+}
+
+/**
  * Живой access-токен аккаунта — с оживлением по refresh.
  *
  * Access живёт 12 часов (вендорский `expires_in = 43 200`). Протухший access — не
  * «нужен новый вход»: refresh одноразовый, но вместе с новым access вендор отдаёт и
  * новый refresh, то есть цепочка продлевается (живая проба 15.11: HTTP 200, оба
  * токена). Поэтому мы обновляем пару сами и кладём в базу новую целиком.
+ *
+ * **Короткий остаток — тоже брак.** Если access доживает меньше
+ * `MIN_HANDOVER_ACCESS_LIFETIME_MS` (2 часа), мы его НЕ отдаём, а продлеваем цепочку:
+ * отдать потребителю почти мёртвый токен значит угробить вход и сжечь аккаунт
+ * (находка Мозга 17.11: access с остатком 9 минут → десктоп стёр `auth.json`).
  *
  * Возвращает null, если:
  *
@@ -598,47 +685,18 @@ export async function ensureLiveAccessToken(
   const expiresAtMs = new Date(row.expiresAt).getTime();
   if (expiresAtMs > now.getTime()) {
     if (row.handedOverAt) return null;
+    // Остаток меньше порога — отдавать нельзя (находка Мозга 17.11: access с 9
+    // минутами остатка; десктоп стёр запись входа, аккаунт сгорел впустую).
+    // Продлеваем цепочку по refresh — и отдаём уже свежий access.
+    if (accessTooShortToHandOver(expiresAtMs, now)) {
+      return refreshTokenChain(row, refresh, now, null);
+    }
     return { access_token: access, expires_at_ms: expiresAtMs };
   }
 
-
   // Access мёртв — оживляем цепочку. Refresh одноразовый, поэтому вендор отдаёт
   // новый вместе с новым access: в базу кладём пару целиком.
-  const refreshed = await refreshAccessToken(refresh);
-  if (!refreshed.ok) {
-    if (refreshed.error === 'invalid_grant') {
-      // Цепочка оборвана: refresh вендор больше не примет. Аккаунту нужен новый
-      // вход — говорим об этом честно, пара удаляется.
-      await db.delete(accountToken).where(eq(accountToken.id, row.id));
-    }
-    return null;
-  }
-
-  const newExpiresAt = new Date(now.getTime() + refreshed.data.expiresInSeconds * 1000);
-  const enc = encryptSecret(
-    JSON.stringify({
-      access: refreshed.data.accessToken,
-      refresh: refreshed.data.refreshToken,
-    }),
-    accountTokenAad(accountId),
-  );
-  // Оптимистичная блокировка: если пару в тот же момент обновили (кто-то другой
-  // оживил этот же аккаунт), наша запись не должна затереть чужую.
-  const updated = await db
-    .update(accountToken)
-    .set({
-      ciphertext: enc.ciphertext,
-      iv: enc.iv,
-      authTag: enc.authTag,
-      expiresAt: newExpiresAt.toISOString(),
-      handedOverAt: null,
-      updatedAt: now.toISOString(),
-    })
-    .where(and(eq(accountToken.id, row.id), eq(accountToken.ciphertext, row.ciphertext)))
-    .returning({ id: accountToken.id });
-  if (updated.length === 0) return null;
-
-  return { access_token: refreshed.data.accessToken, expires_at_ms: newExpiresAt.getTime() };
+  return refreshTokenChain(row, refresh, now, null);
 }
 
 /**
@@ -714,11 +772,14 @@ export async function liveAccessToken(
  * brain'а «продление — это тот же аккаунт и тот же потребитель», а один аккаунт —
  * один потребитель ([G627]).
  *
- * - **access жив** → отдаём тот же самый, refresh не трогаем: он одноразовый, а
- *   жечь его ради запроса «дай ещё раз» незачем;
- * - **access протух** → продлеваем цепочку: вендор отдаёт новую пару целиком, кладём
- *   её в базу и отдаём новый access. **Refresh наружу не уходит никогда** — цепочка
- *   наша (мандат владельца 14.11, D-219).
+ * - **access жив и полон** (остаток ≥ `MIN_HANDOVER_ACCESS_LIFETIME_MS`) → отдаём тот
+ *   же самый, refresh не трогаем: он одноразовый, а жечь его ради запроса «дай ещё
+ *   раз» незачем;
+ * - **access протух ИЛИ доживает меньше порога** (2 часа) → продлеваем цепочку: вендор
+ *   отдаёт новую пару целиком, кладём её в базу и отдаём новый access. **Refresh наружу
+ *   не уходит никогда** — цепочка наша (мандат владельца 14.11, D-219). Короткий
+ *   остаток продлеваем, а не отдаём: иначе потребитель остаётся с почти мёртвым
+ *   токеном (находка Мозга 17.11: остаток 9 минут → десктоп стёр запись входа).
  *
  * null — пары нет вовсе или цепочка оборвана (вендор больше не принимает refresh):
  * аккаунту нужен новый вход, а это делает владелец (device-flow), не проект.
@@ -728,6 +789,12 @@ export type RenewedAccess = {
   expires_at_ms: number;
   /** true — цепочку продлили новой парой; false — access ещё жил, отдали тот же. */
   renewed: boolean;
+  /**
+   * Сколько жизни оставалось у ПРЕДЫДУЩЕГО access в момент продления (мс).
+   * Отрицательное — он уже протух. Нужен для разбора: почему цепочку продлили и
+   * сколько жил выданный токен (письмо Мозга 17.11).
+   */
+  previous_left_ms: number;
 };
 
 export async function renewAccountToken(
@@ -759,53 +826,31 @@ export async function renewAccountToken(
   if (!access || !refresh) return null;
 
   const expiresAtMs = new Date(row.expiresAt).getTime();
-  if (expiresAtMs > now.getTime()) {
-    // Access ещё жив — отдаём его же. Отдача помечается: пара у этого потребителя.
+  const previousLeftMs = accessLifetimeLeftMs(expiresAtMs, now);
+  if (expiresAtMs > now.getTime() && !accessTooShortToHandOver(expiresAtMs, now)) {
+    // Access ещё жив и полон — отдаём его же. Отдача помечается: пара у этого
+    // потребителя.
     await markAccessHandedOver(accountId, now);
-    return { access_token: access, expires_at_ms: expiresAtMs, renewed: false };
+    return {
+      access_token: access,
+      expires_at_ms: expiresAtMs,
+      renewed: false,
+      previous_left_ms: previousLeftMs,
+    };
   }
 
-  // Access мёртв — оживляем цепочку. Refresh одноразовый, поэтому вендор отдаёт
-  // новый вместе с новым access: в базу кладём пару целиком.
-  const refreshed = await refreshAccessToken(refresh);
-  if (!refreshed.ok) {
-    if (refreshed.error === 'invalid_grant') {
-      // Цепочка оборвана: refresh вендор больше не примет. Аккаунту нужен новый
-      // вход — пара удаляется, а отвечаем честно (null).
-      await db.delete(accountToken).where(eq(accountToken.id, row.id));
-    }
-    return null;
-  }
-
-  const newExpiresAt = new Date(now.getTime() + refreshed.data.expiresInSeconds * 1000);
-  const enc = encryptSecret(
-    JSON.stringify({
-      access: refreshed.data.accessToken,
-      refresh: refreshed.data.refreshToken,
-    }),
-    accountTokenAad(accountId),
-  );
-  // Оптимистичная блокировка — как в `ensureLiveAccessToken`: если пару в тот же
-  // момент обновили (два проекта позвали продление одновременно), наша запись
-  // не должна затереть чужую.
-  const updated = await db
-    .update(accountToken)
-    .set({
-      ciphertext: enc.ciphertext,
-      iv: enc.iv,
-      authTag: enc.authTag,
-      expiresAt: newExpiresAt.toISOString(),
-      handedOverAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-    })
-    .where(and(eq(accountToken.id, row.id), eq(accountToken.ciphertext, row.ciphertext)))
-    .returning({ id: accountToken.id });
-  if (updated.length === 0) return null;
+  // Access протух ИЛИ доживает до порога (остаток < 2 часов — отдавать нельзя,
+  // находка Мозга 17.11). В обоих случаях цепочку продлеваем: refresh одноразовый,
+  // но вендор отдаёт новую пару целиком. Отдача помечается сразу — она происходит
+  // сейчас, потребитель уходит с этим access.
+  const refreshed = await refreshTokenChain(row, refresh, now, now.toISOString());
+  if (!refreshed) return null;
 
   return {
-    access_token: refreshed.data.accessToken,
-    expires_at_ms: newExpiresAt.getTime(),
+    access_token: refreshed.access_token,
+    expires_at_ms: refreshed.expires_at_ms,
     renewed: true,
+    previous_left_ms: previousLeftMs,
   };
 }
 

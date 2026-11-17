@@ -3,11 +3,15 @@ import { z } from 'zod';
 import type { PGlite } from '@electric-sql/pglite';
 import { and, eq } from 'drizzle-orm';
 import { createTestDb, type TestDb } from '@/lib/db/test-db';
-import { accountToken, accountsAccount, accountsUsage, secretsProject, secretsToken } from '@/lib/db/schema';
+import { accountToken, accountsAccount, accountsUsage, secretsAudit, secretsProject, secretsToken } from '@/lib/db/schema';
 import { hashToken } from '@/lib/secrets/token';
 import { decryptSecret, encryptSecret } from '@/lib/secrets/crypto';
 import { accountPasswordAad } from '@/lib/services/accounts';
-import { accountTokenAad } from '@/lib/services/account-tokens';
+import {
+  accountTokenAad,
+  ensureLiveAccessToken,
+  MIN_HANDOVER_ACCESS_LIFETIME_MS,
+} from '@/lib/services/account-tokens';
 import { issueAccount, renewAccountAccess } from '@/lib/services/minimax';
 import { minimaxRenewSchema } from '@/lib/validation/account';
 
@@ -103,8 +107,19 @@ async function makeCheckIn(accountId: number, usedOn: string, activationIndex: n
   });
 }
 
-/** Пара токенов аккаунта — как её кладёт владелец через device-flow. */
-async function makeTokenPair(accountId: number, access = 'ACCESS-1', refresh = 'REFRESH-1') {
+/**
+ * Пара токенов аккаунта — как её кладёт владелец через device-flow.
+ *
+ * `lifetimeMs` — сколько жизни осталось у access. По умолчанию 12 часов (вендорский
+ * `expires_in`) — то есть «живой И полон». Короткий остаток (< 2 часов) — это отдельный
+ * случай (находка Мозга 17.11), его задают явно.
+ */
+async function makeTokenPair(
+  accountId: number,
+  access = 'ACCESS-1',
+  refresh = 'REFRESH-1',
+  lifetimeMs = 12 * 3_600_000,
+) {
   const enc = encryptSecret(JSON.stringify({ access, refresh }), accountTokenAad(accountId));
   await refs.current!.insert(accountToken).values({
     userId: OWNER_ID,
@@ -112,7 +127,7 @@ async function makeTokenPair(accountId: number, access = 'ACCESS-1', refresh = '
     ciphertext: enc.ciphertext,
     iv: enc.iv,
     authTag: enc.authTag,
-    expiresAt: new Date(NOW.getTime() + 3_600_000).toISOString(),
+    expiresAt: new Date(NOW.getTime() + lifetimeMs).toISOString(),
   });
 }
 
@@ -162,7 +177,8 @@ beforeEach(async () => {
   oauth.refreshAccessToken.mockReset();
   oauth.refreshAccessToken.mockResolvedValue({
     ok: true,
-    data: { accessToken: 'ACCESS-2', refreshToken: 'REFRESH-2', expiresInSeconds: 3600 },
+    // Вендорский `expires_in` — 12 часов (43 200 с), как в проде.
+    data: { accessToken: 'ACCESS-2', refreshToken: 'REFRESH-2', expiresInSeconds: 43_200 },
   });
   oauth.signinStatus.mockReset();
   oauth.signinStatus.mockResolvedValue(panelAnswer());
@@ -224,7 +240,6 @@ describe('продление цепочки MiniMax (D-219)', () => {
     expect(stored.access).toBe('ACCESS-LIVE');
     expect(stored.refresh).toBe('REFRESH-1');
   });
-
   it('продление по почте отклоняется: аккаунт опознаётся только по id', async () => {
     // Уточнение владельца 17.11: по почте аккаунт не ищем — почта это способ
     // АВТОРИЗАЦИИ на сайте MiniMax (вход по коду с почты), а не способ опознать
@@ -343,6 +358,89 @@ describe('продление цепочки MiniMax (D-219)', () => {
     expect(after[0]!.tokens).toBe(before[0]!.tokens);
     expect(after[0]!.activationIndex).toBe(before[0]!.activationIndex);
     expect(after[0]!.projectId).toBe(before[0]!.projectId);
+  });
+});
+
+/**
+ * Порог остатка жизни access (находка Мозга 17.11, «access с остатком 9 минут»).
+ *
+ * Отдать потребителю почти мёртвый токен — значит угробить его вход и сжечь аккаунт
+ * впустую (access одноразовый, вернуть его нельзя). Поэтому остаток меньше двух
+ * часов — брак: и выдача, и продление цепочки в этом случае продлевают пару по
+ * refresh, а не отдают доживающий токен.
+ */
+describe('короткий access не отдаём (находка Мозга 17.11)', () => {
+  it('выдача: access с остатком 30 минут не отдаётся — цепочка продлена, наружу свежий', async () => {
+    const accountId = await makeAccount('Короткий', 'short@example.test');
+    await makeCheckIn(accountId, '2026-11-16', 2);
+    await makeTokenPair(accountId, 'ACCESS-DYING', 'REFRESH-1', 30 * 60_000);
+
+    const issued = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(issued.ok).toBe(true);
+    if (!issued.ok) return;
+    // Наружу — НЕ тот токен, который доживает полчаса.
+    expect(issued.offer.access_token).toBe('ACCESS-2');
+    expect(issued.offer.expires_at_ms).toBe(NOW.getTime() + 43_200_000);
+    expect(oauth.refreshAccessToken).toHaveBeenCalledTimes(1);
+    // В базе — новая пара целиком.
+    const stored = await readPair(accountId);
+    expect(stored.access).toBe('ACCESS-2');
+    expect(stored.refresh).toBe('REFRESH-2');
+  });
+
+  it('продление: остаток 30 минут — продлеваем цепочку, а не отдаём тот же', async () => {
+    const accountId = await makeAccount('Короткий на продлении', 'short2@example.test');
+    await makeCheckIn(accountId, '2026-11-16', 2);
+    await makeTokenPair(accountId, 'ACCESS-DYING', 'REFRESH-1', 30 * 60_000);
+    await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    oauth.refreshAccessToken.mockClear();
+    oauth.refreshAccessToken.mockResolvedValue({
+      ok: true,
+      data: { accessToken: 'ACCESS-3', refreshToken: 'REFRESH-3', expiresInSeconds: 43_200 },
+    });
+    // Возвращаем «доживающий» остаток: выдача цепочку уже продлила.
+    await expirePair(accountId, new Date(NOW.getTime() + 30 * 60_000));
+
+    const result = await renewAccountAccess(ROOM_TOKEN, '127.0.0.1', { accountId }, NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.renewal.renewed).toBe(true);
+    expect(result.renewal.access_token).toBe('ACCESS-3');
+    expect(result.renewal.expires_at_ms).toBe(NOW.getTime() + 43_200_000);
+    // Публичный контракт не меняем — сколько оставалось ДО продления, видно в аудите
+    // (по этому и судим о браке в разборе выдач).
+    const audits = await refs.current!
+      .select({ detail: secretsAudit.detail })
+      .from(secretsAudit)
+      .where(eq(secretsAudit.action, 'minimax_account_renewed'));
+    expect(audits.length).toBe(1);
+    expect(audits[0]!.detail).toContain('оставалось 30 мин');
+  });
+
+  it('порог ровно в два часа: остаток на границе отдаём, цепочку не трогаем', async () => {
+    const accountId = await makeAccount('На границе', 'edge@example.test');
+    await makeCheckIn(accountId, '2026-11-16', 2);
+    await makeTokenPair(accountId, 'ACCESS-EDGE', 'REFRESH-1', MIN_HANDOVER_ACCESS_LIFETIME_MS);
+
+    const issued = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(issued.ok).toBe(true);
+    if (!issued.ok) return;
+    expect(issued.offer.access_token).toBe('ACCESS-EDGE');
+    expect(oauth.refreshAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('короткий остаток и оборванная цепочка: аккаунт негоден — отдаём следующего', async () => {
+    const brokenId = await makeAccount('Короткий и оборванный', 'broken-short@example.test');
+    await makeCheckIn(brokenId, '2026-11-16', 2);
+    await makeTokenPair(brokenId, 'ACCESS-DYING', 'REFRESH-BROKEN', 30 * 60_000);
+    oauth.refreshAccessToken.mockResolvedValue({ ok: false, error: 'invalid_grant' });
+
+    // Аккаунт с коротким остатком и мёртвым refresh негоден — null, а не «токен с
+    // остатком 30 минут».
+    const handover = await ensureLiveAccessToken(brokenId, NOW);
+    expect(handover).toBeNull();
+    // Пара удалена: аккаунту нужен новый вход владельца, пул не должен предлагать его.
+    expect(await readPair(brokenId)).toEqual({});
   });
 });
 

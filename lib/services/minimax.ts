@@ -563,7 +563,9 @@ export async function issueAccount(
       offer.account?.activation_index ?? '-'
     }, очки ${offer.account?.points_next ?? '-'}, access отдан${
       filters.area ? `, область ${filters.area}` : ''
-    }${filters.project ? `, проект ${filters.project}` : ''}, приоритет ${preferredTier}`,
+    }${filters.project ? `, проект ${filters.project}` : ''}, приоритет ${preferredTier}, жизнь access ${
+      Math.round((handover.expires_at_ms - now.getTime()) / 60000)
+    } мин`,
     ip,
     caller.actor,
   );
@@ -699,7 +701,11 @@ export async function renewAccountAccess(
     'minimax_account_renewed',
     `продлён аккаунт #${account.id} «${account.email}»: ${
       handover.renewed ? 'цепочка продлена новой парой' : 'access ещё жил, отдан тот же'
-    }, access до ${new Date(handover.expires_at_ms).toISOString()}`,
+    }, access до ${new Date(handover.expires_at_ms).toISOString()}${
+      handover.renewed
+        ? ` (до продления оставалось ${Math.round(handover.previous_left_ms / 60000)} мин)`
+        : ''
+    }`,
     ip,
     caller.actor,
   );

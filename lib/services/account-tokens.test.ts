@@ -98,13 +98,16 @@ beforeEach(async () => {
   });
   oauth.exchangeDeviceCode.mockResolvedValue({
     ok: true,
-    data: { accessToken: 'ACCESS-1', refreshToken: 'REFRESH-1', expiresInSeconds: 3600 },
+    // Вендорский `expires_in` — 12 часов (43 200 с), как в проде. Фикстура в час
+    // была неправдоподобной и, после правила «короткий access не отдаём»
+    // (остаток < 2 ч — брак), ломала тесты на живую выдачу.
+    data: { accessToken: 'ACCESS-1', refreshToken: 'REFRESH-1', expiresInSeconds: 43_200 },
   });
   // Refresh одноразовый, но вместе с новым access вендор отдаёт новый refresh —
   // цепочка продлевается (живая проба 15.11).
   oauth.refreshAccessToken.mockResolvedValue({
     ok: true,
-    data: { accessToken: 'ACCESS-2', refreshToken: 'REFRESH-2', expiresInSeconds: 3600 },
+    data: { accessToken: 'ACCESS-2', refreshToken: 'REFRESH-2', expiresInSeconds: 43_200 },
   });
 });
 
@@ -145,7 +148,7 @@ describe('добыча токенов: «Следующий»', () => {
       ciphertext: 'x',
       iv: 'x',
       authTag: 'x',
-      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      expiresAt: new Date(Date.now() + 43_200_000).toISOString(),
     });
 
     const started = await startNextTokenFlow(owner);
@@ -162,7 +165,7 @@ describe('добыча токенов: «Следующий»', () => {
       ciphertext: 'x',
       iv: 'x',
       authTag: 'x',
-      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      expiresAt: new Date(Date.now() + 43_200_000).toISOString(),
     });
 
     const started = await startNextTokenFlow(owner);
@@ -180,7 +183,7 @@ describe('добыча токенов: «Следующий»', () => {
       ciphertext: 'x',
       iv: 'x',
       authTag: 'x',
-      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      expiresAt: new Date(Date.now() + 43_200_000).toISOString(),
     });
 
     const progress = await tokenProgress(owner);
@@ -283,7 +286,7 @@ describe('добыча токенов: протухший access — не «ну
       ciphertext: enc.ciphertext,
       iv: enc.iv,
       authTag: enc.authTag,
-      expiresAt: new Date(Date.now() + (expired ? -3_600_000 : 3_600_000)).toISOString(),
+      expiresAt: new Date(Date.now() + (expired ? -3_600_000 : 43_200_000)).toISOString(),
     });
   }
 
