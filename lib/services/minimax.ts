@@ -588,14 +588,16 @@ export type RenewResult = {
  * - **пара наружу не уходит.** Наружу — только access; refresh остаётся у нас, и
  *   продлеваем цепочку мы (`renewAccountToken`);
  * - **активация не трогается.** Клетка и номинал в докладе активации не меняются:
- *   продление — это про токен, а не про учёт.
+ *   продление — это про токен, а не про учёт;
+ * - **аккаунт — по нашему id, не по почте** (уточнение владельца 17.11): почта это
+ *   способ авторизации на сайте MiniMax (вход по коду с почты), а не способ опознать
+ *   аккаунт; id потребитель знает — мы отдаём его в ответе выдачи.
  */
 export async function renewAccountAccess(
   rawToken: string,
   ip: string | null,
   input: {
     accountId?: number | null;
-    email?: string | null;
   },
   now: Date = new Date(),
 ): Promise<{ ok: true; renewal: RenewResult } | { ok: false; error: PoolCallError }> {
@@ -603,53 +605,36 @@ export async function renewAccountAccess(
   if (!callerResult.ok) return callerResult;
   const caller = callerResult.caller;
 
-  if ((input.accountId === undefined || input.accountId === null) && !input.email) {
+  if (input.accountId === undefined || input.accountId === null) {
     return {
       ok: false,
-      error: { status: 400, error: 'Нужен account_id или email аккаунта' },
+      error: { status: 400, error: 'Нужен account_id аккаунта' },
     };
   }
 
-  // Аккаунт по id ИЛИ по почте: проект не обязан знать наши внутренние id.
-  const [byId] = input.accountId
-    ? await db
-        .select({
-          id: accountsAccount.id,
-          email: accountsAccount.email,
-          usedProjectId: accountsAccount.usedProjectId,
-        })
-        .from(accountsAccount)
-        .where(
-          and(
-            eq(accountsAccount.id, input.accountId),
-            eq(accountsAccount.userId, caller.owner.id),
-          ),
-        )
-        .limit(1)
-    : [];
-  const [byEmail] = input.email
-    ? await db
-        .select({
-          id: accountsAccount.id,
-          email: accountsAccount.email,
-          usedProjectId: accountsAccount.usedProjectId,
-        })
-        .from(accountsAccount)
-        .where(
-          and(
-            sql`lower(${accountsAccount.email}) = lower(${input.email})`,
-            eq(accountsAccount.userId, caller.owner.id),
-          ),
-        )
-        .limit(1)
-    : [];
-  const account = byId ?? byEmail;
+  // Аккаунт — ТОЛЬКО по нашему внутреннему id: по почте аккаунт не ищем (почта —
+  // это способ авторизации на сайте MiniMax, а не способ опознать аккаунт), а id
+  // потребителю отдаём мы сами — в ответе `GET /api/minimax/accounts/available`.
+  const [account] = await db
+    .select({
+      id: accountsAccount.id,
+      email: accountsAccount.email,
+      usedProjectId: accountsAccount.usedProjectId,
+    })
+    .from(accountsAccount)
+    .where(
+      and(
+        eq(accountsAccount.id, input.accountId),
+        eq(accountsAccount.userId, caller.owner.id),
+      ),
+    )
+    .limit(1);
   if (!account) {
     await logAudit(
       caller.roomId,
       caller.tokenId,
       'minimax_denied',
-      `аккаунт ${input.accountId ?? input.email ?? '?'} в пуле не найден`,
+      `аккаунт ${input.accountId} в пуле не найден`,
       ip,
       caller.actor,
     );

@@ -225,7 +225,10 @@ describe('продление цепочки MiniMax (D-219)', () => {
     expect(stored.refresh).toBe('REFRESH-1');
   });
 
-  it('продление по почте — тот же аккаунт (проект не обязан знать наши id)', async () => {
+  it('продление по почте отклоняется: аккаунт опознаётся только по id', async () => {
+    // Уточнение владельца 17.11: по почте аккаунт не ищем — почта это способ
+    // АВТОРИЗАЦИИ на сайте MiniMax (вход по коду с почты), а не способ опознать
+    // аккаунт. id потребителю отдаём мы сами (в ответе выдачи).
     const accountId = await makeAccount('По почте', 'bypost@example.test');
     await makeCheckIn(accountId, '2026-11-16', 2);
     await makeTokenPair(accountId);
@@ -235,13 +238,17 @@ describe('продление цепочки MiniMax (D-219)', () => {
     const result = await renewAccountAccess(
       ROOM_TOKEN,
       '127.0.0.1',
-      { email: 'bypost@example.test' },
+      { accountId: null },
       NOW,
     );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.renewal.account_id).toBe(accountId);
-    expect(result.renewal.access_token).toBe('ACCESS-2');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.status).toBe(400);
+    expect(result.error.error).toContain('account_id');
+    // Цепочка не тронута.
+    expect(oauth.refreshAccessToken).not.toHaveBeenCalled();
+    const stored = await readPair(accountId);
+    expect(stored.access).toBe('ACCESS-1');
   });
 
   it('чужая комната аккаунт не продлевает (один аккаунт — один потребитель)', async () => {
@@ -304,7 +311,7 @@ describe('продление цепочки MiniMax (D-219)', () => {
     const result = await renewAccountAccess(
       ROOM_TOKEN,
       '127.0.0.1',
-      { email: 'nobody@example.test' },
+      { accountId: 999_999 },
       NOW,
     );
     expect(result.ok).toBe(false);
@@ -345,12 +352,13 @@ describe('продление цепочки MiniMax (D-219)', () => {
  *
  * Правило G54 срабатывает, когда контракт расширяют через optional-поле: strict/
  * strip-схема молча срезает новое поле, и юнит-зелёный это НЕ ловит. Здесь поле
- * одно — «какой аккаунт» (id или почта), и оно обязано дойти до сервиса и до БД.
+ * одно — «какой аккаунт» (`account_id`), и оно обязано дойти до сервиса и до БД.
  */
 describe('G54: контракт продления проходит все слои', () => {
-  it('схема принимает id и почту, а пустое тело — нет', () => {
+  it('схема принимает только id, а пустое тело или почта — нет', () => {
     expect(minimaxRenewSchema.safeParse({ account_id: 7 }).success).toBe(true);
-    expect(minimaxRenewSchema.safeParse({ email: 'a@b.test' }).success).toBe(true);
+    // Почта аккаунт не опознаёт (уточнение владельца 17.11): без id — отказ.
+    expect(minimaxRenewSchema.safeParse({ email: 'a@b.test' }).success).toBe(false);
     const empty = minimaxRenewSchema.safeParse({});
     expect(empty.success).toBe(false);
     // Не целое / не положительное — мимо.
@@ -366,37 +374,26 @@ describe('G54: контракт продления проходит все сл�
     expect(parsed).not.toHaveProperty('refresh_token');
   });
 
-  it('поле доезжает до сервиса: по id и по почте — один и тот же аккаунт', async () => {
+  it('поле доезжает до сервиса и до хранилища — и читается обратно', async () => {
     const accountId = await makeAccount('Контракт', 'contract@example.test');
     await makeCheckIn(accountId, '2026-11-16', 2);
     await makeTokenPair(accountId);
     await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
     await expirePair(accountId, new Date(NOW.getTime() - 60_000));
 
-    // Клиент шлёт то, что у него есть, — и получает доступ к нужному аккаунту.
-    const byId = minimaxRenewSchema.parse({ account_id: String(accountId) });
-    const byMail = minimaxRenewSchema.parse({ email: 'contract@example.test' });
+    // Клиент шлёт то, что у него есть, — id из ответа выдачи.
+    const parsed = minimaxRenewSchema.parse({ account_id: String(accountId) });
+    expect(parsed.account_id).toBe(accountId);
 
-    const first = await renewAccountAccess(
+    const result = await renewAccountAccess(
       ROOM_TOKEN,
       '127.0.0.1',
-      { accountId: byId.account_id ?? null, email: byId.email ?? null },
+      { accountId: parsed.account_id ?? null },
       NOW,
     );
-    expect(first.ok).toBe(true);
-    if (!first.ok) return;
-    expect(first.renewal.account_id).toBe(accountId);
-
-    // Тот же аккаунт по почте — второй путь через ту же схему.
-    const second = await renewAccountAccess(
-      ROOM_TOKEN,
-      '127.0.0.1',
-      { accountId: byMail.account_id ?? null, email: byMail.email ?? null },
-      NOW,
-    );
-    expect(second.ok).toBe(true);
-    if (!second.ok) return;
-    expect(second.renewal.account_id).toBe(accountId);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.renewal.account_id).toBe(accountId);
 
     // Цепочка продлена — и это видно в хранилище (обратное чтение).
     const stored = await readPair(accountId);
@@ -405,15 +402,15 @@ describe('G54: контракт продления проходит все сл�
   });
 
   it('негативный контроль: снятие поля из схемы роняет гейт', () => {
-    // Если бы `email` убрали из схемы, значение молча пропало бы (zod срезает
+    // Если бы `account_id` убрали из схемы, значение молча пропало бы (zod срезает
     // неизвестные ключи) — и до сервиса не дошло бы: ровно тот класс дефекта,
     // который ловит G54. Наша схема поле сохраняет.
-    const schemaWithoutEmail = z.object({
-      account_id: z.coerce.number().int().positive().optional(),
+    const schemaWithoutId = z.object({
+      email: z.string().trim().min(3).max(320).optional(),
     });
-    const stripped = schemaWithoutEmail.parse({ email: 'a@b.test' });
+    const stripped = schemaWithoutId.parse({ account_id: 7 });
     expect(stripped).toEqual({});
-    expect('email' in stripped).toBe(false);
-    expect(minimaxRenewSchema.parse({ email: 'a@b.test' }).email).toBe('a@b.test');
+    expect('account_id' in stripped).toBe(false);
+    expect(minimaxRenewSchema.parse({ account_id: 7 }).account_id).toBe(7);
   });
 });

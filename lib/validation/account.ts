@@ -116,19 +116,15 @@ export const minimaxObservationSchema = z
  * ручной работы владельца в браузере. Продлеваем цепочку мы, refresh наружу не
  * уходит никогда.
  *
- * - `account_id` — какой аккаунт (внутренний id Кармана); `email` — тот же
- *   аккаунт ПОЧТОЙ (проект не обязан знать наши внутренние id). Если заданы оба —
- *   они должны указывать на один аккаунт.
+ * - `account_id` — какой аккаунт (внутренний id Кармана). **Только он** — по почте
+ *   аккаунт не ищем: почта это способ АВТОРИЗАЦИИ на сайте MiniMax (вход владельца
+ *   по коду с почты), а не способ опознать аккаунт. id потребитель и так знает —
+ *   он лежит в ответе `GET /api/minimax/accounts/available` (`account.id`).
  * - Никаких полей про токены: пару мы не принимаем и не отдаём.
  */
-export const minimaxRenewSchema = z
-  .object({
-    account_id: z.coerce.number().int().positive().optional(),
-    email: z.string().trim().min(3, 'Укажите почту').max(320, 'Слишком длинная почта').optional(),
-  })
-  .refine((value) => value.account_id !== undefined || value.email !== undefined, {
-    message: 'Нужен account_id или email аккаунта',
-  });
+export const minimaxRenewSchema = z.object({
+  account_id: z.coerce.number().int().positive(),
+});
 
 export type AccountCreateInput = z.infer<typeof accountCreateSchema>;
 export type AccountUpdateInput = z.infer<typeof accountUpdateSchema>;
