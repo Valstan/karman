@@ -126,7 +126,10 @@ async function makeTokenPair(accountId: number, access = 'ACCESS-1', refresh = '
     ciphertext: enc.ciphertext,
     iv: enc.iv,
     authTag: enc.authTag,
-    expiresAt: new Date(NOW.getTime() + 3_600_000).toISOString(),
+    // Вендорский `expires_in` — 12 часов (43 200 с), как в проде. Фикстура в час
+    // была неправдоподобной и, после правила «короткий access не отдаём»
+    // (остаток < 2 ч — брак), ломала тесты на живую выдачу.
+    expiresAt: new Date(NOW.getTime() + 43_200_000).toISOString(),
   });
 }
 
