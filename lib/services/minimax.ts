@@ -490,9 +490,19 @@ export async function issueAccount(
     }
     // 2) Захват аккаунта: если его только что забрал другой проект — тоже идём к
     //    следующему (гонка закрыта на уровне БД, `onlyIfFree`).
+    //
+    //    Номер клетки в журнал пишем **ИЗ ПАНЕЛИ** (когда панель ответила): наша
+    //    модель по датам с панелью расходится (живая сверка 16.11 — 42 из 112), а
+    //    журнал должен хранить правду — иначе отчёт по очкам и предсказания для
+    //    следующей активации считаются по догадке.
     const claimed = await activateAccount(
       caller.owner,
-      { id: candidate.id, projectId: caller.projectId, source: 'api' },
+      {
+        id: candidate.id,
+        projectId: caller.projectId,
+        source: 'api',
+        ...(state ? { activationIndex: state.cell_no } : {}),
+      },
       now,
       { onlyIfFree: true },
     );
