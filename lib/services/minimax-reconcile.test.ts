@@ -142,6 +142,54 @@ describe('правило сверки (чистая функция)', () => {
     expect(verdict.points).toBe(1000);
   });
 
+  /**
+   * Забор по нашей инициативе (утренний обход, заказ владельца 18.11): очки забраны,
+   * но не потрачены — они лежат на аккаунте и ждут потребителя. Отличить этот случай
+   * от «очки сожжены» (остаток 0) и от «забрал потребитель» (в нашем леджере строки
+   * нет) можно только по остатку очков.
+   */
+  describe('забрано, но не потрачено', () => {
+    it('очки лежат (остаток > 0) и забор наш → аккаунт в оборот', () => {
+      const verdict = reconcileVerdict(
+        panel(PANEL_STATUS_CLAIMED, 4, 400),
+        panel(PANEL_STATUS_CLAIMED, 4, 400),
+        NOW,
+        400,
+      );
+      expect(verdict.verdict).toBe('release');
+    });
+
+    it('очки убывают — по аккаунту работают, не отпускаем', () => {
+      const verdict = reconcileVerdict(
+        panel(PANEL_STATUS_CLAIMED, 4, 120),
+        panel(PANEL_STATUS_CLAIMED, 4, 120),
+        NOW,
+        400,
+      );
+      expect(verdict.verdict).toBe('correct');
+    });
+
+    it('очки сожжены (остаток 0) → расход настоящий', () => {
+      const verdict = reconcileVerdict(
+        panel(PANEL_STATUS_CLAIMED, 4, 0),
+        panel(PANEL_STATUS_CLAIMED, 4, 0),
+        NOW,
+        400,
+      );
+      expect(verdict.verdict).toBe('correct');
+    });
+
+    it('забора не было (строки в леджере нет) — очки забрал потребитель, держим', () => {
+      const verdict = reconcileVerdict(
+        panel(PANEL_STATUS_CLAIMED, 4, 400),
+        panel(PANEL_STATUS_CLAIMED, 4, 400),
+        NOW,
+        null,
+      );
+      expect(verdict.verdict).toBe('correct');
+    });
+  });
+
   it('пояса расходятся → не знаем, не трогаем', () => {
     const verdict = reconcileVerdict(
       panel(PANEL_STATUS_CLAIMABLE, 1, 400),

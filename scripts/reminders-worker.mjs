@@ -9,7 +9,10 @@
 //      аккаунты активными, когда очки появятся»);
 //   4) по таймеру POST /api/internal/minimax/reconcile (Bearer) — сверка журнала
 //      активаций с панелью: ошибочно погашенные аккаунты возвращаются в оборот,
-//      а наши предсказания очков уточняются по панели (заказ владельца 17.11).
+//      а наши предсказания очков уточняются по панели (заказ владельца 17.11);
+//   5) раз в сутки, в 05:00 МСК, POST /api/internal/minimax/daily-bonus (Bearer) —
+//      ежесуточный забор бонусов по всем аккаунтам MiniMax (заказ владельца 18.11):
+//      серия дней подряд не рвётся, а в базе видно, у кого сколько очков сегодня.
 // Вся работа с БД/сервисами — внутри Next-роутов. Запускается systemd-сервисом
 // karman-reminders.service из текущего релиза (симлинк current). См. docs/telegram-reminders.md.
 
@@ -32,6 +35,11 @@ const PANEL_SYNC_INTERVAL_MS = Number(process.env.MINIMAX_PANEL_SYNC_INTERVAL_MS
 // Вендора она не дёргает — работает по ответам панели, которые уже прочитала
 // автосверка; сверка их сама освобождает и уточняет.
 const RECONCILE_INTERVAL_MS = Number(process.env.MINIMAX_RECONCILE_INTERVAL_MS || 30 * 60_000);
+// Ежесуточный забор бонусов MiniMax: час в МСК (по умолчанию 5 утра).
+// 05:00 МСК выбран не «на глаз»: сутки MiniMax считаются по поясу запроса, а поясов
+// у нас два — московский (владелец) и UTC (потребитель); их границы — 00:00 и 03:00
+// МСК. Обход в 05:00 идёт ПОСЛЕ обеих, поэтому «сегодня» у обеих сторон совпадает.
+const DAILY_BONUS_HOUR_MSK = Number(process.env.MINIMAX_DAILY_BONUS_HOUR_MSK || 5);
 const POLL_TIMEOUT_S = 25;
 
 function log(...args) {
@@ -108,6 +116,46 @@ function startReconcileLoop() {
   tick();
 }
 
+/**
+ * Ежесуточный забор бонусов MiniMax (заказ владельца 18.11).
+ *
+ * Раз в сутки, в DAILY_BONUS_HOUR_MSK по Москве. Забор идемпотентен в сутки (вендор
+ * отдаёт «уже получено»), поэтому лишний заход ничего не ломает — а вот ПРОПУСК захода
+ * ломает: у аккаунта не сдвинется клетка, и серия дней подряд оборвётся.
+ *
+ * Поэтому на старте воркера: если нужный час уже прошёл, забор делаем сразу (иначе
+ * после перезапуска воркера сутки пропустили бы), а если ещё нет — ждём расписания.
+ */
+function startDailyBonusLoop() {
+  const tick = async () => {
+    try {
+      const res = await postInternal('/api/internal/minimax/daily-bonus', {});
+      if (!res.ok) log('daily-bonus HTTP', res.status);
+    } catch (error) {
+      log('daily-bonus error', String(error));
+    }
+    setTimeout(startDailyBonusLoop, msUntilDailyBonus());
+  };
+
+  const delay = msUntilDailyBonus();
+  if (delay <= 0) {
+    // Час уже прошёл (воркер перезапустили после него) — забираем сразу.
+    tick();
+    return;
+  }
+  setTimeout(tick, delay);
+}
+
+/** Сколько миллисекунд до следующего DAILY_BONUS_HOUR_MSK по Москве (UTC+3). */
+function msUntilDailyBonus() {
+  const hourUtc = (DAILY_BONUS_HOUR_MSK - 3 + 24) % 24;
+  const now = new Date();
+  const target = new Date(now);
+  target.setUTCHours(hourUtc, 0, 0, 0);
+  if (target.getTime() <= now.getTime()) target.setUTCDate(target.getUTCDate() + 1);
+  return target.getTime() - now.getTime();
+}
+
 async function startPollLoop() {
   let offset = 0;
   for (;;) {
@@ -154,9 +202,10 @@ if (!TOKEN || !SECRET) {
   log('TELEGRAM_BOT_TOKEN / REMINDERS_INTERNAL_SECRET не заданы — простаиваю (настройте env).');
   setInterval(() => log('ожидаю настройки env...'), 10 * 60_000);
 } else {
-  log(`старт: base=${BASE}, dispatch каждые ${DISPATCH_INTERVAL_MS}ms, сверка панели каждые ${PANEL_SYNC_INTERVAL_MS}ms, сверка журнала каждые ${RECONCILE_INTERVAL_MS}ms, poll timeout ${POLL_TIMEOUT_S}s`);
+  log(`старт: base=${BASE}, dispatch каждые ${DISPATCH_INTERVAL_MS}ms, сверка панели каждые ${PANEL_SYNC_INTERVAL_MS}ms, сверка журнала каждые ${RECONCILE_INTERVAL_MS}ms, забор бонусов в ${DAILY_BONUS_HOUR_MSK}:00 МСК, poll timeout ${POLL_TIMEOUT_S}s`);
   startDispatchLoop();
   startPanelSyncLoop();
   startReconcileLoop();
+  startDailyBonusLoop();
   startPollLoop();
 }

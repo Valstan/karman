@@ -204,7 +204,7 @@ pg_dump "$PG_DSN_NOPASS" --no-owner --no-privileges \
   -t family_person -t family_relation \
   -t hotline_message -t hotline_presence \
   -t accounts_account -t accounts_project -t accounts_usage \
-  -t account_token -t account_panel_state \
+  -t account_token -t account_panel_state -t accounts_daily_bonus \
   -t prompt -t prompt_project \
   > "$WORK/vault.sql"
 

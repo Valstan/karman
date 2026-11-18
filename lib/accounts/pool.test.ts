@@ -335,6 +335,49 @@ describe('пул MiniMax: панель как источник правды', ()
     expect(hint.points).toBe(0);
   });
 
+  /**
+   * Забор по нашей инициативе (утренний обход, заказ владельца 18.11): очки лежат на
+   * аккаунте и ждут потребителя. Панель для забранной клетки отдаёт ОСТАТОК, а не
+   * номинал, и без нашего леджера нельзя отличить «забрали мы» от «забрал потребитель».
+   */
+  describe('очки лежат на аккаунте (забор наш, утренний обход)', () => {
+    it('остаток равен нашему наблюдению — очки ждут потребителя', () => {
+      const row = account(1, [auto('2026-11-12')], {
+        panelStatus: 3,
+        panelPoints: 400,
+        bonusRemaining: 400,
+      });
+      expect(hintFor(row).points).toBe(400);
+    });
+
+    it('остаток упал — по аккаунту работают, второй потребитель не идёт', () => {
+      const row = account(1, [auto('2026-11-12')], {
+        panelStatus: 3,
+        panelPoints: 120,
+        bonusRemaining: 400,
+      });
+      expect(hintFor(row).points).toBe(0);
+    });
+
+    it('очки сожжены (остаток 0) — подсказка нулевая', () => {
+      const row = account(1, [auto('2026-11-12')], {
+        panelStatus: 3,
+        panelPoints: 0,
+        bonusRemaining: 400,
+      });
+      expect(hintFor(row).points).toBe(0);
+    });
+
+    it('забора не было вовсе (строка в леджере нет) — очки забрал потребитель', () => {
+      const row = account(1, [auto('2026-11-12')], {
+        panelStatus: 3,
+        panelPoints: 400,
+        bonusRemaining: null,
+      });
+      expect(hintFor(row).points).toBe(0);
+    });
+  });
+
   it('счётчик свободных считает аккаунт, возвращённый панелью', () => {
     const usedAt = new Date(NOW.getTime() - 60 * 60 * 1000).toISOString();
     const returned = account(1, [auto('2026-11-12')], {

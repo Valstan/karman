@@ -24,6 +24,7 @@ import {
   smallint,
   text,
   timestamp,
+  uniqueIndex,
   varchar,
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
@@ -1105,6 +1106,67 @@ export const accountPanelState = pgTable(
 );
 
 export type AccountPanelStateRow = typeof accountPanelState.$inferSelect;
+
+// --- Леджер ежесуточного забора бонусов MiniMax (заказ владельца 18.11) -------
+//
+// Заказ владельца: «каждые сутки пройтись по всем аккаунтам и активировать на них
+// бонусы, записывать у себя, у кого сколько очков сегодня активировалось, а потом в
+// течение дня раздавать эти аккаунты по запросам, зная, по сколько очков отдаётся».
+//
+// Одна строка на пару «аккаунт + московские сутки» — забор идемпотентен (повтор в те
+// же сутки вендор отдаёт `claim_result = 2`, «уже получено»), поэтому строка не
+// плодится.
+//
+// ВАЖНО: забор очки НЕ ТРАТИТ — он их начисляет на аккаунт (`status` клетки становится
+// 3, а `points` остаётся номиналом), и тратятся они работой рантайма потребителя.
+// Поэтому `points` — номинал клетки, `remaining` — остаток по панели.
+//
+// Схема — миграция 0035_accounts_daily_bonus.sql.
+
+export const accountsDailyBonus = pgTable(
+  'accounts_daily_bonus',
+  {
+    id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => authUser.id, { onDelete: 'cascade' }),
+    accountId: bigint('account_id', { mode: 'number' })
+      .notNull()
+      .references(() => accountsAccount.id, { onDelete: 'cascade' }),
+    /** Московская дата суток, за которые забраны бонусы. */
+    usedOn: date('used_on', { mode: 'string' }).notNull(),
+    /** Клетка вендора из ответа `signin/claim` (1..7) — настоящая серия аккаунта. */
+    dayNo: smallint('day_no').notNull().default(0),
+    /** Номинал сегодняшней клетки (400 / 1000). */
+    points: integer('points').notNull().default(0),
+    /** Остаток по панели (сколько ещё не потрачено); null — не знаем. */
+    remaining: integer('remaining'),
+    /** Статус клетки панели: 2 — можно забрать, 3 — забрано. */
+    status: smallint('status').notNull().default(0),
+    /** 1 — забрали мы, 2 — уже было получено сегодня. */
+    claimResult: smallint('claim_result').notNull().default(0),
+    /** Идентификатор забора вендора (один на сутки). */
+    claimId: varchar('claim_id', { length: 64 }),
+    /** До какого момента бонус жив (ответ вендора). */
+    expireAt: tstz('expire_at'),
+    /** Когда забрали (наш обход или потребитель — по claim_result). */
+    claimedAt: tstz('claimed_at').notNull().defaultNow(),
+    /** Когда последний раз видели состояние по панели. */
+    checkedAt: tstz('checked_at').notNull().defaultNow(),
+    /** Кому отдали аккаунт (комната-потребитель). */
+    handedToProjectId: bigint('handed_to_project_id', { mode: 'number' }).references(
+      () => accountsProject.id,
+      { onDelete: 'set null' },
+    ),
+    /** Когда отдали. */
+    handedAt: tstz('handed_at'),
+    /** Сколько очков нёс аккаунт в момент выдачи. */
+    handedPoints: integer('handed_points'),
+  },
+  (table) => [uniqueIndex('accounts_daily_bonus_account_day_uq').on(table.accountId, table.usedOn)],
+);
+
+export type AccountsDailyBonusRow = typeof accountsDailyBonus.$inferSelect;
 
 // --- Промты (заказ владельца 2026-11-06) -------------------------------------
 // Библиотерия промтов, разложенных по проектам: Мозг раскладывает

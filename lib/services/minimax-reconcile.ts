@@ -1,7 +1,7 @@
 import 'server-only';
 import { and, eq, inArray, lt } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
-import { accountsAccount, accountsUsage } from '@/lib/db/schema';
+import { accountsAccount, accountsDailyBonus, accountsUsage } from '@/lib/db/schema';
 import { moscowToday } from '@/lib/accounts/rotation';
 import { pointsForIndex } from '@/lib/accounts/weekly';
 import {
@@ -80,11 +80,17 @@ export type ReconcileReport = {
 /**
  * Вердикт по одной строке журнала — чистая функция (без БД), чтобы правило
  * можно было проверить юнитом.
+ *
+ * `lastSeenPoints` — остаток очков на аккаунте, который мы видели при ПОСЛЕДНЕЙ
+ * проверке (из леджера бонусов, `accounts_daily_bonus.remaining`). Нужен, чтобы
+ * отличить «потребитель работает» от «взял и не начал»: очки убывают по мере
+ * работы, и если они убыли — аккаунт занят, отпускать его нельзя.
  */
 export function reconcileVerdict(
   owner: PanelState | null | undefined,
   consumer: PanelState | null | undefined,
   now: Date = new Date(),
+  lastSeenPoints: number | null = null,
 ): { verdict: ReconcileVerdict; cell: number | null; points: number | null } {
   const none = { verdict: 'skip' as const, cell: null, points: null };
   if (!owner || !consumer) return none;
@@ -97,7 +103,27 @@ export function reconcileVerdict(
   if (owner.status === PANEL_STATUS_CLAIMED && consumer.status === PANEL_STATUS_CLAIMED) {
     const cell = owner.cell_no;
     if (!Number.isInteger(cell) || cell < 1 || cell > 7) return none;
-    return { verdict: 'correct', cell, points: pointsForIndex(cell) };
+
+    // Остаток очков по панели: у забранной клетки это ОСТАТОК, а не номинал.
+    // Ноль — очки сожжены (расход настоящий). Неноль — очки ещё лежат на
+    // аккаунте: их можно отдать другому потребителю (заказ владельца 18.11:
+    // бонус забирается заранее, а тратится работой).
+    const remaining = Math.min(owner.points ?? 0, consumer.points ?? 0);
+    if (remaining <= 0) {
+      return { verdict: 'correct', cell, points: pointsForIndex(cell) };
+    }
+    // Очки лежат. Кто их забрал — важно: если забор наш (утренний обход), то очки
+    // просто ждут потребителя, и аккаунт можно отдать другому. Если забрал
+    // ПОТРЕБИТЕЛЬ (строки в леджере нет — обход не работал), то по аккаунту
+    // работают, и отпускать его нельзя.
+    // Если баланс с прошлой проверки упал — по аккаунту работают: держим.
+    if (lastSeenPoints === null) {
+      return { verdict: 'correct', cell, points: pointsForIndex(cell) };
+    }
+    if (remaining < lastSeenPoints) {
+      return { verdict: 'correct', cell, points: pointsForIndex(cell) };
+    }
+    return { verdict: 'release', cell: null, points: null };
   }
   return none;
 }
@@ -147,16 +173,39 @@ export async function reconcileActivations(
   const corrections = new Map<number, { cell: number; points: number }>();
   let releasedPoints = 0;
 
+  // Остаток очков на прошлой проверке (из леджера бонусов): по нему видно, что
+  // потребитель по аккаунту работает (очки убывают) или что не работал (стоят).
+  const ledgerRows = await db
+    .select({
+      accountId: accountsDailyBonus.accountId,
+      remaining: accountsDailyBonus.remaining,
+    })
+    .from(accountsDailyBonus)
+    .where(eq(accountsDailyBonus.usedOn, today));
+  const lastSeen = new Map(ledgerRows.map((r) => [r.accountId, r.remaining]));
+  // Остаток, который мы видим сейчас — его запишем в леджер, чтобы следующая
+  // проверка сравнивала с ним.
+  const seenNow = new Map<number, number>();
+
   for (const userId of owners) {
     const ownerStates = await readPanelStates(userId, OWNER_TIMEZONE, accountIds);
     const consumerStates = await readPanelStates(userId, DEFAULT_TIMEZONE, accountIds);
     for (const row of rows) {
       if (row.userId !== userId) continue;
+      const ownerState = ownerStates.get(row.accountId);
+      const consumerState = consumerStates.get(row.accountId);
       const verdict = reconcileVerdict(
-        ownerStates.get(row.accountId),
-        consumerStates.get(row.accountId),
+        ownerState,
+        consumerState,
         now,
+        lastSeen.get(row.accountId) ?? null,
       );
+      if (ownerState && consumerState) {
+        seenNow.set(
+          row.accountId,
+          Math.min(ownerState.points ?? 0, consumerState.points ?? 0),
+        );
+      }
       if (verdict.verdict === 'release') {
         releaseIds.push(row.accountId);
         releasedPoints += row.tokens;
@@ -167,6 +216,21 @@ export async function reconcileActivations(
   }
 
   report.skipped = report.rows - releaseIds.length - corrections.size;
+
+  // Остаток очков в леджере — на текущий момент (следы работы потребителя).
+  if (seenNow.size > 0) {
+    for (const [accountId, remaining] of seenNow) {
+      await db
+        .update(accountsDailyBonus)
+        .set({ remaining, checkedAt: now.toISOString() })
+        .where(
+          and(
+            eq(accountsDailyBonus.accountId, accountId),
+            eq(accountsDailyBonus.usedOn, today),
+          ),
+        );
+    }
+  }
 
   if (releaseIds.length === 0 && corrections.size === 0) return report;
 

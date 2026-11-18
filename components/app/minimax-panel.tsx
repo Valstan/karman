@@ -83,6 +83,22 @@ import type { ProjectUsage } from '@/lib/accounts/rotation';
  * «Аккаунт уже активирован» с выбором: обновить страницу (тогда сверху встанет
  * свежий аккаунт), всё равно скопировать / активировать, или открыть правку.
  */
+/**
+ * Сводка по суточным бонусам (заказ владельца 18.11) — серверная функция отдаёт её
+ * в панель prop'ом, поэтому тип здесь свой (клиентская часть не тянет server-only).
+ */
+export type BonusStatsView = {
+  date: string;
+  accounts: number;
+  claimed: number;
+  already: number;
+  points: number;
+  handed: number;
+  handedPoints: number;
+  spentPoints: number;
+  leftPoints: number;
+};
+
 export function MinimaxPanel({
   accounts,
   projects,
@@ -93,6 +109,7 @@ export function MinimaxPanel({
   apiUsage,
   tokenProgress,
   dailyStates,
+  bonusStats,
   serverNow,
 }: {
   accounts: AccountListItem[];
@@ -109,6 +126,8 @@ export function MinimaxPanel({
   tokenProgress: TokenProgress;
   /** Состояние суток по панели MiniMax: у кого очки реально есть (сверка 15.11). */
   dailyStates: Record<number, AccountDailyState>;
+  /** Сводка по суточным бонусам (заказ владельца 18.11): забрали / отдали / потратили. */
+  bonusStats: BonusStatsView;
   /** Момент, на котором сервер посчитал список (ISO) — для гидрации. */
   serverNow: string;
 }) {
@@ -507,6 +526,15 @@ export function MinimaxPanel({
                 ? ` (если пропустить — минус ${cohort.pointsLostIfSkipped} очков)`
                 : ''}
               {cohort.bonusToday > 0 ? ` · сегодня доступно тысячных: ${cohort.bonusToday}` : ''}
+            </div>
+          ) : null}
+          {bonusStats.accounts > 0 ? (
+            <div className="-mt-3 text-sm font-medium text-muted-foreground">
+              Бонусы за {bonusStats.date}: забрано у {bonusStats.accounts} аккаунтов на{' '}
+              {bonusStats.points.toLocaleString('ru-RU')} очков, отдано {bonusStats.handed} (
+              {bonusStats.handedPoints.toLocaleString('ru-RU')} очк.), потрачено{' '}
+              {bonusStats.spentPoints.toLocaleString('ru-RU')}, осталось{' '}
+              {bonusStats.leftPoints.toLocaleString('ru-RU')}
             </div>
           ) : null}
           <p className="-mt-4 text-xs text-muted-foreground">
