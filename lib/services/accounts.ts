@@ -635,6 +635,12 @@ export async function activateAccount(
       )
       .limit(1);
 
+    // Строка журнала от ПРЕДЫДУЩЕЙ выдачи, которую сторож уже вернул в оборот
+    // (сессия снята → `used_at` пуст, а строка журнала осталась: запись выдачи — это
+    // запись, её не стираем; мадат владельца 18.11, 21:40 МСК). Это НОВАЯ выдача, а не
+    // продолжение прежней: метка и проект переписываются, иначе расход уйдёт не туда.
+    const stale = existing !== undefined && account.usedAt === null;
+
     // Недельная квота аккаунта — по его журналу. Номер активации: явно
     // заданный владельцем (он смотрит панель MiniMax), иначе посчитанный по
     // квоте — календарная позиция дня в неделе аккаунта.
@@ -669,8 +675,10 @@ export async function activateAccount(
       input.activationIndex !== undefined && index !== null
         ? pointsForIndex(index)
         : (tokens ??
-          existing?.tokens ??
-          (index !== null ? (burned || checkedInToday ? 0 : pointsForIndex(index)) : 0));
+          (existing && !stale ? existing.tokens : undefined) ??
+          (index !== null
+            ? (burned || (checkedInToday && !stale) ? 0 : pointsForIndex(index))
+            : 0));
     const rowIndex =
       existing && input.activationIndex === undefined ? existing.activationIndex : index;
     // projectId: undefined — «проект не меняем»; null — «проекта нет»;
@@ -682,14 +690,14 @@ export async function activateAccount(
     // отмеченного сегодня владельцем, переписала бы его запись (проект и очки) на
     // проектную — и 400 очков владельца исчезли бы из его статистики.
     const newSource = input.source ?? 'owner';
-    const source = existing?.source ?? newSource;
+    const source = stale ? newSource : (existing?.source ?? newSource);
 
     // Проект строки — тоже не переписывается, если строка принадлежит другому
     // источнику: запись по запросу проекта (source = 'api') остаётся своей, и
     // программирование владельца не забирает её себе (и наоборот). Внутри одной
     // транзакции — гонки не бывает: «владелец активировал, тут же выдали» решается
     // тем, кто записал строку первым.
-    const sameSource = !existing || existing.source === newSource;
+    const sameSource = stale || !existing || existing.source === newSource;
     const projectPatch =
       input.projectId === undefined || !sameSource ? undefined : projectId;
 

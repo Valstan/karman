@@ -50,12 +50,19 @@ async function makeAccount(email: string): Promise<number> {
   return row!.id;
 }
 
-/** Строка журнала за день. */
+/**
+ * Строка журнала за день.
+ *
+ * `createdAt` — время ВЫДАЧИ: по нему сторож идёт по дереву выдачи вверх по времени
+ * и по нему же отсекает выдачи моложе получаса (мадат владельца 18.11, 21:40 МСК).
+ * По умолчанию — час назад: «уже можно проверять».
+ */
 async function makeUsage(
   accountId: number,
   usedOn: string,
   tokens: number,
   activationIndex: number | null,
+  createdAt: Date = new Date(NOW.getTime() - 60 * 60_000),
 ): Promise<void> {
   await refs.current!.insert(accountsUsage).values({
     userId: OWNER_ID,
@@ -64,6 +71,7 @@ async function makeUsage(
     tokens,
     activationIndex,
     source: 'api',
+    createdAt: createdAt.toISOString(),
   });
 }
 
@@ -134,7 +142,7 @@ describe('правило сверки (чистая функция)', () => {
 });
 
 describe('сторож: журнал и леджер', () => {
-  it('клетку забрали мы → запись снимается, аккаунт снова свободен', async () => {
+  it('клетку забрали мы → запись ВЫДАЧИ остаётся, аккаунт снова свободен', async () => {
     const account = await makeAccount('ours@example.test');
     await makeUsage(account, YESTERDAY, 400, 2);
     await makeUsage(account, TODAY, 400, 3);
@@ -147,13 +155,14 @@ describe('сторож: журнал и леджер', () => {
     expect(report.released).toBe(1);
     expect(report.releasedIds).toEqual([account]);
 
-    // Строка журнала за сегодня снята, аккаунт свободен, «последние очки» — от
-    // последней настоящей активации (вчерашней).
+    // ЗАПИСЬ ВЫДАЧИ ОСТАЁТСЯ (мадат владельца 18.11, 21:40 МСК: «вести статистику
+    // аккаунтов, которые были выданы, точки времени»). Освобождается только СЕССИЯ
+    // аккаунта — она и держала его занятым.
     const rows = await refs.current!
       .select()
       .from(accountsUsage)
       .where(eq(accountsUsage.accountId, account));
-    expect(rows.map((row) => row.usedOn)).toEqual([YESTERDAY]);
+    expect(rows.map((row) => row.usedOn).sort()).toEqual([YESTERDAY, TODAY]);
     const [row] = await refs.current!
       .select()
       .from(accountsAccount)
@@ -161,6 +170,47 @@ describe('сторож: журнал и леджер', () => {
     expect(row!.usedOn).toBeNull();
     expect(row!.usedAt).toBeNull();
     expect(row!.lastTokens).toBe(400);
+  });
+
+  it('выдачу моложе получаса не трогаем — возможно, потребитель ещё в работе', async () => {
+    // Мандат владельца 18.11, 21:40 МСК: «последние полчаса не трогать, то что там
+    // выдали, возможно ещё в работе и проверять его ещё рано».
+    const account = await makeAccount('fresh@example.test');
+    await makeUsage(account, TODAY, 400, 3, new Date(NOW.getTime() - 5 * 60_000));
+    await makeLedger(account, { claimResult: CLAIM_RESULT_CLAIMED, remaining: 400, dayNo: 3, points: 400 });
+
+    const report = await reconcileActivations(NOW);
+
+    expect(report.rows).toBe(0);
+    expect(report.released).toBe(0);
+    const [row] = await refs.current!
+      .select()
+      .from(accountsAccount)
+      .where(eq(accountsAccount.id, account));
+    expect(row!.usedAt).toBeNull();
+  });
+
+  it('идём по дереву выдачи вверх от курсора: проверенное раньше не перепроверяем', async () => {
+    const old = await makeAccount('old@example.test');
+    const fresh = await makeAccount('new@example.test');
+    const cursor = new Date(NOW.getTime() - 50 * 60_000);
+    await makeUsage(old, TODAY, 400, 3, new Date(NOW.getTime() - 90 * 60_000));
+    await makeUsage(fresh, TODAY, 400, 3, new Date(NOW.getTime() - 45 * 60_000));
+    for (const account of [old, fresh]) {
+      await makeLedger(account, {
+        claimResult: CLAIM_RESULT_CLAIMED,
+        remaining: 400,
+        dayNo: 3,
+        points: 400,
+      });
+    }
+
+    const report = await reconcileActivations(NOW, { cursor: cursor.toISOString() });
+
+    // Только выдача новее курсора.
+    expect(report.rows).toBe(1);
+    expect(report.releasedIds).toEqual([fresh]);
+    expect(report.cursor).toBe(new Date(NOW.getTime() - 45 * 60_000).toISOString());
   });
 
   it('клетку забрал потребитель → запись остаётся, аккаунт в списке погашенных', async () => {

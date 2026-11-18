@@ -397,13 +397,22 @@ describe('выдача токена проекту', () => {
     expect(first?.expires_at_ms).toBeGreaterThan(Date.now());
 
     await markAccessHandedOver(accountId);
-    // Второй раз тот же живой access не отдаём: вход у проекта уже есть, баланс
-    // у аккаунта общий.
-    expect(await ensureLiveAccessToken(accountId)).toBeNull();
+    // Второй раз ТОТ ЖЕ живой access не отдаём: вход у проекта уже есть, баланс у
+    // аккаунта общий. Но аккаунт, возвращённый в оборот сторожем, выдать надо —
+    // поэтому цепочка продлевается по refresh и наружу уходит НОВЫЙ access (у
+    // нового потребителя своя сессия; старый access у прежнего остаётся его).
+    const second = await ensureLiveAccessToken(accountId);
+    expect(second?.access_token).toBe('ACCESS-2');
+    expect(second?.access_token).not.toBe('ACCESS-1');
+    // Refresh наружу не уходит: мандат владельца — отдавать по одному токену.
+    expect(second).not.toHaveProperty('refresh_token');
+    expect(second?.expires_at_ms).toBeGreaterThan(Date.now());
 
     const progress = await tokenProgress(owner);
     expect(progress.rows.find((row) => row.account_id === accountId)?.state).toBe('obtained');
-    expect(progress.rows.find((row) => row.account_id === accountId)?.handed_over_at).not.toBeNull();
+    // Новая пара ещё не отдана (её отдаст выдача) — отметка прежней отдачи снята
+    // вместе со старым access.
+    expect(progress.rows.find((row) => row.account_id === accountId)?.handed_over_at).toBeNull();
   });
 
   it('протухший access отдаём после оживления: потребитель получает живой токен', async () => {

@@ -97,7 +97,7 @@ export type PoolOffer = {
   /** Аккаунт к активации или null — сегодня брать нечего. */
   account: PoolHandout | null;
   /** Почему аккаунта нет (когда account === null). */
-  reason: 'no_free_accounts' | 'no_tokens_ready' | null;
+  reason: 'no_free_accounts' | 'no_tokens_ready' | 'no_handable_accounts' | null;
   /** Из какого класса выдан аккаунт. */
   tier: PoolTier | null;
   /** Аккаунт первый — его и предлагаем активировать сейчас. */
@@ -320,7 +320,7 @@ export function pickPoolAccount<T extends PoolRow>(
   free: number;
   soon: number;
   tier: PoolTier | null;
-  reason: 'no_free_accounts' | 'no_tokens_ready' | null;
+  reason: 'no_free_accounts' | 'no_tokens_ready' | 'no_handable_accounts' | null;
 } {
   const summary = accountPoolSummary(accounts, now);
   const exclude = new Set(filters.excludeIds ?? []);
@@ -473,7 +473,7 @@ export function buildOffer(
     free: number;
     soon: number;
     tier: PoolTier | null;
-    reason?: 'no_free_accounts' | 'no_tokens_ready' | null;
+    reason?: 'no_free_accounts' | 'no_tokens_ready' | 'no_handable_accounts' | null;
   },
   context: {
     project: string;

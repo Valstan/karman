@@ -1,9 +1,19 @@
 import 'server-only';
-import { and, eq, inArray, lt } from 'drizzle-orm';
+import { and, eq, gt, inArray, lt } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { accountsAccount, accountsDailyBonus, accountsUsage } from '@/lib/db/schema';
 import { moscowToday } from '@/lib/accounts/rotation';
 import { CLAIM_RESULT_ALREADY, CLAIM_RESULT_CLAIMED } from '@/lib/minimax/claim';
+
+/**
+ * Пауза перед проверкой выдачи (мс) — мадат владельца 18.11, 21:40 МСК:
+ * «последние полчаса не трогать, то что там выдали, возможно ещё в работе и проверять
+ * его ещё рано».
+ *
+ * Значит сторож смотрит только выдачи, которым уже не меньше получаса: у них потребитель
+ * либо закончил, либо застрял — и возвращать аккаунт в оборот уже можно.
+ */
+export const MIN_HANDOUT_AGE_MS = 30 * 60_000;
 
 /**
  * Сверка журнала активаций с панелью MiniMax (заказ владельца 17.11).
@@ -54,7 +64,7 @@ export type ReconcileVerdict = 'release' | 'correct' | 'spent' | 'skip';
 export type ReconcileReport = {
   /** Московская дата, которую сверяли. */
   today: string;
-  /** Строк журнала за сегодня. */
+  /** Строк журнала за сегодня, попавших в окно проверки. */
   rows: number;
   /** Освобождено (фантомных записей). */
   released: number;
@@ -72,6 +82,12 @@ export type ReconcileReport = {
   correctedIds: number[];
   /** Занесены в список погашенных на сегодня (очки забрал потребитель). */
   spentIds: number[];
+  /**
+   * Курсор для следующего прохода: время последней ВЫДАЧИ, которую мы проверили
+   * (ISO). Сторож идёт по дереву выдачи вверх по времени — от курсора к новым
+   * выдачам (мадат владельца 18.11, 21:40 МСК).
+   */
+  cursor: string | null;
 };
 
 /**
@@ -113,7 +129,7 @@ export function reconcileVerdict(
 }
 export async function reconcileActivations(
   now: Date = new Date(),
-  options: { userId?: number } = {},
+  options: { userId?: number; cursor?: string | null; minHandoutAgeMs?: number } = {},
 ): Promise<ReconcileReport> {
   const today = moscowToday(now);
   const report: ReconcileReport = {
@@ -129,7 +145,17 @@ export async function reconcileActivations(
     releasedIds: [],
     correctedIds: [],
     spentIds: [],
+    cursor: options.cursor ?? null,
   };
+
+  // ОКНО ПРОВЕРКИ (мадат владельца 18.11, 21:40 МСК). Сторож идёт по дереву выдачи
+  // вверх по времени: от того, что уже проверил (курсор), к новым выдачам — но
+  // только к тем, которым уже не меньше получаса: «последние полчаса не трогать, то
+  // что там выдали, возможно ещё в работе и проверять его ещё рано».
+  const minAge = options.minHandoutAgeMs ?? MIN_HANDOUT_AGE_MS;
+  // Время в базе — строка ISO (`tstz` в этой схеме строковый), сравниваем строки.
+  const cutoff = new Date(now.getTime() - minAge).toISOString();
+  const cursor = options.cursor ? new Date(options.cursor).toISOString() : null;
 
   const rows = await db
     .select({
@@ -138,9 +164,19 @@ export async function reconcileActivations(
       userId: accountsUsage.userId,
       tokens: accountsUsage.tokens,
       activationIndex: accountsUsage.activationIndex,
+      // Время выдачи: журнал хранит его с момента создания строки — это и есть
+      // «дерево выдачи», по которому сторож идёт вверх по времени.
+      handedAt: accountsUsage.createdAt,
     })
     .from(accountsUsage)
-    .where(eq(accountsUsage.usedOn, today));
+    .where(
+      and(
+        eq(accountsUsage.usedOn, today),
+        lt(accountsUsage.createdAt, cutoff),
+        cursor ? gt(accountsUsage.createdAt, cursor) : undefined,
+      ),
+    )
+    .orderBy(accountsUsage.createdAt);
   report.rows = rows.length;
   if (rows.length === 0) return report;
 
@@ -211,9 +247,14 @@ export async function reconcileActivations(
 
   await db.transaction(async (tx) => {
     if (releaseIds.length > 0) {
-      await tx
-        .delete(accountsUsage)
-        .where(and(inArray(accountsUsage.accountId, releaseIds), eq(accountsUsage.usedOn, today)));
+      // ЗАПИСЬ ВЫДАЧИ ОСТАЁТСЯ (мадат владельца 18.11, 21:40 МСК: «вести статистику
+      // аккаунтов, которые были выданы, точки времени»). Раньше строку журнала удаляли —
+      // и вместе с ней терялась и статистика («кому и сколько очков отдали»), и сам
+      // след выдачи, по которому сторож идёт вверх по времени.
+      //
+      // Освобождается только СЕССИЯ аккаунта (отметка «начало использования») — она и
+      // держала аккаунт в работе. Отметка отдачи в леджере остаётся: это запись «кому
+      // и когда отдали», и она же объясняет, почему аккаунт был занят.
       for (const accountId of releaseIds) {
         await tx
           .update(accountsAccount)
@@ -224,17 +265,6 @@ export async function reconcileActivations(
             updatedAt: now.toISOString(),
           })
           .where(eq(accountsAccount.id, accountId));
-        // Отметка об отдаче в леджере тоже снимаем: аккаунт снова свободен, и он
-        // больше не считается «в работе» (признак отдачи виден и по леджеру).
-        await tx
-          .update(accountsDailyBonus)
-          .set({ handedAt: null, handedPoints: null, handedToProjectId: null })
-          .where(
-            and(
-              eq(accountsDailyBonus.accountId, accountId),
-              eq(accountsDailyBonus.usedOn, today),
-            ),
-          );
       }
     }
     // Список погашенных на сегодня: очки забрал потребитель (остаток = 0).
@@ -271,5 +301,14 @@ export async function reconcileActivations(
   report.releasedIds = releaseIds;
   report.correctedIds = [...corrections.keys()];
   report.spentIds = spentIds;
+  // Курсор для следующего прохода: время самой поздней ВЫДАЧИ, которую мы посмотрели
+  // (не время проверки!). Сторож идёт по дереву выдачи вверх по времени — от этого
+  // момента к новым выдачам (мадат владельца 18.11, 21:40 МСК).
+  let latestMs: number | null = null;
+  for (const row of rows) {
+    const ms = new Date(row.handedAt).getTime();
+    if (latestMs === null || ms > latestMs) latestMs = ms;
+  }
+  if (latestMs !== null) report.cursor = new Date(latestMs).toISOString();
   return report;
 }
