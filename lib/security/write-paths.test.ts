@@ -182,11 +182,11 @@ describe('таблица путей записи (docs/write-paths.md) опис�
     const writes = handlers.filter((h) => (WRITE_METHODS as readonly string[]).includes(h.method));
     const actions = modules.flatMap((m) => m.exports);
 
-    expect(routes.length, 'роутов').toBe(37);
-    expect(handlers.length, 'обработчиков').toBe(49);
-    expect(writes.length, 'пишущих обработчиков').toBe(30);
-    expect(modules.length, 'модулей действий').toBe(19);
-    expect(actions.length, 'действий').toBe(90);
+    expect(routes.length, 'роутов').toBe(36);
+    expect(handlers.length, 'обработчиков').toBe(48);
+    expect(writes.length, 'пишущих обработчиков').toBe(29);
+    expect(modules.length, 'модулей действий').toBe(18);
+    expect(actions.length, 'действий').toBe(89);
 
     // Числа в prose документа — не украшение: следующий аудит ссылается на них.
     // Форма слова «файл» склоняется (21 файл, 23 файла), поэтому счёт роутов

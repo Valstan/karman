@@ -3,7 +3,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { accountsAccount, accountsDailyBonus, accountsProject } from '@/lib/db/schema';
 import { moscowToday } from '@/lib/accounts/rotation';
-import { OWNER_TIMEZONE, PANEL_STATUS_CLAIMED } from '@/lib/minimax/panel';
+import { OWNER_TIMEZONE } from '@/lib/minimax/panel';
 import {
   CLAIM_RESULT_ALREADY,
   CLAIM_RESULT_CLAIMED,
@@ -140,7 +140,12 @@ export async function sweepDailyBonus(
       date,
       dayNo: day_no ?? today?.day_no ?? 0,
       points: points ?? today?.points ?? 0,
-      remaining: today && today.status === PANEL_STATUS_CLAIMED ? today.points : null,
+      // Остаток по нашим данным: сколько очков сегодня лежит на аккаунте.
+      //   номинал — забрали МЫ: очки наши и свежие;
+      //   null   — забрал ПОТРЕБИТЕЛЬ: очки у него и потрачены. Сторож при этом
+      //           помечает аккаунт пустым (остаток = 0) — и до 05:00 следующего дня
+      //           не перепроверяет его.
+      remaining: claim_result === CLAIM_RESULT_CLAIMED ? (points ?? today?.points ?? 0) : null,
       status: today?.status ?? 0,
       claimResult: claim_result,
       claimId: claim_id,
@@ -183,7 +188,12 @@ async function writeBonusRow(row: {
       usedOn: row.date,
       dayNo: row.dayNo,
       points: row.points,
-      remaining: row.remaining,
+      // Остаток по нашим данным: сколько очков сегодня лежит на аккаунте.
+      //   номинал — забрали МЫ: очки наши и свежие;
+      //   null   — забрал ПОТРЕБИТЕЛЬ: очки у него и потрачены. Сторож при этом
+      //           помечает аккаунт пустым (остаток = 0) — и до 05:00 следующего дня
+      //           не перепроверяет его.
+      remaining: row.claimResult === CLAIM_RESULT_CLAIMED ? row.points : null,
       status: row.status,
       claimResult: row.claimResult,
       claimId: row.claimId,

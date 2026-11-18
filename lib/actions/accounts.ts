@@ -85,6 +85,46 @@ export async function nextAccountAction(
     : { account: splitAccounts(accounts, now).next };
   const account = picked.account;
   if (!account) return { ok: true, data: null };
+  // Активацию записываем СРАЗУ (заказ владельца 18.11: страница «Минимакса» теперь
+  // без списка аккаунтов, выдача идёт кнопками «Выдать N-очковый», и ручная выдача
+  // обязана попадать в журнал — иначе статистика и сторож её не видят).
+  const activated = await activateAccount(
+    user,
+    { id: account.id, projectId: null, source: 'owner' },
+    now,
+    { onlyIfFree: true },
+  );
+  if (!activated) {
+    // Аккаунт только что забрал кто-то другой — берём следующий.
+    const retry = tier
+      ? pickPoolAccount(
+          accounts.filter(
+            (candidate) =>
+              candidate.id !== account.id && poolTierOf(candidate, now) === tier,
+          ),
+          now,
+          { tokenReadyIds: await tokenBackedAccountIds() },
+        )
+      : { account: null };
+    if (!retry.account) return { ok: true, data: null };
+    const ok = await activateAccount(
+      user,
+      { id: retry.account.id, projectId: null, source: 'owner' },
+      now,
+      { onlyIfFree: true },
+    );
+    if (!ok) return { ok: true, data: null };
+    return {
+      ok: true,
+      data: {
+        id: retry.account.id,
+        email: retry.account.email,
+        title: retry.account.title,
+        projectId: retry.account.projectId,
+        points: retry.account.weekPointsNext ?? null,
+      },
+    };
+  }
   return {
     ok: true,
     data: {

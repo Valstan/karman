@@ -3,19 +3,7 @@ import { and, eq, inArray, lt } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { accountsAccount, accountsDailyBonus, accountsUsage } from '@/lib/db/schema';
 import { moscowToday } from '@/lib/accounts/rotation';
-import { pointsForIndex } from '@/lib/accounts/weekly';
-import {
-  DEFAULT_TIMEZONE,
-  OWNER_TIMEZONE,
-  PANEL_STATUS_CLAIMABLE,
-  PANEL_STATUS_CLAIMED,
-} from '@/lib/minimax/panel';
-import {
-  isFreshPanelState,
-  readPanelStates,
-  PANEL_RECONCILE_TTL_MS,
-  type PanelState,
-} from '@/lib/accounts/panel-state';
+import { CLAIM_RESULT_ALREADY, CLAIM_RESULT_CLAIMED } from '@/lib/minimax/claim';
 
 /**
  * Сверка журнала активаций с панелью MiniMax (заказ владельца 17.11).
@@ -61,7 +49,7 @@ import {
  * Обращений к вендору сверка НЕ делает: она работает по ответам панели, которые уже
  * прочитала автосверка (`sweepPanelStates`, раз в 15 минут). Здесь только работа с БД.
  */
-export type ReconcileVerdict = 'release' | 'correct' | 'skip';
+export type ReconcileVerdict = 'release' | 'correct' | 'spent' | 'skip';
 
 export type ReconcileReport = {
   /** Московская дата, которую сверяли. */
@@ -72,6 +60,8 @@ export type ReconcileReport = {
   released: number;
   /** Уточнено по панели (клетка и очки). */
   corrected: number;
+  /** Занесены в список погашенных на сегодня (очки забрал потребитель). */
+  spent: number;
   /** Не тронуто: панель не ответила, ответ протух или пояса расходятся. */
   skipped: number;
   /** Очки, снятые с фантомных записей. */
@@ -80,65 +70,47 @@ export type ReconcileReport = {
   correctedPoints: number;
   releasedIds: number[];
   correctedIds: number[];
+  /** Занесены в список погашенных на сегодня (очки забрал потребитель). */
+  spentIds: number[];
 };
 
 /**
- * Вердикт по одной строке журнала — чистая функция (без БД), чтобы правило
+ * Вердикт по одной строке журнала — чистое решение (без БД), чтобы правило
  * можно было проверить юнитом.
  *
- * `lastSeenPoints` — остаток очков на аккаунте, который мы видели при ПОСЛЕДНЕЙ
- * проверке (из леджера бонусов, `accounts_daily_bonus.remaining`). Нужен, чтобы
- * отличить «потребитель работает» от «взял и не начал»: очки убывают по мере
- * работы, и если они убыли — аккаунт занят, отпускать его нельзя.
+ * **Опирается только на наш леджер забора.** Панель остатка очков не отдаёт
+ * (`points` клетки — её номинал, а не «сколько осталось»; живая проверка
+ * 18.11), и ходить к вендору за «остатком» бессмысленно. Признак один:
+ * `claim_result` из ответа на забор.
+ *
+ * - `claimResult = null` — забора сегодня не было: очки ещё появятся, до утра их не
+ *   трогаем;
+ * - `remaining = 0` — уже признан пустым на сегодня: повторно не проверяем (до 05:00
+ *   следующего дня по Москве);
+ * - `claimResult = 1` — клетку забрали МЫ: очки наши → аккаунт возвращается в оборот;
+ * - `claimResult = 2` — клетку забрал ПОТРЕБИТЕЛЬ: очки у него и потрачены → в список
+ *   погашенных на сегодня.
  */
 export function reconcileVerdict(
-  owner: PanelState | null | undefined,
-  consumer: PanelState | null | undefined,
-  now: Date = new Date(),
-  _lastSeenPoints: number | null = null,
+  claimResult: number | null,
+  remaining: number | null,
 ): { verdict: ReconcileVerdict; cell: number | null; points: number | null } {
   const none = { verdict: 'skip' as const, cell: null, points: null };
-  if (!owner || !consumer) return none;
-  // Протухший ответ панели — это «не знаю», а не «очков нет». Срок годности здесь
-  // СВОЙ (полтора часа): сверка идёт раз в полчаса, а аккаунты в работе
-  // автосверка перечитывает раз в час (антиспам, 18.11) — при общем сроке в
-  // полчаса сверка половину времени видела бы «не знаю».
-  if (
-    !isFreshPanelState(owner, now, PANEL_RECONCILE_TTL_MS) ||
-    !isFreshPanelState(consumer, now, PANEL_RECONCILE_TTL_MS)
-  ) {
-    return none;
+  // Забора сегодня не было: очки ещё появятся, до утра не трогаем.
+  if (claimResult === null) return none;
+  // Забрал ПОТРЕБИТЕЛЬ → очки у него и потрачены. Если он уже помечен пустым
+  // (остаток = 0) — это повторная проверка, не трогаем (до 05:00 следующего дня).
+  if (claimResult === CLAIM_RESULT_ALREADY) {
+    if (remaining === 0) return none;
+    return { verdict: 'spent', cell: null, points: null };
   }
-
-  // Клетку не забрал никто → потребитель взял аккаунт, но рантайм так и не стартовал
-  // (запись в журнале — фантом). Освобождаем.
-  if (owner.status === PANEL_STATUS_CLAIMABLE && consumer.status === PANEL_STATUS_CLAIMABLE) {
+  // Забрали МЫ → очки наши: аккаунт возвращается в оборот.
+  if (claimResult === CLAIM_RESULT_CLAIMED) {
+    if (remaining === 0) return none;
     return { verdict: 'release', cell: null, points: null };
-  }
-  if (owner.status === PANEL_STATUS_CLAIMED && consumer.status === PANEL_STATUS_CLAIMED) {
-    const cell = owner.cell_no;
-    if (!Number.isInteger(cell) || cell < 1 || cell > 7) return none;
-
-    // Клетку забрали — но КТО, панель не говорит: остатка очков она не отдаёт
-    // (`points` клетки — её номинал; живая проверка 18.11: у аккаунта с потраченными
-    // очками панель отвечает `points: 1000, bonus_points: 0`). Значит, очки у
-    // кого-то в руках, и журнальная запись НЕ фантом: оставляем её, а клетку и
-    // номинал уточняем по панели.
-    //
-    // Освобождать такие записи нельзя (18.11): так в оборот возвращались аккаунты,
-    // чьи очки потребитель давно потратил, — и владелец получал их по кнопке выдачи.
-    // Мандат владельца: аккаунт, отданный сегодня, лежит погашенным до утра.
-    return { verdict: 'correct', cell, points: owner.points ?? pointsForIndex(cell) };
   }
   return none;
 }
-
-/**
- * Сверка журнала активаций за сегодня с панелью и привести записи в соответствие.
- *
- * @param now   текущий момент (всё считается по московской дате).
- * @param options.userId ограничить сверку владельцем (по умолчанию — все).
- */
 export async function reconcileActivations(
   now: Date = new Date(),
   options: { userId?: number } = {},
@@ -149,11 +121,14 @@ export async function reconcileActivations(
     rows: 0,
     released: 0,
     corrected: 0,
+    /** Занесены в список погашенных на сегодня (очки забрал потребитель). */
+    spent: 0,
     skipped: 0,
     releasedPoints: 0,
     correctedPoints: 0,
     releasedIds: [],
     correctedIds: [],
+    spentIds: [],
   };
 
   const rows = await db
@@ -172,72 +147,53 @@ export async function reconcileActivations(
   const owners = [...new Set(rows.map((row) => row.userId))].filter(
     (userId) => options.userId === undefined || userId === options.userId,
   );
-  const accountIds = [...new Set(rows.map((row) => row.accountId))];
 
   const releaseIds: number[] = [];
+  const spentIds: number[] = [];
   const corrections = new Map<number, { cell: number; points: number }>();
   let releasedPoints = 0;
 
-  // Остаток очков на прошлой проверке (из леджера бонусов): по нему видно, что
-  // потребитель по аккаунту работает (очки убывают) или что не работал (стоят).
+  // Кто забрал клетку сегодня (из леджера забора): 1 — мы, 2 — потребитель.
+  // Это единственный верный признак «чьи очки лежат на аккаунте»: панель остатка
+  // очков не отдаёт (её `points` — номинал клетки, живая проверка 18.11).
   const ledgerRows = await db
     .select({
       accountId: accountsDailyBonus.accountId,
       remaining: accountsDailyBonus.remaining,
+      claimResult: accountsDailyBonus.claimResult,
+      dayNo: accountsDailyBonus.dayNo,
+      points: accountsDailyBonus.points,
     })
     .from(accountsDailyBonus)
     .where(eq(accountsDailyBonus.usedOn, today));
-  const lastSeen = new Map(ledgerRows.map((r) => [r.accountId, r.remaining]));
-  // Остаток, который мы видим сейчас — его запишем в леджер, чтобы следующая
-  // проверка сравнивала с ним.
-  const seenNow = new Map<number, number>();
+  const ledgerByAccount = new Map(ledgerRows.map((r) => [r.accountId, r]));
 
   for (const userId of owners) {
-    const ownerStates = await readPanelStates(userId, OWNER_TIMEZONE, accountIds);
-    const consumerStates = await readPanelStates(userId, DEFAULT_TIMEZONE, accountIds);
     for (const row of rows) {
       if (row.userId !== userId) continue;
-      const ownerState = ownerStates.get(row.accountId);
-      const consumerState = consumerStates.get(row.accountId);
+      const ledger = ledgerByAccount.get(row.accountId) ?? null;
       const verdict = reconcileVerdict(
-        ownerState,
-        consumerState,
-        now,
-        lastSeen.get(row.accountId) ?? null,
+        ledger?.claimResult ?? null,
+        ledger?.remaining ?? null,
       );
-      if (ownerState && consumerState) {
-        seenNow.set(
-          row.accountId,
-          Math.min(ownerState.points ?? 0, consumerState.points ?? 0),
-        );
-      }
       if (verdict.verdict === 'release') {
         releaseIds.push(row.accountId);
         releasedPoints += row.tokens;
-      } else if (verdict.verdict === 'correct' && verdict.cell !== null) {
-        corrections.set(row.accountId, { cell: verdict.cell, points: verdict.points ?? 0 });
+      } else if (verdict.verdict === 'spent') {
+        // Очки забрал потребитель — они потрачены: в список погашенных на сегодня
+        // (до утра не проверяем и в оборот не возвращаем). Клетку и очки журнала
+        // уточняем по леджеру — там ответ вендора на забор.
+        spentIds.push(row.accountId);
+        if (ledger && ledger.dayNo > 0) {
+          corrections.set(row.accountId, { cell: ledger.dayNo, points: ledger.points });
+        }
       }
     }
   }
 
-  report.skipped = report.rows - releaseIds.length - corrections.size;
+  report.skipped = report.rows - releaseIds.length - spentIds.length;
 
-  // Остаток очков в леджере — на текущий момент (следы работы потребителя).
-  if (seenNow.size > 0) {
-    for (const [accountId, remaining] of seenNow) {
-      await db
-        .update(accountsDailyBonus)
-        .set({ remaining, checkedAt: now.toISOString() })
-        .where(
-          and(
-            eq(accountsDailyBonus.accountId, accountId),
-            eq(accountsDailyBonus.usedOn, today),
-          ),
-        );
-    }
-  }
-
-  if (releaseIds.length === 0 && corrections.size === 0) return report;
+  if (releaseIds.length === 0 && spentIds.length === 0) return report;
 
   // Очки последней НАСТОЯЩЕЙ активации (до сегодняшней) — их вернём в строку аккаунта,
   // чтобы «последние очки» не показывали фантомные.
@@ -268,7 +224,32 @@ export async function reconcileActivations(
             updatedAt: now.toISOString(),
           })
           .where(eq(accountsAccount.id, accountId));
+        // Отметка об отдаче в леджере тоже снимаем: аккаунт снова свободен, и он
+        // больше не считается «в работе» (признак отдачи виден и по леджеру).
+        await tx
+          .update(accountsDailyBonus)
+          .set({ handedAt: null, handedPoints: null, handedToProjectId: null })
+          .where(
+            and(
+              eq(accountsDailyBonus.accountId, accountId),
+              eq(accountsDailyBonus.usedOn, today),
+            ),
+          );
       }
+    }
+    // Список погашенных на сегодня: очки забрал потребитель (остаток = 0).
+    // До утра следующего дня такие аккаунты сторож не перепроверяет и в оборот
+    // не возвращает.
+    if (spentIds.length > 0) {
+      await tx
+        .update(accountsDailyBonus)
+        .set({ remaining: 0, checkedAt: now.toISOString() })
+        .where(
+          and(
+            inArray(accountsDailyBonus.accountId, spentIds),
+            eq(accountsDailyBonus.usedOn, today),
+          ),
+        );
     }
     for (const [accountId, fix] of corrections) {
       await tx
@@ -284,9 +265,11 @@ export async function reconcileActivations(
 
   report.released = releaseIds.length;
   report.corrected = corrections.size;
+  report.spent = spentIds.length;
   report.releasedPoints = releasedPoints;
   report.correctedPoints = [...corrections.values()].reduce((sum, fix) => sum + fix.points, 0);
   report.releasedIds = releaseIds;
   report.correctedIds = [...corrections.keys()];
+  report.spentIds = spentIds;
   return report;
 }

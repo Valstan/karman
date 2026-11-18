@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { Copy, KeyRound, LayoutList, RefreshCw, Trash2, Zap } from 'lucide-react';
+import { LayoutList, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Table,
@@ -19,7 +19,6 @@ import {
   nextAccountAction,
 } from '@/lib/actions/accounts';
 import {
-  ACTIVATED_PREVIEW_LIMIT,
   accountPoolSummary,
   isSpent,
   moscowToday,
@@ -34,13 +33,10 @@ import {
   MinimaxAlreadyActivatedDialog,
   type MinimaxBlockedIntent,
 } from './minimax-already-activated-dialog';
-import { ConfirmDialog } from './confirm-dialog';
 import { MinimaxToolbar } from './minimax-toolbar';
-import { MinimaxAccountRow, type AccountDailyState } from './minimax-account-row';
 import { MinimaxAllAccountsDialog } from './minimax-all-accounts-dialog';
-import { MinimaxTokenTool } from './minimax-token-tool';
-import { TOKEN_STATE_LABEL, useMinimaxTokenFlow } from './minimax-token-flow';
-import { syncDailyStatesAction } from '@/lib/actions/minimax-daily';
+import { MinimaxStatisticsGrid } from './minimax-statistics-grid';
+import { useMinimaxTokenFlow } from './minimax-token-flow';
 import { MinimaxActivationsByDay } from './minimax-activations-by-day';
 import { MinimaxDailySums } from './minimax-daily-sums';
 import { MinimaxApiUsage } from './minimax-api-usage';
@@ -109,7 +105,6 @@ export function MinimaxPanel({
   rating,
   apiUsage,
   tokenProgress,
-  dailyStates,
   bonusStats,
   serverNow,
 }: {
@@ -125,8 +120,7 @@ export function MinimaxPanel({
   apiUsage: ApiUsageDay[];
   /** Состояние токенов аккаунтов (заказ 15.11: статусы «Без токена»/«Токен получен»). */
   tokenProgress: TokenProgress;
-  /** Состояние суток по панели MiniMax: у кого очки реально есть (сверка 15.11). */
-  dailyStates: Record<number, AccountDailyState>;
+
   /** Сводка по суточным бонусам (заказ владельца 18.11): забрали / отдали / потратили. */
   bonusStats: BonusStatsView;
   /** Момент, на котором сервер посчитал список (ISO) — для гидрации. */
@@ -282,14 +276,8 @@ export function MinimaxPanel({
     setEditTarget(account);
   }
 
-  /** Активация: единственный путь, на котором аккаунт гаснет. */
-  function handleActivate(account: AccountListItem) {
-    if (isBlocked(account)) {
-      block(account, 'activate');
-      return;
-    }
-    setActivateTarget(account);
-  }
+
+
 
   /**
    * Плавающее окно поверх вкладок (04.11): копировать почту и пароль, не
@@ -388,16 +376,6 @@ export function MinimaxPanel({
     router.refresh();
   }
 
-  // Сверка суток с панелью: идёт в фоне (после ответа сервера), поэтому страницу
-  // обновляем по таймеру — иначе состояние появилось бы только после ручного F5.
-  const [syncing, setSyncing] = useState(false);
-  useEffect(() => {
-    if (!syncing) return;
-    const timer = setInterval(() => router.refresh(), 5000);
-    return () => clearInterval(timer);
-  }, [syncing, router]);
-
-  const preview = activated.slice(0, ACTIVATED_PREVIEW_LIMIT);
   const allAccounts = useMemo(
     () => [...(next ? [next] : []), ...queued, ...activated],
     [next, queued, activated],
@@ -412,342 +390,182 @@ export function MinimaxPanel({
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="grid gap-6 lg:grid-cols-2">
-        {/* ЛЕВАЯ ПОЛОВИНА: кнопки и статистика. */}
-        <div className="flex flex-col gap-4">
+      {/* КНОПКИ — по центру сверху (заказ владельца 18.11): добавление и выдача
+          одним рядом, а под ними — блок статистики в трёх столбцах, разделы
+          которых можно перетаскивать мышью. */}
+      <div className="flex flex-col items-center gap-3">
+        <div className="flex flex-wrap items-center justify-center gap-2">
           <MinimaxToolbar onAccountCreated={(id) => tokenFlow.start(id)} />
-
-          {/* Сверка суток с панелью MiniMax: читаем, сколько очков у кого реально
-              есть. Проверка ничего не тратит (очки начисляет claim) — зато видно,
-              кого можно отдавать потребителю, а у кого бонус уже сожжён. */}
           <Button
-            variant="outline"
-            size="sm"
-            disabled={syncing}
-            onClick={() => {
-              setSyncing(true);
-              void syncDailyStatesAction().then((result) => {
-                if (!result.ok) {
-                  toast.error(result.error);
-                  setSyncing(false);
-                  return;
-                }
-                toast.success('Сверка идёт — состояние появится в строках через минуту');
-                window.setTimeout(() => setSyncing(false), 90_000);
-              });
-            }}
+            variant={available.points_400 > 0 ? 'default' : 'outline'}
+            disabled={available.points_400 === 0}
+            onClick={() => void openNextAccountWindow('points_400')}
+            title="Выдать аккаунт на 400 очков (откроется быстрое окно, почта скопируется сама)"
           >
-            <RefreshCw className="mr-1 h-4 w-4" />
-            {syncing ? 'Сверяем сутки…' : 'Сверить сутки с MiniMax'}
+            {available.points_400 > 0
+              ? `Выдать 400-очковый (${available.points_400})`
+              : 'На сегодня закончились'}
           </Button>
-
-          {/* Токены аккаунтов — здесь же, на странице «Минимакс» (заказ 15.11:
-              отдельной страницы «Токены аккаунтов MiniMax» больше нет). */}
-          <MinimaxTokenTool progress={tokenProgress} flow={tokenFlow} />
-
-          <div className="rounded-md border">
-            <div className="p-4 pb-2">
-              <h2 className="text-lg font-semibold">Расход по проектам</h2>
-            </div>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Проект</TableHead>
-                  <TableHead className="text-right">Активаций</TableHead>
-                  <TableHead className="text-right">Очков</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {usage.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={3} className="text-center text-muted-foreground">
-                      Пока ни одной активации.
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-                {usage.map((row) => (
-                  <TableRow key={row.projectId ?? 'none'}>
-                    <TableCell>{row.projectName ?? 'Без проекта'}</TableCell>
-                    <TableCell className="text-right">{row.activations}</TableCell>
-                    <TableCell className="text-right">{row.tokens}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-
-          {/* Расход по запросам проектов — отдельно от расхода на программирование
-              (заказ владельца 14.11): по дням, сколько аккаунтов и очков ушло на волны. */}
-          <MinimaxApiUsage days={apiUsage} />
-
-          {/* Суммы по дням: активации, проекты, очки (заказ владельца 05.11). */}
-          <MinimaxDailySums days={daily} serverNow={serverNow} />
-
-          {/* Активации по дням: последние 3 дня по умолчанию, вся история — по кнопке. */}
-          <MinimaxActivationsByDay rows={usageByDay} />
-
-          {/* Рейтинг: кто аккаунтов активировал чаще всего (заказ владельца 05.11). */}
-          <MinimaxAccountRating rows={rating} />
-
-          {/* Кривая активности за 90 дней (заказ владельца 05.11). */}
-          <MinimaxActivityChart days={daily} serverNow={serverNow} />
-
-          {/* Проекты: справочник названий. */}
-          <div className="rounded-md border p-4">
-            {projects.length > 0 ? (
-              <div className="flex flex-wrap gap-2">
-                {projects.map((project) => (
-                  <span
-                    key={project.id}
-                    className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-sm"
-                  >
-                    {project.name}
-                    <button
-                      type="button"
-                      aria-label={`Удалить проект ${project.name}`}
-                      className="text-muted-foreground hover:text-destructive"
-                      onClick={() => removeProject(project.id)}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </span>
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Проектов пока нет — добавьте первый кнопкой «Добавить проект» слева.
-              </p>
-            )}
-          </div>
+          <Button
+            variant={available.points_1000 > 0 ? 'default' : 'outline'}
+            disabled={available.points_1000 === 0}
+            onClick={() => void openNextAccountWindow('points_1000')}
+            title="Выдать аккаунт на 1000 очков (бонусная клетка)"
+          >
+            {available.points_1000 > 0
+              ? `Выдать 1000-очковый (${available.points_1000})`
+              : 'На сегодня закончились'}
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setAllOpen(true)}>
+            <LayoutList className="mr-1 h-4 w-4" /> Показать все аккаунты
+          </Button>
         </div>
-
-        {/* ПРАВАЯ ПОЛОВИНА: аккаунты. */}
-        <div className="flex flex-col gap-4">
-          {/* Сводка по запасу — одна строка над верхним слотом (заказ владельца
-              06.11): «Свободных - N, Скоро освободятся - M». Плюс недельная
-              квота (заказ 09.11): «За день - X (в ближайшие 5 ч - Y)»,
-              «За неделю - Z (W очков, сброс <дата>)». И прогноз по ТЕМПУ
-              ПОТРЕБЛЕНИЯ (заказ владельца 16.11): темп берётся не по текущей
-              неделе (в её первый день срез из одних суток — случайная цифра),
-              а по срезу последних 10 полных суток; «хватит ли на неделю» —
-              покрывает ли недельный запас неделю потребления. */}
-          {/* Две кнопки выдачи — по очковому классу (заказ владельца 18.11): одна
-              отдаёт аккаунты на 400 очков, другая — на 1000. Если аккаунтов
-              соответствующего класса нет, кнопка так и говорит: «На сегодня
-              закончились». */}
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant={available.points_400 > 0 ? 'default' : 'outline'}
-              disabled={available.points_400 === 0}
-              onClick={() => void openNextAccountWindow('points_400')}
-              title="Выдать аккаунт на 400 очков (откроется быстрое окно, почта скопируется сама)"
-            >
-              {available.points_400 > 0
-                ? `Выдать 400-очковый (${available.points_400})`
-                : 'На сегодня закончились'}
-            </Button>
-            <Button
-              variant={available.points_1000 > 0 ? 'default' : 'outline'}
-              disabled={available.points_1000 === 0}
-              onClick={() => void openNextAccountWindow('points_1000')}
-              title="Выдать аккаунт на 1000 очков (бонусная клетка)"
-            >
-              {available.points_1000 > 0
-                ? `Выдать 1000-очковый (${available.points_1000})`
-                : 'На сегодня закончились'}
-            </Button>
-          </div>
-          <div className="text-sm font-medium text-muted-foreground">
-            Живых аккаунтов - {pool.free}, За день - {week.today}
-            {week.freesIn5h > 0 ? ` (в ближайшие 5 ч - ${week.freesIn5h})` : ''},
-            За неделю - {week.week} ({week.weekPoints} очков, сброс {week.weekResetsOn})
-            {week.pointsPerDay !== null
-              ? ` · темп ${Math.round(week.pointsPerDay).toLocaleString('ru-RU')} очков/день (срез ${week.sliceFrom}—${week.sliceTo})`
-              : ''}
-            {week.coversWeek === null
-              ? ''
-              : week.coversWeek
-                ? ' (на неделю хватает)'
-                : ' (на неделю НЕ хватает)'}
-          </div>
-          {cohort.liveYesterday > 0 ? (
-            <div className="-mt-3 text-sm font-medium text-muted-foreground">
-              Живых серий вчера — {cohort.liveYesterday}, продолжено сегодня —
-              {cohort.continuedToday}, не отмечены сегодня — {cohort.atRisk}
-              {cohort.atRisk > 0
-                ? ` (если пропустить — минус ${cohort.pointsLostIfSkipped} очков)`
-                : ''}
-              {bonusToday > 0 ? ` · сегодня доступно тысячных: ${bonusToday}` : ''}
-            </div>
-          ) : null}
-          {bonusStats.accounts > 0 ? (
-            <div className="-mt-3 text-sm font-medium text-muted-foreground">
-              Бонусы за {bonusStats.date}: забрали у {bonusStats.claimed} аккаунтов на{' '}
-              {bonusStats.points.toLocaleString('ru-RU')} очков; у {bonusStats.already} клетку
-              забрал потребитель — эти {bonusStats.spentPoints.toLocaleString('ru-RU')} очков
-              потрачены и в выдачу не идут; отдано {bonusStats.handed} (
-              {bonusStats.handedPoints.toLocaleString('ru-RU')} очк.), на аккаунтах лежит{' '}
-              {bonusStats.leftPoints.toLocaleString('ru-RU')}
-            </div>
-          ) : null}
-          <p className="-mt-4 text-xs text-muted-foreground">
-            Окно активации — до ночного сброса (03:00 МСК), а в 05:00 МСК мы забираем
-            бонусы у ВСЕХ аккаунтов (утренний обход) — с этого момента серия дней подряд не
-            рвётся ни у кого, и очки лежат готовыми к выдаче.
-            Номер активации — серия дней подряд: отмечен вчера — вторая клетка, пропущен
-            вчера — серия сгорела, снова первая. Недельная квота — календарная неделя
-            (понедельник — воскресенье), лимиты обнуляются в ночь на понедельник.
-            Очки: 400 за активацию, в 4-й и 7-й — 1000. «За неделю» — сколько активаций
-            ещё осталось в календарной неделе, «хватит на N дней» — при текущем темпе
-            (активаций в день за эту московскую неделю).
-          </p>
-
-          {/* Верхний слот: ОДИН следующий аккаунт. Вся карточка слева — одна
-              большая кнопка (заказ владельца 08.11: «нажал в любом месте —
-              открылось быстрое окно, и почта уже в буфере»). Перед открытием
-              состояние перечитывается с сервера: страница могла устареть, и
-              тогда предложенный аккаунт уже погашен — окно откроется для
-              свежего «самого старого неактивированного». */}
-          <div className="rounded-md border border-emerald-500/50 bg-emerald-500/10 p-4">
-            {next ? (
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <button
-                  type="button"
-                  onClick={() => void openNextAccountWindow()}
-                  title="Открыть быстрое окно: почта скопируется сама"
-                  className="min-w-0 flex-1 text-left"
-                >
-                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    Следующий аккаунт
-                  </div>
-                  <div className="mt-1 block max-w-full truncate text-lg font-semibold hover:underline">
-                    {next.title || '—'}
-                  </div>
-                  <div className="font-mono text-sm text-muted-foreground">{next.email}</div>
-                  {/* Сводка по аккаунту (заказ 05.11): верхний слот тоже может быть
-                      не новым — у него есть история активаций. */}
-                  {next.activations > 0 ? (
-                    <div className="text-xs text-muted-foreground">
-                      активаций: {next.activations}
-                      {next.totalTokens > 0 ? ` · очков всего: ${next.totalTokens}` : ''}
-                      {next.weekUsed > 0 ? ` · на этой неделе: ${next.weekUsed} из 7` : ''}
-                    </div>
-                  ) : null}
-                  {/* Что даст ближайшая активация этого аккаунта: клетка и
-                      очки (заказ владельца 11.11 — верхний слот выбирается по
-                      деньгам, а не по давноте). */}
-                  <div className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
-                    {next.week.pointsToday > 0
-                      ? `клетка ${next.week.nextIndex ?? '—'} — ${next.week.pointsToday} очков${
-                          next.week.pointsToday === 1000
-                            ? ' (бонус)'
-                            : ` · до 1000 через ${next.week.daysToBonus - 1} дн.`
-                        }`
-                      : 'сегодня чек-ин уже был — очков сегодня не даст'}
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    Токен:{' '}
-                    {tokenStates.get(next.id)
-                      ? TOKEN_STATE_LABEL[tokenStates.get(next.id)!.state]
-                      : '—'}
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    Нажми — откроется окно, почта скопируется сама
-                  </div>
-                </button>
-                <div className="flex shrink-0 flex-wrap items-center gap-2">
-                  <Button
-                    title="Скопировать почту (аккаунт не гаснет)"
-                    onClick={() => handleCopy(next, 'email')}
-                  >
-                    <Copy className="mr-1 h-4 w-4" /> Почта
-                  </Button>
-                  <Button
-                    variant="outline"
-                    title="Скопировать пароль (аккаунт не гаснет)"
-                    onClick={() => handleCopy(next, 'password')}
-                  >
-                    <KeyRound className="mr-1 h-4 w-4" /> Пароль
-                  </Button>
-                  {/* Активация — единственное, что гасит аккаунт (заказ 05.11). */}
-                  <Button
-                    variant="secondary"
-                    title="Активировать аккаунт: погаснет до ночного сброса MiniMax"
-                    onClick={() => handleActivate(next)}
-                  >
-                    <Zap className="mr-1 h-4 w-4" /> Активировать
-                  </Button>
-                  {/* «В окне» убран 08.11: открыть окно теперь можно нажатием на
-                      саму карточку аккаунта (слева), и почта копируется сама. */}
-                  <Button variant="ghost" onClick={() => handleEdit(next)}>
-                    Правка
-                  </Button>
-                  <ConfirmDialog
-                    title="Удалить аккаунт?"
-                    description={`«${next.title || next.email}» будет удалён вместе с историей активаций.`}
-                    onConfirm={() => removeAccount(next)}
-                    trigger={
-                      <Button variant="ghost" size="icon" aria-label="Удалить аккаунт">
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    }
-                  />
-                </div>
-              </div>
-            ) : (
-              <div>
-                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Следующий аккаунт
-                </div>
-                <p className="text-sm text-muted-foreground">
-                  Свободных аккаунтов нет — все погашены. Добавьте новый или дождитесь
-                  освобождения.
-                </p>
-              </div>
-            )}
-          </div>
-
-          {/* Активированные: свежий сверху, по умолчанию последние 5 (заказ 05.11). */}
-          <div className="rounded-md border">
-            <div className="flex flex-wrap items-center justify-between gap-2 p-4 pb-2">
-              <h2 className="text-lg font-semibold">Активированные</h2>
-              <Button variant="outline" size="sm" onClick={() => setAllOpen(true)}>
-                <LayoutList className="mr-1 h-4 w-4" /> Показать все аккаунты
-              </Button>
-            </div>
-            <div className="flex flex-col gap-2 p-4 pt-0">
-              {activated.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  Пока никто не активирован — берите верхний аккаунт.
-                </p>
-              ) : null}
-              {preview.map((account) => (
-                <MinimaxAccountRow
-                  key={account.id}
-                  account={account}
-                  spent
-                  now={now}
-                  serverNow={serverNow}
-                  projects={orderedProjects}
-                  onCopy={(kind) => handleCopy(account, kind)}
-                  onEdit={() => handleEdit(account)}
-                  onDelete={() => removeAccount(account)}
-                  onOpenWindow={() => openWindow(account.id)}
-                  onGetToken={(id) => tokenFlow.start(id)}
-                  tokenState={tokenStates.get(account.id)?.state}
-                  dailyState={dailyStates[account.id]}
-                />
-              ))}
-              {activated.length > preview.length ? (
-                <p className="text-xs text-muted-foreground">
-                  Показаны последние {preview.length} из {activated.length}. Остальные — по кнопке
-                  «показать все аккаунты».
-                </p>
-              ) : null}
-            </div>
-          </div>
-        </div>
+        <p className="max-w-3xl text-center text-xs text-muted-foreground">
+          Окно активации — до ночного сброса (03:00 МСК), а в 05:00 МСК мы забираем бонусы у
+          ВСЕХ аккаунтов (утренний обход) — с этого момента серия дней подряд не рвётся ни у
+          кого, и очки лежат готовыми к выдаче. Номер активации — серия дней подряд: отмечен
+          вчера — вторая клетка, пропущен вчера — серия сгорела, снова первая. Недельная квота —
+          календарная неделя (понедельник — воскресенье), лимиты обнуляются в ночь на
+          понедельник. Очки: 400 за активацию, в 4-й и 7-й — 1000.
+        </p>
       </div>
+
+      {/* Статистика — три столбца, разделы перетаскиваются (заказ владельца 18.11:
+          «все разделы статистики сделай перетаскиваемыми вручную, чтобы я сам мог их
+          располагать на странице как мне удобно смотреть»). */}
+      <MinimaxStatisticsGrid
+        sections={[
+          {
+            id: 'pool',
+            title: 'Пул и бонусы',
+            node: (
+              <div className="flex flex-col gap-2">
+                <div className="text-sm font-medium text-muted-foreground">
+                  Живых аккаунтов - {pool.free}, За день - {week.today}
+                  {week.freesIn5h > 0 ? ` (в ближайшие 5 ч - ${week.freesIn5h})` : ''}, За неделю -{' '}
+                  {week.week} ({week.weekPoints} очков, сброс {week.weekResetsOn})
+                  {week.pointsPerDay !== null
+                    ? ` · темп ${Math.round(week.pointsPerDay).toLocaleString('ru-RU')} очков/день (срез ${week.sliceFrom}—${week.sliceTo})`
+                    : ''}
+                  {week.coversWeek === null
+                    ? ''
+                    : week.coversWeek
+                      ? ' (на неделю хватает)'
+                      : ' (на неделю НЕ хватает)'}
+                </div>
+                {cohort.liveYesterday > 0 ? (
+                  <div className="text-sm font-medium text-muted-foreground">
+                    Живых серий вчера — {cohort.liveYesterday}, продолжено сегодня —{' '}
+                    {cohort.continuedToday}, не отмечены сегодня — {cohort.atRisk}
+                    {cohort.atRisk > 0
+                      ? ` (если пропустить — минус ${cohort.pointsLostIfSkipped} очков)`
+                      : ''}
+                    {bonusToday > 0 ? ` · сегодня доступно тысячных: ${bonusToday}` : ''}
+                  </div>
+                ) : null}
+                {bonusStats.accounts > 0 ? (
+                  <div className="text-sm font-medium text-muted-foreground">
+                    Бонусы за {bonusStats.date}: забрали у {bonusStats.claimed} аккаунтов на{' '}
+                    {bonusStats.points.toLocaleString('ru-RU')} очков; у {bonusStats.already} клетку
+                    забрал потребитель — эти {bonusStats.spentPoints.toLocaleString('ru-RU')} очков
+                    потрачены и в выдачу не идут; отдано {bonusStats.handed} (
+                    {bonusStats.handedPoints.toLocaleString('ru-RU')} очк.), на аккаунтах лежит{' '}
+                    {bonusStats.leftPoints.toLocaleString('ru-RU')}
+                  </div>
+                ) : null}
+              </div>
+            ),
+          },
+          {
+            id: 'usage',
+            title: 'Расход по проектам',
+            node: (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Проект</TableHead>
+                    <TableHead className="text-right">Активаций</TableHead>
+                    <TableHead className="text-right">Очков</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {usage.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={3} className="text-center text-muted-foreground">
+                        Пока ни одной активации.
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                  {usage.map((row) => (
+                    <TableRow key={row.projectId ?? 'none'}>
+                      <TableCell>{row.projectName ?? 'Без проекта'}</TableCell>
+                      <TableCell className="text-right">{row.activations}</TableCell>
+                      <TableCell className="text-right">{row.tokens}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ),
+          },
+          {
+            id: 'api',
+            title: 'Расход по запросам',
+            node: <MinimaxApiUsage days={apiUsage} />,
+          },
+          {
+            id: 'sums',
+            title: 'Суммы по дням',
+            node: <MinimaxDailySums days={daily} serverNow={serverNow} />,
+          },
+          {
+            id: 'byDay',
+            title: 'Активации по дням',
+            node: <MinimaxActivationsByDay rows={usageByDay} />,
+          },
+          {
+            id: 'rating',
+            title: 'Рейтинг аккаунтов',
+            node: <MinimaxAccountRating rows={rating} />,
+          },
+          {
+            id: 'chart',
+            title: 'Активность за 90 дней',
+            node: <MinimaxActivityChart days={daily} serverNow={serverNow} />,
+          },
+          {
+            id: 'projects',
+            title: 'Проекты',
+            node: (
+              <div className="rounded-md border p-4">
+                {projects.length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {projects.map((project) => (
+                      <span
+                        key={project.id}
+                        className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-sm"
+                      >
+                        {project.name}
+                        <button
+                          type="button"
+                          aria-label={`Удалить проект ${project.name}`}
+                          className="text-muted-foreground hover:text-destructive"
+                          onClick={() => removeProject(project.id)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    Проектов пока нет — добавьте первый кнопкой «Добавить проект» сверху.
+                  </p>
+                )}
+              </div>
+            ),
+          },
+        ]}
+      />
 
       {/* Активация: проект и очки спрашиваются ДО гашения (04.11). Копирование
           аккаунт не гасит — гасит только эта кнопка (заказ 05.11). */}

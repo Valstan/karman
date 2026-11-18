@@ -10,10 +10,8 @@ import {
   projectUsageByDay,
 } from '@/lib/services/accounts';
 import { tokenProgress } from '@/lib/services/account-tokens';
-import { dailyStates, OWNER_TIMEZONE } from '@/lib/services/minimax-daily';
 import { dailyBonusStats } from '@/lib/services/minimax-daily-bonus';
 import { moscowToday } from '@/lib/accounts/rotation';
-import { isFreshPanelState } from '@/lib/accounts/panel-state';
 import { MinimaxPanel } from '@/components/app/minimax-panel';
 
 /**
@@ -57,24 +55,6 @@ export default async function MinimaxPage() {
   // сколько очков в банке, сколько отдано и сколько потрачено.
   const bonus = await dailyBonusStats(moscowToday(now));
 
-  // Состояние суток по панели MiniMax: что уже прочитано — показываем в строках.
-  // Состояние живёт в БД (не в памяти процесса), поэтому страница и выдача видят
-  // одно и то же. Протухшее состояние — это «не знаю», а не «очков нет»: в
-  // интерфейсе оно помечено отдельно.
-  const states = Object.fromEntries(
-    [...(await dailyStates(user.id, OWNER_TIMEZONE))].map(([id, state]) => [
-      id,
-      {
-        can_claim: state.can_claim,
-        points: state.points,
-        status: state.status,
-        cell_no: state.cell_no,
-        checked_at: state.checked_at,
-        stale: !isFreshPanelState(state, now),
-      },
-    ]),
-  );
-
   return (
     <div className="flex flex-col gap-6">
       <div>
@@ -95,7 +75,6 @@ export default async function MinimaxPage() {
         rating={rating}
         apiUsage={apiUsage}
         tokenProgress={tokens}
-        dailyStates={states}
         bonusStats={{
           date: bonus.date,
           accounts: bonus.accounts,
