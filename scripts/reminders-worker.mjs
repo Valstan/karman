@@ -13,6 +13,10 @@
 // Вся работа с БД/сервисами — внутри Next-роутов. Запускается systemd-сервисом
 // karman-reminders.service из текущего релиза (симлинк current). См. docs/telegram-reminders.md.
 
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const SECRET = process.env.REMINDERS_INTERNAL_SECRET || '';
 const PORT = process.env.PORT || '3000';
@@ -33,6 +37,15 @@ const RECONCILE_INTERVAL_MS = Number(process.env.MINIMAX_RECONCILE_INTERVAL_MS |
 // у нас два — московский (владелец) и UTC (потребитель); их границы — 00:00 и 03:00
 // МСК. Обход в 05:00 идёт ПОСЛЕ обеих, поэтому «сегодня» у обеих сторон совпадает.
 const DAILY_BONUS_HOUR_MSK = Number(process.env.MINIMAX_DAILY_BONUS_HOUR_MSK || 5);
+// Повтор забора, если он не удался (приложение ещё поднимается после деплоя, сеть
+// моргнула). Раньше был один шанс: упал — жди до завтра, и сутки обхода не было.
+const DAILY_BONUS_RETRY_MS = Number(process.env.MINIMAX_DAILY_BONUS_RETRY_MS || 5 * 60_000);
+// Каталог состояния воркера: маркер «обход за московские сутки уже был». Живёт рядом
+// с пользователем сервиса (valstan) и переживает деплой: без него каждый рестарт
+// воркера дёргал бы вендора заново (забор по 136 аккаунтам), а владелец просил
+// держать нагрузку на MiniMax разумной.
+const STATE_DIR =
+  process.env.KARMAN_WORKER_STATE_DIR || path.join(os.homedir(), '.local', 'state', 'karman');
 const POLL_TIMEOUT_S = 25;
 
 function log(...args) {
@@ -99,33 +112,92 @@ function startReconcileLoop() {
  * отдаёт «уже получено»), поэтому лишний заход ничего не ломает — а вот ПРОПУСК захода
  * ломает: у аккаунта не сдвинется клетка, и серия дней подряд оборвётся.
  *
- * Поэтому на старте воркера: если нужный час уже прошёл, забор делаем сразу (иначе
- * после перезапуска воркера сутки пропустили бы), а если ещё нет — ждём расписания.
+ * Поэтому на старте воркера: если час забора уже прошёл, а обхода за сегодня ещё не
+ * было — забираем сразу (иначе после рестарта воркера сутки пропустили бы), а если ещё
+ * нет — ждём расписания.
+ *
+ * Живая находка 18.11: прежний код ждал «часа забора» функцией, которая ВСЕГДА
+ * возвращала время до ЗАВТРАШНЕГО 05:00 — потому что уже прошедший час откатывался на
+ * сутки вперёд. Из-за этого «догон» при старте не срабатывал никогда, а упавший забор
+ * (приложение ещё поднимается после деплоя) ждал до следующего дня: сутки обхода
+ * просто терялись, и у аккаунтов не сдвигалась клетка вендора.
  */
 function startDailyBonusLoop() {
   const tick = async () => {
+    // Обход за сегодня уже был — вендора больше не дёргаем.
+    if (sweepDoneToday()) {
+      setTimeout(startDailyBonusLoop, msUntilDailyBonus());
+      return;
+    }
     try {
       const res = await postInternal('/api/internal/minimax/daily-bonus', {});
-      if (!res.ok) log('daily-bonus HTTP', res.status);
+      if (!res.ok) {
+        log('daily-bonus HTTP', res.status, '— повтор через 5 мин');
+        setTimeout(startDailyBonusLoop, DAILY_BONUS_RETRY_MS);
+        return;
+      }
+      markSweepDone();
     } catch (error) {
-      log('daily-bonus error', String(error));
+      log('daily-bonus error', String(error), '— повтор через 5 мин');
+      setTimeout(startDailyBonusLoop, DAILY_BONUS_RETRY_MS);
+      return;
     }
     setTimeout(startDailyBonusLoop, msUntilDailyBonus());
   };
 
-  const delay = msUntilDailyBonus();
-  if (delay <= 0) {
-    // Час уже прошёл (воркер перезапустили после него) — забираем сразу.
+  // Час забора уже прошёл, а обхода за сегодня ещё не было — догоняем сейчас.
+  if (dailyBonusTimePassed()) {
     tick();
     return;
   }
-  setTimeout(tick, delay);
+  setTimeout(tick, msUntilDailyBonus());
+}
+
+/** Московская дата сегодняшних суток (UTC+3; перехода на летнее время нет). */
+function moscowDate(now = new Date()) {
+  return new Date(now.getTime() + 3 * 60 * 60_000).toISOString().slice(0, 10);
+}
+
+/** Путь маркера «обход за московские сутки уже был». */
+function sweepMarkerPath(date = moscowDate(), dir = STATE_DIR) {
+  return path.join(dir, `daily-bonus-${date}.done`);
+}
+
+/** Был ли обход за сегодняшние московские сутки. */
+function sweepDoneToday(dir = STATE_DIR) {
+  try {
+    return fs.existsSync(sweepMarkerPath(moscowDate(), dir));
+  } catch {
+    return false;
+  }
+}
+
+/** Отметить: обход за сегодняшние сутки сделан. */
+function markSweepDone(dir = STATE_DIR) {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(sweepMarkerPath(moscowDate(), dir), new Date().toISOString());
+  } catch (error) {
+    log('daily-bonus marker error', String(error));
+  }
+}
+
+/**
+ * Прошёл ли сегодняшний час забора (05:00 МСК).
+ *
+ * Отдельно от «сколько до следующего»: нужен именно факт «час уже наступил» — по нему
+ * воркер решает, догонять ли обход сразу после старта.
+ */
+function dailyBonusTimePassed(now = new Date()) {
+  const hourUtc = (DAILY_BONUS_HOUR_MSK - 3 + 24) % 24;
+  const start = new Date(now);
+  start.setUTCHours(hourUtc, 0, 0, 0);
+  return now.getTime() >= start.getTime();
 }
 
 /** Сколько миллисекунд до следующего DAILY_BONUS_HOUR_MSK по Москве (UTC+3). */
-function msUntilDailyBonus() {
+function msUntilDailyBonus(now = new Date()) {
   const hourUtc = (DAILY_BONUS_HOUR_MSK - 3 + 24) % 24;
-  const now = new Date();
   const target = new Date(now);
   target.setUTCHours(hourUtc, 0, 0, 0);
   if (target.getTime() <= now.getTime()) target.setUTCDate(target.getUTCDate() + 1);
@@ -174,13 +246,30 @@ async function startPollLoop() {
   }
 }
 
-if (!TOKEN || !SECRET) {
-  log('TELEGRAM_BOT_TOKEN / REMINDERS_INTERNAL_SECRET не заданы — простаиваю (настройте env).');
-  setInterval(() => log('ожидаю настройки env...'), 10 * 60_000);
-} else {
-  log(`старт: base=${BASE}, dispatch каждые ${DISPATCH_INTERVAL_MS}ms, сверка журнала каждые ${RECONCILE_INTERVAL_MS}ms, забор бонусов в ${DAILY_BONUS_HOUR_MSK}:00 МСК, poll timeout ${POLL_TIMEOUT_S}s`);
-  startDispatchLoop();
-  startReconcileLoop();
-  startDailyBonusLoop();
-  startPollLoop();
+// Запуск циклов — только когда файл запущен как программа. Импорт (тест) не должен
+// поднимать таймеры и лонг-полл Telegram.
+const isEntryPoint =
+  typeof process.argv[1] === 'string' && /reminders-worker\.mjs$/.test(process.argv[1]);
+
+if (isEntryPoint) {
+  if (!TOKEN || !SECRET) {
+    log('TELEGRAM_BOT_TOKEN / REMINDERS_INTERNAL_SECRET не заданы — простаиваю (настройте env).');
+    setInterval(() => log('ожидаю настройки env...'), 10 * 60_000);
+  } else {
+    log(`старт: base=${BASE}, dispatch каждые ${DISPATCH_INTERVAL_MS}ms, сверка журнала каждые ${RECONCILE_INTERVAL_MS}ms, забор бонусов в ${DAILY_BONUS_HOUR_MSK}:00 МСК, poll timeout ${POLL_TIMEOUT_S}s`);
+    startDispatchLoop();
+    startReconcileLoop();
+    startDailyBonusLoop();
+    startPollLoop();
+  }
 }
+
+// Чистые помощники расписания — под тест (scripts/reminders-worker.test.ts).
+export {
+  dailyBonusTimePassed,
+  markSweepDone,
+  moscowDate,
+  msUntilDailyBonus,
+  sweepDoneToday,
+  sweepMarkerPath,
+};

@@ -225,6 +225,31 @@ describe('ежесуточный забор бонусов (D-191-бис)', () =
     expect(rows.length).toBe(0);
   });
 
+  it('сбой на одном аккаунте не обрывает обход — остальные забирают бонус', async () => {
+    // Живая находка 18.11: исключение на одном аккаунте убивало обход ЦЕЛИКОМ —
+    // и сутки обхода терялись: у остальных клетка вендора не сдвигалась, и серия
+    // дней подряд рвалась. Теперь сбойный аккаунт считается неудачей, а обход идёт
+    // дальше.
+    await makeAccount('Сбойный', 'broken@example.test');
+    await makeAccount('Живой', 'alive@example.test');
+
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    claim.claimDailyBonus.mockImplementationOnce(async () => {
+      throw new Error('вендор оборвался');
+    });
+
+    const report = await sweepDailyBonus({ now: NOW });
+    quiet.mockRestore();
+
+    expect(report.accounts).toBe(2);
+    expect(report.failed).toBe(1);
+    expect(report.claimed).toBe(1);
+
+    const rows = await refs.current!.select().from(accountsDailyBonus);
+    expect(rows.length).toBe(1); // живой аккаунт в леджере есть, сбойный — нет
+    expect(rows[0]!.claimResult).toBe(1);
+  });
+
   it('выдача записывается в леджер: кому и сколько очков', async () => {
     const accountId = await makeAccount('Раздаваемый', 'given@example.test');
     await sweepDailyBonus({ now: NOW });
