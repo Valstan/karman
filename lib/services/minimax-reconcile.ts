@@ -229,6 +229,20 @@ export async function reconcileActivations(
 
   report.skipped = report.rows - releaseIds.length - spentIds.length;
 
+  // Курсор для следующего прохода: время самой поздней ВЫДАЧИ, которую мы посмотрели
+  // (не время проверки!). Сторож идёт по дереву выдачи вверх по времени — от этого
+  // момента к новым выдачам (мадат владельца 18.11, 21:40 МСК).
+  //
+  // Считаем ДО раннего выхода: даже когда вердиктов нет (всё уже помечено пустыми),
+  // курсор должен двигаться — иначе сторож повторял бы один и тот же кусок дня.
+  let latestMs: number | null = null;
+  for (const row of rows) {
+    const ms = new Date(row.handedAt).getTime();
+    if (Number.isNaN(ms)) continue;
+    if (latestMs === null || ms > latestMs) latestMs = ms;
+  }
+  if (latestMs !== null) report.cursor = new Date(latestMs).toISOString();
+
   if (releaseIds.length === 0 && spentIds.length === 0) return report;
 
   // Очки последней НАСТОЯЩЕЙ активации (до сегодняшней) — их вернём в строку аккаунта,
@@ -301,14 +315,5 @@ export async function reconcileActivations(
   report.releasedIds = releaseIds;
   report.correctedIds = [...corrections.keys()];
   report.spentIds = spentIds;
-  // Курсор для следующего прохода: время самой поздней ВЫДАЧИ, которую мы посмотрели
-  // (не время проверки!). Сторож идёт по дереву выдачи вверх по времени — от этого
-  // момента к новым выдачам (мадат владельца 18.11, 21:40 МСК).
-  let latestMs: number | null = null;
-  for (const row of rows) {
-    const ms = new Date(row.handedAt).getTime();
-    if (latestMs === null || ms > latestMs) latestMs = ms;
-  }
-  if (latestMs !== null) report.cursor = new Date(latestMs).toISOString();
   return report;
 }

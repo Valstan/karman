@@ -32,6 +32,9 @@ const DISPATCH_INTERVAL_MS = Number(process.env.REMINDERS_DISPATCH_INTERVAL_MS |
 // Сверка журнала активаций с панелью MiniMax: раз в полчаса (заказ владельца 17.11).
 // автосверка; сверка их сама освобождает и уточняет.
 const RECONCILE_INTERVAL_MS = Number(process.env.MINIMAX_RECONCILE_INTERVAL_MS || 30 * 60_000);
+// Повтор сверки, если она не удалась (воркер после деплою поднимается раньше
+// приложения и первый запрос падает) — иначе сверка пропускала бы полчаса.
+const RECONCILE_RETRY_MS = Number(process.env.MINIMAX_RECONCILE_RETRY_MS || 5 * 60_000);
 // Ежесуточный забор бонусов MiniMax: час в МСК (по умолчанию 5 утра).
 // 05:00 МСК выбран не «на глаз»: сутки MiniMax считаются по поясу запроса, а поясов
 // у нас два — московский (владелец) и UTC (потребитель); их границы — 00:00 и 03:00
@@ -133,14 +136,20 @@ function startReconcileLoop() {
         cursor ? { cursor } : {},
       );
       if (!res.ok) {
-        log('reconcile HTTP', res.status);
+        log('reconcile HTTP', res.status, '— повтор через 5 мин');
+        setTimeout(tick, RECONCILE_RETRY_MS);
         return;
       }
       const body = await res.json().catch(() => null);
       const next = body?.report?.cursor;
       if (typeof next === 'string' && next) writeReconcileCursor(next);
     } catch (error) {
-      log('reconcile error', String(error));
+      // Воркер после деплоя поднимается РАНЬШЕ приложения (тот же порядок, что и
+      // у догоняющего забора бонусов) — и первый запрос падает. Раньше это означало
+      // «сверка не случится до следующего тика через полчаса»; теперь повтор через
+      // 5 минут.
+      log('reconcile error', String(error), '— повтор через 5 мин');
+      setTimeout(tick, RECONCILE_RETRY_MS);
     }
   };
   setInterval(tick, RECONCILE_INTERVAL_MS);
