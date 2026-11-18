@@ -92,11 +92,53 @@ function startDispatchLoop() {
  * предсказаний по панели. Вендора не дёргает — берёт ответы автосверки, поэтому
  * раз в полчаса обходится бесплатно.
  */
+/**
+ * Курсор сторожа: до какой ВЫДАЧИ он уже смотрел (ISO).
+ *
+ * Сторож идёт по дереву выдачи вверх по времени (мадат владельца 18.11, 21:40 МСК):
+ * от последней проверенной выдачи к новым — и не трогает выдачи моложе получаса
+ * («возможно ещё в работе и проверять его ещё рано»).
+ *
+ * Хранится в файле состояния рядом с маркером забора: переживает рестарт воркера,
+ * а потеря файла не страшна — проверки идемпотентны, просто пройдёт лишний раз.
+ */
+function reconcileCursorPath() {
+  return path.join(STATE_DIR, 'reconcile-cursor.txt');
+}
+
+function readReconcileCursor() {
+  try {
+    const value = fs.readFileSync(reconcileCursorPath(), 'utf8').trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
+function writeReconcileCursor(cursor) {
+  try {
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    fs.writeFileSync(reconcileCursorPath(), cursor);
+  } catch (error) {
+    log('reconcile cursor error', String(error));
+  }
+}
+
 function startReconcileLoop() {
   const tick = async () => {
     try {
-      const res = await postInternal('/api/internal/minimax/reconcile', {});
-      if (!res.ok) log('reconcile HTTP', res.status);
+      const cursor = readReconcileCursor();
+      const res = await postInternal(
+        '/api/internal/minimax/reconcile',
+        cursor ? { cursor } : {},
+      );
+      if (!res.ok) {
+        log('reconcile HTTP', res.status);
+        return;
+      }
+      const body = await res.json().catch(() => null);
+      const next = body?.report?.cursor;
+      if (typeof next === 'string' && next) writeReconcileCursor(next);
     } catch (error) {
       log('reconcile error', String(error));
     }

@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import { after } from 'next/server';
 import { checkInternalBearer } from '@/lib/telegram/config';
 import { reconcileActivations } from '@/lib/services/minimax-reconcile';
 
@@ -22,6 +21,13 @@ import { reconcileActivations } from '@/lib/services/minimax-reconcile';
 // В ФОНЕ: сверка ходит по всем аккаунтам с записями за сегодня. Ответ уходит сразу,
 // работа продолжается после него — иначе долгий запрос упёрся бы в таймаут прокси.
 
+// Тело запроса (всё необязательно):
+//   { "cursor": "2026-11-18T18:30:00.000Z" } — до какой выдачи сторож уже смотрел.
+//   Без курсора сторож проверяет все выдачи дня, которым уже не меньше получаса.
+//
+// СИНХРОННО (раньше было в фоне): сверка — чистая работа с БД, вендора не дёргает,
+// а окно у неё узкое (выдачи не моложе получаса). Зато воркер получает курсор в
+// ответе и идёт дальше по дереву выдачи, не проверяя одно и то же дважды.
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
@@ -30,23 +36,28 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
-  after(async () => {
-    try {
-      const report = await reconcileActivations(new Date());
-      console.log(
-        '[minimax/reconcile] день %s: строк %d, освобождено %d (%d очк.), уточнено %d (%d очк.), не тронуто %d',
-        report.today,
-        report.rows,
-        report.released,
-        report.releasedPoints,
-        report.corrected,
-        report.correctedPoints,
-        report.skipped,
-      );
-    } catch (error) {
-      console.error('[minimax/reconcile] ошибка сверки', error);
-    }
-  });
+  const body = (await req.json().catch(() => ({}))) as {
+    cursor?: string | null;
+  };
 
-  return NextResponse.json({ started: true });
+  try {
+    const report = await reconcileActivations(new Date(), {
+      cursor: typeof body.cursor === 'string' ? body.cursor : null,
+    });
+    console.log(
+      '[minimax/reconcile] день %s: строк %d, освобождено %d (%d очк.), уточнено %d (%d очк.), не тронуто %d, курсор %s',
+      report.today,
+      report.rows,
+      report.released,
+      report.releasedPoints,
+      report.corrected,
+      report.correctedPoints,
+      report.skipped,
+      report.cursor ?? '-',
+    );
+    return NextResponse.json({ ok: true, report });
+  } catch (error) {
+    console.error('[minimax/reconcile] ошибка сверки', error);
+    return NextResponse.json({ error: 'reconcile_failed' }, { status: 500 });
+  }
 }

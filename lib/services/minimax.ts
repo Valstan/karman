@@ -451,6 +451,12 @@ export async function issueAccount(
   // Кандидатов перебираем: аккаунт может оказаться непригодным (цепочка токенов
   // оборвана) или его только что забрал другой проект — тогда берём следующего, а
   // не отдаём потребителю пустоту.
+  //
+  // СКОЛЬКО КАНДИДАТОВ (живая находка 18.11, 21:00 МСК): пять было мало. Пул
+  // показывал 101 свободный аккаунт, а потребитель получал «no_free_accounts»:
+  // первые пять кандидатов оказывались невыдаваемыми (access уже отдан, цепочка
+  // не оживает), и цикл сдавался, не дойдя до живых. Теперь перебираем 25 — и
+  // говорим ЧЕСТНО, почему не выдали (счётчики причин — в аудите).
   const excluded = new Set(filters.excludeIds ?? []);
   const pick = () =>
     pickPoolAccount(accounts, now, {
@@ -461,12 +467,14 @@ export async function issueAccount(
     });
   let picked = pick();
   let handover: AccessHandover | null = null;
-  for (let attempt = 0; attempt < 5 && picked.account; attempt += 1) {
+  const skipped: { id: number; why: string }[] = [];
+  for (let attempt = 0; attempt < 25 && picked.account; attempt += 1) {
     const candidate = picked.account;
     // 1) Токен: протухший access оживляем по refresh; оборванная цепочка — кандидат
     //    негоден, идём к следующему.
     const token = await ensureLiveAccessToken(candidate.id, now);
     if (!token) {
+      skipped.push({ id: candidate.id, why: 'цепочка токенов не оживает' });
       excluded.add(candidate.id);
       picked = pick();
       continue;
@@ -488,6 +496,7 @@ export async function issueAccount(
       userId: caller.owner.id,
     });
     if (state && state.points <= 0) {
+      skipped.push({ id: candidate.id, why: 'панель: очков нет' });
       excluded.add(candidate.id);
       picked = pick();
       continue;
@@ -526,6 +535,7 @@ export async function issueAccount(
       { onlyIfFree: true },
     );
     if (!claimed) {
+      skipped.push({ id: candidate.id, why: 'только что забрал другой проект' });
       excluded.add(candidate.id);
       picked = pick();
       continue;
@@ -537,20 +547,31 @@ export async function issueAccount(
   }
 
   if (!picked.account || !handover) {
+    // ПРИЧИНА ЧЕСТНО (живая находка 18.11, 21:00 МСК): раньше отказ всегда
+    // выглядел как «свободных аккаунтов нет», даже когда пул был полон, а
+    // невыдаваемыми оказывались первые кандидаты. Потребитель видел
+    // «no_free_accounts» и думал, что пул пуст. Теперь различаем: пул пуст —
+    // `no_free_accounts`; пул полон, но выдавать некому — `no_handable_accounts`.
+    const reason: PoolOffer['reason'] =
+      skipped.length > 0 ? 'no_handable_accounts' : (picked.reason ?? 'no_free_accounts');
+    const whyList = skipped
+      .slice(0, 5)
+      .map((s) => `#${s.id} ${s.why}`)
+      .join(', ');
     await logAudit(
       caller.roomId,
       caller.tokenId,
       'minimax_no_accounts',
       `свободных аккаунтов нет (свободно ${picked.free}, скоро освободятся ${picked.soon}${
         filters.excludeIds?.length ? `, исключено ${filters.excludeIds.length}` : ''
-      })`,
+      }${whyList ? `; пропущено кандидатов: ${whyList}` : ''})`,
       ip,
       caller.actor,
     );
     return {
       ok: true,
       offer: buildOffer(
-        { ...picked, account: null, tier: null, reason: picked.reason ?? 'no_free_accounts' },
+        { ...picked, account: null, tier: null, reason },
         { project: caller.projectName, today, now },
       ),
     };
