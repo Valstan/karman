@@ -372,7 +372,13 @@ export function isSpent(
  * не должен.
  */
 export function isUnavailable(
-  account: { usedAt: string | null; weekExhausted?: boolean },
+  account: {
+    usedAt: string | null;
+    weekExhausted?: boolean;
+    panelStatus?: number | null;
+    panelPoints?: number | null;
+    bonusRemaining?: number | null;
+  },
   now: Date = new Date(),
 ): boolean {
   return isSpent(account, now) || account.weekExhausted === true;
