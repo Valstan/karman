@@ -321,6 +321,57 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     expect(result.error.status).toBe(403);
   });
 
+  /**
+   * Статистика — по проекту, ДЛЯ КОГО потребитель взял аккаунт (заказ владельца
+   * 18.11: «от комнаты brain приходит информация, какому проекту запрашивается
+   * аккаунт? Если присылает — и аккаунт тому проекту в статистику клади»).
+   *
+   * Заголовок `X-MiniMax-Project` присылает brain (17.11: 79 выдач в «MatricaRMZ»),
+   * а в журнале всё лежало под комнатой-владельцем («brain») — по проектам не было
+   * видно, куда ушло. Теперь журнальный проект — запрошенный.
+   */
+  it('аккаунт уходит в статистику запрошенного проекта, а не комнаты', async () => {
+    const accountId = await makeAccount('Под проект', 'proj@example.test', null, null);
+    await makeCheckIn(accountId, '2026-11-12', 2);
+    await makeTokenPair(accountId);
+
+    const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', { project: 'MatricaRMZ' }, NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const rows = await refs.current!
+      .select({ projectId: accountsUsage.projectId })
+      .from(accountsUsage)
+      .where(and(eq(accountsUsage.accountId, accountId), eq(accountsUsage.usedOn, TODAY)));
+    expect(rows.length).toBe(1);
+    const [project] = await refs.current!
+      .select({ name: accountsProject.name })
+      .from(accountsProject)
+      .where(eq(accountsProject.id, rows[0]!.projectId!));
+    expect(project?.name).toBe('MatricaRMZ');
+  });
+
+  it('без заголовка журнал остаётся за комнатой-владельцем', async () => {
+    const accountId = await makeAccount('Без проекта', 'noproj@example.test', null, null);
+    await makeCheckIn(accountId, '2026-11-12', 2);
+    await makeTokenPair(accountId);
+
+    const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const rows = await refs.current!
+      .select({ projectId: accountsUsage.projectId })
+      .from(accountsUsage)
+      .where(and(eq(accountsUsage.accountId, accountId), eq(accountsUsage.usedOn, TODAY)));
+    expect(rows.length).toBe(1);
+    const [project] = await refs.current!
+      .select({ name: accountsProject.name })
+      .from(accountsProject)
+      .where(eq(accountsProject.id, rows[0]!.projectId!));
+    expect(project?.name).toBe('SARAFAN');
+  });
+
   it('exclude — проект может пропустить неподошедший аккаунт', async () => {
     const first = await makeAccount('Первый', 'first@example.test', null, null);
     const second = await makeAccount('Второй', 'second@example.test', null, null);

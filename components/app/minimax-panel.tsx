@@ -26,6 +26,7 @@ import {
   splitAccounts,
 } from '@/lib/accounts/rotation';
 import { cohortStats, weeklyPoolStats } from '@/lib/accounts/weekly';
+import { availableByTier } from '@/lib/accounts/pool';
 import { centeredWindowFeatures } from '@/lib/accounts/window-features';
 import { MinimaxFormDialog } from './minimax-form-dialog';
 import { MinimaxActivateDialog } from './minimax-activate-dialog';
@@ -160,6 +161,16 @@ export function MinimaxPanel({
     () => accountPoolSummary(accounts, new Date(clockMs)),
     [accounts, clockMs],
   );
+
+  // Сколько СВОБОДНЫХ аккаунтов каждого очкового класса — для двух кнопок выдачи
+  // (заказ владельца 18.11). В счёт идут только аккаунты с добытой парой токенов:
+  // без пары отдавать нечего (вход в MiniMax делает владелец).
+  const available = useMemo(() => {
+    const ready = [...tokenStates.values()]
+      .filter((row) => row.state === 'obtained')
+      .map((row) => row.account_id);
+    return availableByTier(accounts, new Date(clockMs), ready);
+  }, [accounts, clockMs, tokenStates]);
 
   // Сводка по недельной квоте (заказ владельца 07.11): сколько активаций
   // возможно сегодня, сколько осталось в неделях и сколько это очков, плюс
@@ -318,15 +329,21 @@ export function MinimaxPanel({
    * «кто сейчас следующий» перечитывается с сервера, и окно открывается уже
    * для СВЕЖЕГО аккаунта — того, что дольше всех не активировался.
    */
-  async function openNextAccountWindow() {
-    const outcome = await nextAccountAction();
+  async function openNextAccountWindow(tier?: 'points_400' | 'points_1000') {
+    const outcome = await nextAccountAction(tier);
     if (!outcome.ok) {
       toast.error(outcome.error);
       return;
     }
     const fresh = outcome.data;
     if (!fresh) {
-      toast.info('Свободных аккаунтов нет — все погашены или недели исчерпаны');
+      toast.info(
+        tier === 'points_1000'
+          ? 'Тысячных на сегодня закончились'
+          : tier === 'points_400'
+            ? 'Четырёхсотовых на сегодня закончились'
+            : 'Свободных аккаунтов нет — все погашены или недели исчерпаны',
+      );
       router.refresh();
       return;
     }
@@ -505,8 +522,34 @@ export function MinimaxPanel({
               неделе (в её первый день срез из одних суток — случайная цифра),
               а по срезу последних 10 полных суток; «хватит ли на неделю» —
               покрывает ли недельный запас неделю потребления. */}
+          {/* Две кнопки выдачи — по очковому классу (заказ владельца 18.11): одна
+              отдаёт аккаунты на 400 очков, другая — на 1000. Если аккаунтов
+              соответствующего класса нет, кнопка так и говорит: «На сегодня
+              закончились». */}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant={available.points_400 > 0 ? 'default' : 'outline'}
+              disabled={available.points_400 === 0}
+              onClick={() => void openNextAccountWindow('points_400')}
+              title="Выдать аккаунт на 400 очков (откроется быстрое окно, почта скопируется сама)"
+            >
+              {available.points_400 > 0
+                ? `Выдать 400-очковый (${available.points_400})`
+                : 'На сегодня закончились'}
+            </Button>
+            <Button
+              variant={available.points_1000 > 0 ? 'default' : 'outline'}
+              disabled={available.points_1000 === 0}
+              onClick={() => void openNextAccountWindow('points_1000')}
+              title="Выдать аккаунт на 1000 очков (бонусная клетка)"
+            >
+              {available.points_1000 > 0
+                ? `Выдать 1000-очковый (${available.points_1000})`
+                : 'На сегодня закончились'}
+            </Button>
+          </div>
           <div className="text-sm font-medium text-muted-foreground">
-            Свободных - {pool.free}, Скоро освободятся - {pool.soon}, За день - {week.today}
+            Живых аккаунтов - {pool.free}, За день - {week.today}
             {week.freesIn5h > 0 ? ` (в ближайшие 5 ч - ${week.freesIn5h})` : ''},
             За неделю - {week.week} ({week.weekPoints} очков, сброс {week.weekResetsOn})
             {week.pointsPerDay !== null
@@ -538,6 +581,9 @@ export function MinimaxPanel({
             </div>
           ) : null}
           <p className="-mt-4 text-xs text-muted-foreground">
+            Окно активации — до ночного сброса (03:00 МСК), а в 05:00 МСК мы забираем
+            бонусы у ВСЕХ аккаунтов (утренний обход) — с этого момента серия дней подряд не
+            рвётся ни у кого, и очки лежат готовыми к выдаче.
             Номер активации — серия дней подряд: отмечен вчера — вторая клетка, пропущен
             вчера — серия сгорела, снова первая. Недельная квота — календарная неделя
             (понедельник — воскресенье), лимиты обнуляются в ночь на понедельник.

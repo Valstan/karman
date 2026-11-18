@@ -24,6 +24,7 @@ import {
   freeBefore,
   isSpent,
   moscowToday,
+  panelAvailablePoints,
   sortAccounts,
   type AccountRotationRow,
   type ProjectUsage,
@@ -35,7 +36,6 @@ import {
   type PanelState,
 } from '@/lib/accounts/panel-state';
 import { OWNER_TIMEZONE } from '@/lib/minimax/panel';
-import { panelAvailablePoints } from '@/lib/accounts/pool';
 import {
   WEEKLY_ACTIVATION_LIMIT,
   pointsForIndex,
@@ -267,20 +267,26 @@ async function accountUsageStats(
  * потребителя» от «очки забрал потребитель — по аккаунту работают»: у забранной
  * клетки панель отдаёт остаток, а не номинал, и без леджера эти случаи неразличимы.
  */
-async function dailyBonusRemainders(
+async function dailyBonusStates(
   userId: number,
   today: string,
-): Promise<Map<number, number>> {
+): Promise<Map<number, { remaining: number | null; points: number | null; dayNo: number | null }>> {
   const rows = await db
     .select({
       accountId: accountsDailyBonus.accountId,
       remaining: accountsDailyBonus.remaining,
+      points: accountsDailyBonus.points,
+      dayNo: accountsDailyBonus.dayNo,
     })
     .from(accountsDailyBonus)
     .where(and(eq(accountsDailyBonus.userId, userId), eq(accountsDailyBonus.usedOn, today)));
-  const out = new Map<number, number>();
+  const out = new Map<number, { remaining: number | null; points: number | null; dayNo: number | null }>();
   for (const row of rows) {
-    if (row.remaining !== null) out.set(row.accountId, row.remaining);
+    out.set(row.accountId, {
+      remaining: row.remaining,
+      points: row.points,
+      dayNo: row.dayNo,
+    });
   }
   return out;
 }
@@ -308,7 +314,7 @@ export async function listAccounts(
     accountUsageStats(user),
     accountCheckIns(user),
     readPanelStates(user.id, timezoneId),
-    dailyBonusRemainders(user.id, today),
+    dailyBonusStates(user.id, today),
   ]);
   const states = weekStates(checkIns, today);
   const enriched = rows.map((row) => {
@@ -318,9 +324,11 @@ export async function listAccounts(
     return {
       ...withPanel,
       // Остаток очков по нашему леджеру бонусов: нужен, чтобы отличить «очки
-      // забрали мы и они ждут» от «по аккаунту работает потребитель» (заказ
-      // владельца 18.11).
-      bonusRemaining: bonusStates.get(row.id) ?? null,
+      // забрали мы и они ждут потребителя» от «по аккаунту работает потребитель»
+      // (заказ владельца 18.11) — и показать в строке аккаунта правду.
+      bonusRemaining: bonusStates.get(row.id)?.remaining ?? null,
+      bonusPoints: bonusStates.get(row.id)?.points ?? null,
+      bonusDayNo: bonusStates.get(row.id)?.dayNo ?? null,
       weekUsed: state?.week.used ?? 0,
       weekExhausted: state?.week.exhausted ?? false,
       // Чек-ин за сегодня уже был → сегодняшнего бонуса у аккаунта нет, и в

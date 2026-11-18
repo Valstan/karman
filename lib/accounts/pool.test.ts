@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  availableByTier,
   buildOffer,
   hintFor,
   pickPoolAccount,
@@ -328,6 +329,41 @@ describe('пул MiniMax: панель как источник правды', ()
     expect(hint.unverified).toBe(false);
   });
 
+  /**
+   * Доступных по очковому классу — для двух кнопок выдачи (заказ владельца 18.11):
+   * одна кнопка отдаёт аккаунты на 400 очков, другая — на 1000, а если таких нет,
+   * кнопка пишет «На сегодня закончились».
+   */
+  it('доступных по очковому классу — сколько 400-очковых и сколько 1000-очковых', () => {
+    const four = account(1, [auto('2026-11-12')], {
+      panelStatus: 2,
+      panelPoints: 400,
+      panelCellNo: 2,
+    });
+    const thousand = account(2, [auto('2026-11-12')], {
+      panelStatus: 2,
+      panelPoints: 1000,
+      panelCellNo: 4,
+    });
+    // С исчерпанной неделей в выдачу не идёт (окно простоя тут ни при чём — неделя
+    // кончилась, и аккаунт уходит вниз списка).
+    const exhausted = account(3, [auto('2026-11-12')], {
+      panelStatus: 2,
+      panelPoints: 400,
+      weekExhausted: true,
+    });
+
+    expect(availableByTier([four, thousand, exhausted], NOW, [1, 2, 3])).toEqual({
+      points_400: 1,
+      points_1000: 1,
+    });
+    // Без пары токенов отдавать нечего (вход в MiniMax делает владелец).
+    expect(availableByTier([four, thousand], NOW, [1])).toEqual({
+      points_400: 1,
+      points_1000: 0,
+    });
+  });
+
   it('панель ответила «очки сожжены» — подсказка по очкам нулевая', () => {
     const row = account(1, [auto('2026-11-12')], { panelStatus: 3, panelPoints: 400 });
     const hint = hintFor(row);
@@ -375,6 +411,35 @@ describe('пул MiniMax: панель как источник правды', ()
         bonusRemaining: null,
       });
       expect(hintFor(row).points).toBe(0);
+    });
+
+    /**
+     * Главное следствие правила «очки ещё есть»: аккаунт, чей бонус забрали мы
+     * утренним обходом, не выпадает из пула. Без этого после 05:00 МСК пул
+     * вымирал целиком — владелец видел «все аккаунты активированы», хотя
+     * потрачено было около десяти.
+     */
+    it('аккаунт с нашим забором — в обороте, его отдаём потребителю', () => {
+      const row = account(1, [auto('2026-11-12')], {
+        panelStatus: 3,
+        panelPoints: 400,
+        bonusRemaining: 400,
+      });
+      const picked = pickPoolAccount([row], NOW);
+      expect(picked.account?.id).toBe(1);
+      expect(picked.tier).toBe('points_400');
+      expect(picked.free).toBe(1);
+    });
+
+    it('а если очки уже сожжены — аккаунт из оборота выходит', () => {
+      const row = account(1, [auto('2026-11-12')], {
+        panelStatus: 3,
+        panelPoints: 0,
+        bonusRemaining: 400,
+      });
+      const picked = pickPoolAccount([row], NOW);
+      expect(picked.account).toBeNull();
+      expect(picked.free).toBe(0);
     });
   });
 

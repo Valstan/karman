@@ -109,7 +109,15 @@ export function MinimaxAccountRow({
             он помечен: модель клетки с панелью разошлась (живьём 16.11 — класс
             очков расходится у 48 аккаунтов из 109), и обещать её как факт нельзя. */}
         <div className="text-xs text-muted-foreground">
-          {panel && panel.can_claim ? (
+          {account.bonusPoints !== null && account.bonusPoints !== undefined ? (
+            account.bonusRemaining !== null &&
+            account.bonusRemaining !== undefined &&
+            account.bonusRemaining > 0 ? (
+              `бонус забран (клетка ${account.bonusDayNo ?? '—'}): ${account.bonusPoints} очков, осталось ${account.bonusRemaining} — ждёт потребителя`
+            ) : (
+              `бонус забран (клетка ${account.bonusDayNo ?? '—'}: ${account.bonusPoints} очков) — очки сожжены потребителем`
+            )
+          ) : panel && panel.can_claim ? (
             `клетка ${panel.cell_no || '—'} — ${panel.points} очков (панель MiniMax)`
           ) : panel ? (
             'панель MiniMax: очки сегодня уже сожжены'
@@ -133,7 +141,11 @@ export function MinimaxAccountRow({
             {dailyState.stale
               ? `панель MiniMax: ответ устарел (${formatCheckedAt(dailyState.checked_at, referenceMs)}) — ждём сверки`
               : `панель MiniMax: ${
-                  dailyState.can_claim ? `очки есть: ${dailyState.points}` : 'очки сожжены — ждём сброса'
+                  dailyState.can_claim
+                    ? `очки есть: ${dailyState.points}`
+                    : account.bonusPoints
+                      ? `бонус забран, очки ждут потребителя (${dailyState.points})`
+                      : 'очки сожжены — ждём сброса'
                 } (${formatCheckedAt(dailyState.checked_at, referenceMs)})`}
           </div>
         ) : null}
