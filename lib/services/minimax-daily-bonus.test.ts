@@ -160,6 +160,37 @@ describe('ежесуточный забор бонусов (D-191-бис)', () =
     expect(rows.length).toBe(1);
   });
 
+  it('повторный обход не обнуляет остаток у аккаунта, чью клетку забрали мы', async () => {
+    // Живой случай 18.11: повторный забор возвращает 2, и если бы остаток
+    // перезаписывался по «результату этого прогона», очки наших аккаунтов
+    // обнулились бы и аккаунты выпали бы из выдачи.
+    await makeAccount('Наш', 'ours@example.test');
+    await sweepDailyBonus({ now: NOW });
+
+    claim.claimDailyBonus.mockResolvedValue(claimAnswer({ claim_result: 2 }));
+    await sweepDailyBonus({ now: NOW });
+
+    const [row] = await refs.current!.select().from(accountsDailyBonus);
+    expect(row!.claimResult).toBe(1); // «забрали мы» — не понижаем
+    expect(row!.remaining).toBe(400); // и остаток на месте
+  });
+
+  it('пометка сторожа «пусто» переживает повторный обход', async () => {
+    await makeAccount('Их', 'theirs@example.test');
+    await sweepDailyBonus({ now: NOW });
+    // Сторож признал аккаунт пустым на сегодня.
+    await refs.current!
+      .update(accountsDailyBonus)
+      .set({ remaining: 0, claimResult: 2 })
+      .where(eq(accountsDailyBonus.accountId, 1));
+
+    claim.claimDailyBonus.mockResolvedValue(claimAnswer({ claim_result: 2 }));
+    await sweepDailyBonus({ now: NOW });
+
+    const [row] = await refs.current!.select().from(accountsDailyBonus);
+    expect(row!.remaining).toBe(0); // пометка не потерялась
+  });
+
   it('аккаунт без цепочки токенов пропускается, а не ломает обход', async () => {
     await makeAccount('Живой', 'alive@example.test');
     const [broken] = await refs.current!
