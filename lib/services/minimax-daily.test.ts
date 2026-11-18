@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PGlite } from '@electric-sql/pglite';
 import { eq } from 'drizzle-orm';
 import { createTestDb, type TestDb } from '@/lib/db/test-db';
-import { accountToken, accountsAccount } from '@/lib/db/schema';
+import { accountToken, accountsAccount, accountsDailyBonus, accountsUsage } from '@/lib/db/schema';
 import { encryptSecret } from '@/lib/secrets/crypto';
 import type { SessionUser } from '@/lib/auth/rbac';
 
@@ -36,12 +36,15 @@ import {
   dailyStates,
   DEFAULT_TIMEZONE,
   OWNER_TIMEZONE,
+  panelSweepDecision,
+  panelSweepTargets,
   sweepPanelStates,
   syncDailyStates,
   timezoneForRoom,
 } from '@/lib/services/minimax-daily';
 import { readPanelStates } from '@/lib/accounts/panel-state';
-import { PANEL_REFRESH_AGE_MS } from '@/lib/accounts/panel-state';
+import { PANEL_IN_WORK_REFRESH_MS, PANEL_REFRESH_AGE_MS } from '@/lib/accounts/panel-state';
+import { moscowToday } from '@/lib/accounts/rotation';
 
 let pg: PGlite | undefined;
 
@@ -263,5 +266,158 @@ describe('сверка суток: автосверка', () => {
     });
     expect(refreshed.checked).toBe(1);
     expect(oauth.signinStatus).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * Антиспам (заказ владельца 18.11): у вендора спрашиваем только там, где ответ
+ * что-то меняет.
+ *
+ * Опрос панели по ВСЕМ аккаунтам стоил ≈21 000 обращений к MiniMax в сутки (228
+ * состояний × 92 запуска) — риск блокировки. После утреннего забора бонусов
+ * подавляющему большинству аккаунтов отвечать нечего: правда о них — в леджере.
+ */
+describe('антиспам: кого автосверка спрашивает у вендора', () => {
+  const targets = { inWork: new Set([2]), claimedToday: new Set([1, 2, 3]) };
+
+  it('забрали мы, по аккаунту никто не работает — не спрашиваем вовсе', () => {
+    expect(panelSweepDecision(1, targets, new Date(), PANEL_REFRESH_AGE_MS)).toEqual({
+      read: false,
+    });
+  });
+
+  it('в работе — спрашиваем, но не чаще раза в час', () => {
+    // 2026-11-18T12:00Z = 15:00 МСК — не ночное окно.
+    const decision = panelSweepDecision(
+      2,
+      targets,
+      new Date('2026-11-18T12:00:00Z'),
+      PANEL_REFRESH_AGE_MS,
+    );
+    expect(decision).toEqual({ read: true, refreshAfterMs: PANEL_IN_WORK_REFRESH_MS });
+  });
+
+  it('в ночном окне 00:00–03:00 МСК — по обычному порогу: пояса расходятся', () => {
+    // 2026-11-17T22:00Z = 01:00 МСК 18-го — ночное окно.
+    const night = new Date('2026-11-17T22:00:00Z');
+    expect(panelSweepDecision(2, targets, night, PANEL_REFRESH_AGE_MS)).toEqual({
+      read: true,
+      refreshAfterMs: PANEL_REFRESH_AGE_MS,
+    });
+  });
+
+  it('забор не прошёл — по обычному порогу: очки могут появиться', () => {
+    const empty = { inWork: new Set<number>(), claimedToday: new Set<number>() };
+    expect(panelSweepDecision(9, empty, new Date(), PANEL_REFRESH_AGE_MS)).toEqual({
+      read: true,
+      refreshAfterMs: PANEL_REFRESH_AGE_MS,
+    });
+  });
+
+  it('фокус собирается из БД: в работе — по журналу, забрали — по леджеру', async () => {
+    const ours = await makeAccountWithPair('ours-focus@example.test');
+    const busy = await makeAccountWithPair('busy-focus@example.test');
+    const today = moscowToday(new Date());
+    for (const accountId of [ours, busy]) {
+      await refs.current!.insert(accountsDailyBonus).values({
+        userId: owner.id,
+        accountId,
+        usedOn: today,
+        dayNo: 3,
+        points: 400,
+        remaining: 400,
+        status: 3,
+        claimResult: 1,
+      });
+    }
+    // Отдан потребителю сегодня — только этот аккаунт «в работе».
+    await refs.current!.insert(accountsUsage).values({
+      userId: owner.id,
+      accountId: busy,
+      usedOn: today,
+      tokens: 400,
+    });
+
+    const targets = await panelSweepTargets(owner.id, new Date());
+    expect(targets.claimedToday.has(ours)).toBe(true);
+    expect(targets.inWork.has(ours)).toBe(false);
+    expect(targets.inWork.has(busy)).toBe(true);
+  });
+
+  it('сквозным путём: мы забрали бонус сами и никто не работает — вендора не дёргаем', async () => {
+    const accountId = await makeAccountWithPair('ours@example.test');
+    await refs.current!.insert(accountsDailyBonus).values({
+      userId: owner.id,
+      accountId,
+      usedOn: moscowToday(new Date()),
+      dayNo: 3,
+      points: 400,
+      remaining: 400,
+      status: 3,
+      claimResult: 1,
+    });
+    oauth.signinStatus.mockResolvedValue(panelResponse(true));
+
+    const result = await sweepPanelStates(new Date());
+    // Ни в одном поясе не спросили (аккаунт один × два пояса).
+    expect(result.notPolled).toBe(2);
+    expect(result.checked).toBe(0);
+    expect(oauth.signinStatus).not.toHaveBeenCalled();
+  });
+
+  it('сквозным путём: аккаунт в работе — спрашиваем, но не чаще раза в час', async () => {
+    const accountId = await makeAccountWithPair('busy@example.test');
+    await refs.current!.insert(accountsDailyBonus).values({
+      userId: owner.id,
+      accountId,
+      usedOn: moscowToday(new Date()),
+      dayNo: 3,
+      points: 400,
+      remaining: 400,
+      status: 3,
+      claimResult: 1,
+    });
+    await refs.current!.insert(accountsUsage).values({
+      userId: owner.id,
+      accountId,
+      usedOn: moscowToday(new Date()),
+      tokens: 400,
+    });
+    oauth.signinStatus.mockResolvedValue(panelResponse(true));
+
+    const now = new Date();
+    const first = await sweepPanelStates(now);
+    expect(first.checked).toBe(2); // оба пояса
+    expect(first.notPolled).toBe(0);
+    expect(oauth.signinStatus).toHaveBeenCalledTimes(2);
+
+    // Через 20 минут состояние ещё годное (порог для «в работе» — час) — не дёргаем.
+    oauth.signinStatus.mockClear();
+    const second = await sweepPanelStates(new Date(now.getTime() + 20 * 60_000));
+    expect(second.checked).toBe(0);
+    expect(oauth.signinStatus).not.toHaveBeenCalled();
+
+    // Через час — перечитываем.
+    const third = await sweepPanelStates(new Date(now.getTime() + 61 * 60_000));
+    expect(third.checked).toBe(2);
+  });
+
+  it('кнопка владельца («сверить сейчас») спрашивает про всё — это его право', async () => {
+    const accountId = await makeAccountWithPair('owner-button@example.test');
+    await refs.current!.insert(accountsDailyBonus).values({
+      userId: owner.id,
+      accountId,
+      usedOn: moscowToday(new Date()),
+      dayNo: 3,
+      points: 400,
+      remaining: 400,
+      status: 3,
+      claimResult: 1,
+    });
+    oauth.signinStatus.mockResolvedValue(panelResponse(true));
+
+    const result = await sweepPanelStates(new Date(), { force: true });
+    expect(result.notPolled).toBe(0);
+    expect(result.checked).toBe(2);
   });
 });

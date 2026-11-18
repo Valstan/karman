@@ -10,7 +10,12 @@ import {
   PANEL_STATUS_CLAIMABLE,
   PANEL_STATUS_CLAIMED,
 } from '@/lib/minimax/panel';
-import { isFreshPanelState, readPanelStates, type PanelState } from '@/lib/accounts/panel-state';
+import {
+  isFreshPanelState,
+  readPanelStates,
+  PANEL_RECONCILE_TTL_MS,
+  type PanelState,
+} from '@/lib/accounts/panel-state';
 
 /**
  * Сверка журнала активаций с панелью MiniMax (заказ владельца 17.11).
@@ -90,13 +95,23 @@ export function reconcileVerdict(
   owner: PanelState | null | undefined,
   consumer: PanelState | null | undefined,
   now: Date = new Date(),
-  lastSeenPoints: number | null = null,
+  _lastSeenPoints: number | null = null,
 ): { verdict: ReconcileVerdict; cell: number | null; points: number | null } {
   const none = { verdict: 'skip' as const, cell: null, points: null };
   if (!owner || !consumer) return none;
-  // Протухший ответ панели — это «не знаю», а не «очков нет».
-  if (!isFreshPanelState(owner, now) || !isFreshPanelState(consumer, now)) return none;
+  // Протухший ответ панели — это «не знаю», а не «очков нет». Срок годности здесь
+  // СВОЙ (полтора часа): сверка идёт раз в полчаса, а аккаунты в работе
+  // автосверка перечитывает раз в час (антиспам, 18.11) — при общем сроке в
+  // полчаса сверка половину времени видела бы «не знаю».
+  if (
+    !isFreshPanelState(owner, now, PANEL_RECONCILE_TTL_MS) ||
+    !isFreshPanelState(consumer, now, PANEL_RECONCILE_TTL_MS)
+  ) {
+    return none;
+  }
 
+  // Клетку не забрал никто → потребитель взял аккаунт, но рантайм так и не стартовал
+  // (запись в журнале — фантом). Освобождаем.
   if (owner.status === PANEL_STATUS_CLAIMABLE && consumer.status === PANEL_STATUS_CLAIMABLE) {
     return { verdict: 'release', cell: null, points: null };
   }
@@ -104,32 +119,22 @@ export function reconcileVerdict(
     const cell = owner.cell_no;
     if (!Number.isInteger(cell) || cell < 1 || cell > 7) return none;
 
-    // Остаток очков по панели: у забранной клетки это ОСТАТОК, а не номинал.
-    // Ноль — очки сожжены (расход настоящий). Неноль — очки ещё лежат на
-    // аккаунте: их можно отдать другому потребителю (заказ владельца 18.11:
-    // бонус забирается заранее, а тратится работой).
-    const remaining = Math.min(owner.points ?? 0, consumer.points ?? 0);
-    if (remaining <= 0) {
-      return { verdict: 'correct', cell, points: pointsForIndex(cell) };
-    }
-    // Очки лежат. Кто их забрал — важно: если забор наш (утренний обход), то очки
-    // просто ждут потребителя, и аккаунт можно отдать другому. Если забрал
-    // ПОТРЕБИТЕЛЬ (строки в леджере нет — обход не работал), то по аккаунту
-    // работают, и отпускать его нельзя.
-    // Если баланс с прошлой проверки упал — по аккаунту работают: держим.
-    if (lastSeenPoints === null) {
-      return { verdict: 'correct', cell, points: pointsForIndex(cell) };
-    }
-    if (remaining < lastSeenPoints) {
-      return { verdict: 'correct', cell, points: pointsForIndex(cell) };
-    }
-    return { verdict: 'release', cell: null, points: null };
+    // Клетку забрали — но КТО, панель не говорит: остатка очков она не отдаёт
+    // (`points` клетки — её номинал; живая проверка 18.11: у аккаунта с потраченными
+    // очками панель отвечает `points: 1000, bonus_points: 0`). Значит, очки у
+    // кого-то в руках, и журнальная запись НЕ фантом: оставляем её, а клетку и
+    // номинал уточняем по панели.
+    //
+    // Освобождать такие записи нельзя (18.11): так в оборот возвращались аккаунты,
+    // чьи очки потребитель давно потратил, — и владелец получал их по кнопке выдачи.
+    // Мандат владельца: аккаунт, отданный сегодня, лежит погашенным до утра.
+    return { verdict: 'correct', cell, points: owner.points ?? pointsForIndex(cell) };
   }
   return none;
 }
 
 /**
- * Сверить журнал активаций за сегодня с панелью и привести записи в соответствие.
+ * Сверка журнала активаций за сегодня с панелью и привести записи в соответствие.
  *
  * @param now   текущий момент (всё считается по московской дате).
  * @param options.userId ограничить сверку владельцем (по умолчанию — все).

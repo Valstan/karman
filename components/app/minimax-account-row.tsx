@@ -135,8 +135,11 @@ export function MinimaxAccountRow({
         <div className="text-xs text-muted-foreground">
           Токен: {tokenState ? TOKEN_STATE_LABEL[tokenState] : '—'}
         </div>
-        {/* Ответ панели MiniMax — прочитан без траты очков (сверка 15.11, автосверка 16.11). */}
-        {dailyState ? (
+        {/* Ответ панели MiniMax — прочитан без траты очков (сверка 15.11, автосверка 16.11).
+            У аккаунта, чей сегодняшний бонус забрали МЫ (утренний обход), панель
+            больше не опрашивается — правда о нём в нашем леджере (строка выше).
+            «Ждём сверки» там было бы враньём: сверки не будет. */}
+        {dailyState && !(dailyState.stale && account.bonusPoints) ? (
           <div className="text-xs text-muted-foreground">
             {dailyState.stale
               ? `панель MiniMax: ответ устарел (${formatCheckedAt(dailyState.checked_at, referenceMs)}) — ждём сверки`

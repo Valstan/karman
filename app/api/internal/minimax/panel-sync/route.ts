@@ -35,10 +35,11 @@ export async function POST(req: Request) {
     try {
       const result = await sweepPanelStates(new Date(), { force: false });
       console.log(
-        '[minimax/panel-sync] владельцев: %d, прочитано: %d, пропущено (свежие): %d, очки есть: %d, ошибок: %d',
+        '[minimax/panel-sync] владельцев: %d, прочитано: %d, пропущено (свежие): %d, не спрашивали (правда в леджере): %d, очки есть: %d, ошибок: %d',
         result.owners,
         result.checked,
         result.skipped,
+        result.notPolled,
         result.claimable,
         result.failed,
       );

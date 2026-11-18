@@ -228,24 +228,29 @@ describe('ежесуточный забор бонусов (D-191-бис)', () =
     expect(stats.points).toBe(400);
     expect(stats.handed).toBe(1);
     expect(stats.handedPoints).toBe(400);
-    // Очки лежат на аккаунте (остаток 400) — потрачено 0, осталось 400.
+    // Клетку забрали МЫ → очки наши; из них 400 отдали потребителю → на
+    // аккаунтах не осталось ничего.
     expect(stats.spentPoints).toBe(0);
-    expect(stats.leftPoints).toBe(400);
+    expect(stats.leftPoints).toBe(0);
     expect(stats.byCell).toEqual([{ cell: 3, accounts: 1, points: 400 }]);
     expect(stats.byProject).toEqual([{ project: 'Мозг', accounts: 1, points: 400 }]);
   });
 
-  it('потраченные очки видны в статистике: остаток упал — потрачено', async () => {
+  it('потраченные очки видны в статистике: клетку забрал потребитель', async () => {
     const accountId = await makeAccount('Работающий', 'busy@example.test');
     await sweepDailyBonus({ now: NOW });
-    // Потребитель отработал часть очков: остаток 120.
+    // Клетку забрал НЕ мы (потребитель — обычно ночью, когда аккаунт не
+    // использовали): очки у него, и он их потратил. Панель остатка не
+    // показывает, поэтому признак — claim_result.
     await refs.current!
       .update(accountsDailyBonus)
-      .set({ remaining: 120 })
+      .set({ claimResult: 2 })
       .where(eq(accountsDailyBonus.accountId, accountId));
 
     const stats = await dailyBonusStats(TODAY);
-    expect(stats.spentPoints).toBe(280);
-    expect(stats.leftPoints).toBe(120);
+    expect(stats.claimed).toBe(0);
+    expect(stats.already).toBe(1);
+    expect(stats.spentPoints).toBe(400);
+    expect(stats.leftPoints).toBe(0);
   });
 });
