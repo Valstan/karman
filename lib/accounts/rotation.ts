@@ -329,9 +329,13 @@ export function isSpent(
     panelPoints?: number | null;
     bonusRemaining?: number | null;
     bonusOurs?: boolean | null;
+    bonusHandedAt?: string | null;
   },
   now: Date = new Date(),
 ): boolean {
+  // Аккаунт отдан потребителю сегодня — он в работе. Отметку в самом аккаунте
+  // (`used_at`) сверка может снять как фантомную, а в леджере отметка остаётся.
+  if (account.bonusHandedAt) return true;
   if (panelClaimable(account.panelStatus)) return false;
   // Клетку забрали МЫ (утренний обход; клетка вендора сдвинулась после прошлой
   // активации) → очки СВЕЖИЕ и наши: аккаунт в обороте, если его не отдали в
@@ -364,6 +368,7 @@ export function isUnavailable(
     panelPoints?: number | null;
     bonusRemaining?: number | null;
     bonusOurs?: boolean | null;
+    bonusHandedAt?: string | null;
   },
   now: Date = new Date(),
 ): boolean {
@@ -476,6 +481,15 @@ export type AccountRotationRow = {
   bonusPoints?: number | null;
   /** Клетка вендора по леджеру (1..7) — настоящая серия аккаунта. */
   bonusDayNo?: number | null;
+  /**
+   * Когда аккаунт отдали потребителю (леджер забора, ISO) или null.
+   *
+   * Отметку «взяли» в самом аккаунте (`used_at`) может снять сверка (она убирает
+   * фантомные записи), а вот в леджере отметка остаётся. По ней видно, что
+   * аккаунт у потребителя — и он лежит погашенным до утра (мандат владельца
+   * 18.11), даже если отметка в самом аккаунте уже снята.
+   */
+  bonusHandedAt?: string | null;
   /**
    * Забрали ли сегодняшнюю клетку МЫ (а не потребитель).
    *

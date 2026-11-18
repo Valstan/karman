@@ -297,7 +297,13 @@ async function dailyBonusStates(
 ): Promise<
   Map<
     number,
-    { remaining: number | null; points: number | null; dayNo: number | null; claimResult: number | null }
+    {
+      remaining: number | null;
+      points: number | null;
+      dayNo: number | null;
+      claimResult: number | null;
+      handedAt: string | null;
+    }
   >
 > {
   const rows = await db
@@ -307,12 +313,19 @@ async function dailyBonusStates(
       points: accountsDailyBonus.points,
       dayNo: accountsDailyBonus.dayNo,
       claimResult: accountsDailyBonus.claimResult,
+      handedAt: accountsDailyBonus.handedAt,
     })
     .from(accountsDailyBonus)
     .where(and(eq(accountsDailyBonus.userId, userId), eq(accountsDailyBonus.usedOn, today)));
   const out = new Map<
     number,
-    { remaining: number | null; points: number | null; dayNo: number | null; claimResult: number | null }
+    {
+      remaining: number | null;
+      points: number | null;
+      dayNo: number | null;
+      claimResult: number | null;
+      handedAt: string | null;
+    }
   >();
   for (const row of rows) {
     out.set(row.accountId, {
@@ -320,6 +333,7 @@ async function dailyBonusStates(
       points: row.points,
       dayNo: row.dayNo,
       claimResult: row.claimResult,
+      handedAt: row.handedAt,
     });
   }
   return out;
@@ -365,6 +379,7 @@ export async function listAccounts(
       bonusPoints: bonusPointsValue,
       bonusDayNo: bonus?.dayNo ?? null,
       bonusOurs: bonusOursValue,
+      bonusHandedAt: bonus?.handedAt ?? null,
     };
     return {
       ...withBonus,
@@ -430,6 +445,7 @@ export async function listAccount(
     bonusPoints: bonus?.points ?? null,
     bonusDayNo: bonus?.dayNo ?? null,
     bonusOurs: bonusOurs(bonus?.claimResult ?? null),
+    bonusHandedAt: bonus?.handedAt ?? null,
   };
   return toListItem(
     {
