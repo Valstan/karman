@@ -118,49 +118,59 @@ export async function sweepDailyBonus(
     if (options.limit && report.ids.length >= options.limit) break;
     report.accounts += 1;
 
-    // Живой access: протухший цепочкой обновляем (refresh остаётся у нас), обрубленную
-    // цепочку получить нечем — аккаунт пропускаем.
-    const access = await liveAccessToken(account.id, now);
-    if (!access) {
-      report.skipped += 1;
-      continue;
-    }
+    // ОДИН сбойный аккаунт не должен обрывать весь обход: у остальных без забора
+    // клетка вендора не сдвинется, и серия дней подряд у них порвётся. Поэтому тело
+    // аккаунта — в try/catch, а сбой считаем неудачей и идём дальше (живая находка
+    // 18.11: исключение на одном аккаунте убивало обход целиком — и сутки обхода
+    // терялись целиком).
+    try {
+      // Живой access: протухший цепочкой обновляем (refresh остаётся у нас), обрубленную
+      // цепочку получить нечем — аккаунт пропускаем.
+      const access = await liveAccessToken(account.id, now);
+      if (!access) {
+        report.skipped += 1;
+        continue;
+      }
 
-    const claim = await claimDailyBonus(access, OWNER_TIMEZONE);
-    if (!claim.ok) {
+      const claim = await claimDailyBonus(access, OWNER_TIMEZONE);
+      if (!claim.ok) {
+        report.failed += 1;
+        continue;
+      }
+
+      const { claim_result, claim_id, day_no, points, expire_at_ms, panel } = claim.data;
+      const today = panel?.days.find((d) => d.is_today) ?? null;
+      await writeBonusRow({
+        userId: account.userId,
+        accountId: account.id,
+        date,
+        dayNo: day_no ?? today?.day_no ?? 0,
+        points: points ?? today?.points ?? 0,
+        // Остаток по нашим данным: сколько очков сегодня лежит на аккаунте.
+        //   номинал — забрали МЫ: очки наши и свежие;
+        //   null   — забрал ПОТРЕБИТЕЛЬ: очки у него и потрачены. Сторож при этом
+        //           помечает аккаунт пустым (остаток = 0) — и до 05:00 следующего дня
+        //           не перепроверяет его.
+        remaining: claim_result === CLAIM_RESULT_CLAIMED ? (points ?? today?.points ?? 0) : null,
+        status: today?.status ?? 0,
+        claimResult: claim_result,
+        claimId: claim_id,
+        expireAt: expire_at_ms ? new Date(expire_at_ms).toISOString() : null,
+        now,
+      });
+
+      if (claim_result === CLAIM_RESULT_CLAIMED) report.claimed += 1;
+      else if (claim_result === CLAIM_RESULT_ALREADY) report.already += 1;
+      else report.failed += 1;
+
+      const cell = day_no ?? today?.day_no ?? 0;
+      report.byCell[cell] = (report.byCell[cell] ?? 0) + 1;
+      report.points += points ?? today?.points ?? 0;
+      report.ids.push(account.id);
+    } catch (error) {
       report.failed += 1;
-      continue;
+      console.error('[minimax/daily-bonus] аккаунт %d: сбой обхода', account.id, error);
     }
-
-    const { claim_result, claim_id, day_no, points, expire_at_ms, panel } = claim.data;
-    const today = panel?.days.find((d) => d.is_today) ?? null;
-    await writeBonusRow({
-      userId: account.userId,
-      accountId: account.id,
-      date,
-      dayNo: day_no ?? today?.day_no ?? 0,
-      points: points ?? today?.points ?? 0,
-      // Остаток по нашим данным: сколько очков сегодня лежит на аккаунте.
-      //   номинал — забрали МЫ: очки наши и свежие;
-      //   null   — забрал ПОТРЕБИТЕЛЬ: очки у него и потрачены. Сторож при этом
-      //           помечает аккаунт пустым (остаток = 0) — и до 05:00 следующего дня
-      //           не перепроверяет его.
-      remaining: claim_result === CLAIM_RESULT_CLAIMED ? (points ?? today?.points ?? 0) : null,
-      status: today?.status ?? 0,
-      claimResult: claim_result,
-      claimId: claim_id,
-      expireAt: expire_at_ms ? new Date(expire_at_ms).toISOString() : null,
-      now,
-    });
-
-    if (claim_result === CLAIM_RESULT_CLAIMED) report.claimed += 1;
-    else if (claim_result === CLAIM_RESULT_ALREADY) report.already += 1;
-    else report.failed += 1;
-
-    const cell = day_no ?? today?.day_no ?? 0;
-    report.byCell[cell] = (report.byCell[cell] ?? 0) + 1;
-    report.points += points ?? today?.points ?? 0;
-    report.ids.push(account.id);
   }
 
   return report;
