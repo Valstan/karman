@@ -427,6 +427,15 @@ export async function issueAccount(
   const caller = callerResult.caller;
 
   const accounts = await listAccounts(caller.owner, now, { timezoneId: timezoneForRoom(caller.roomSlug) });
+  // Проект, ДЛЯ КОГО потребитель берёт аккаунт (заголовок X-MiniMax-Project: «на что
+  // ушли очки»). Без него вся статистика лежит под комнатой-владельцем: 17.11 из 169
+  // выдач ушли в «MatricaRMZ», а в журнале значились под «brain» — и по проектам не
+  // было видно, куда ушло. Держателем аккаунта при этом остаётся комната
+  // (`accounts_account.used_project_id`) — по нему проверяется «продлить может только
+  // та комната, которой мы этот аккаунт выдали» (один аккаунт — один потребитель).
+  const targetProject = filters.project
+    ? await ensureJournalProject(caller.owner.id, filters.project)
+    : { id: caller.projectId, name: caller.projectName };
   // Отдаём только аккаунты, у которых пара токенов ЕСТЬ: протухший access мы
   // оживим по refresh при выдаче (refresh остаётся у нас), а аккаунт без пары
   // проекту бесполезен — вход в MiniMax делает владелец.
@@ -505,7 +514,7 @@ export async function issueAccount(
       caller.owner,
       {
         id: candidate.id,
-        projectId: caller.projectId,
+        projectId: targetProject.id,
         source: 'api',
         ...(state ? { activationIndex: state.cell_no } : {}),
       },
@@ -565,7 +574,7 @@ export async function issueAccount(
   await markBonusHanded(
     account.id,
     today,
-    caller.projectId,
+    targetProject.id,
     offer.account?.points_next ?? null,
     now,
   );

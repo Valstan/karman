@@ -50,6 +50,7 @@ import {
   accountPoolSummary,
   isSpent,
   isUnavailable,
+  panelAvailablePoints,
   sortAccounts,
   type AccountRotationRow,
 } from './rotation';
@@ -58,7 +59,7 @@ import {
   pointsForIndex,
   type WeeklyQuota,
 } from './weekly';
-import { panelClaimable, panelClaimed, PANEL_STATUS_CLAIMABLE, PANEL_STATUS_CLAIMED } from '@/lib/minimax/panel';
+import { panelClaimable, panelClaimed } from '@/lib/minimax/panel';
 
 /**
  * Аккаунты с открытым вопросом по правилу клетки: подсказку по очкам для них НЕ
@@ -154,43 +155,6 @@ export type PoolHint = {
   source: 'owner_confirmed' | 'model' | 'panel';
   unverified: boolean;
 };
-
-/**
- * Очки, которые аккаунт отдаст потребителю сегодня, — по панели и по леджеру.
- *
- * Панель для забранной клетки отдаёт ОСТАТОК, а не номинал (живая проба 18.11):
- * status 2 — очки ждут забора (номинал клетки), status 3 — очки забраны, и остаток
- * показывает, сколько ещё лежит.
- *
- * Кто забрал — видно только по нашему леджеру бонусов (`bonusRemaining`, заказ
- * владельца 18.11: утренний обход забирает бонусы по всем аккаунтам):
- *
- * - остаток равен нашему последнему наблюдению → очки никто не трогал: забор наш
- *   (ждут потребителя) либо потребитель взял аккаунт и не начал → аккаунт годен,
- *   очки отдадим тому, кто придёт;
- * - остаток УПАЛ → по аккаунту работают → второй потребитель получил бы крошки;
- * - строки в леджере нет → забора не было, status 3 = очки забрал потребитель → не
- *   отдаём (как и до заказа 18.11).
- *
- * null — неизвестно (панель не ответила или её ответ протух).
- */
-export function panelAvailablePoints(row: {
-  panelStatus?: number | null;
-  panelPoints?: number | null;
-  bonusRemaining?: number | null;
-}): number | null {
-  const points = row.panelPoints ?? null;
-  if (points === null) return null;
-  const status = row.panelStatus ?? null;
-  if (status === PANEL_STATUS_CLAIMABLE) return points;
-  if (status === PANEL_STATUS_CLAIMED) {
-    const seen = row.bonusRemaining ?? null;
-    if (seen === null) return 0;
-    // Остаток упал (меньше нашего наблюдения) → по аккаунту работают.
-    return points >= seen ? points : 0;
-  }
-  return null;
-}
 
 /**
  * Что мы советуем по этому аккаунту: клетка, очки и откуда они.
@@ -389,6 +353,36 @@ export function pickPoolAccount<T extends PoolRow>(
     // Свободные аккаунты есть, но без добытой пары токенов — отдавать нечего.
     reason: tokenReady && free.length > 0 ? 'no_tokens_ready' : 'no_free_accounts',
   };
+}
+
+/**
+ * Сколько СВОБОДНЫХ аккаунтов каждого очкового класса — для кнопок выдачи
+ * (заказ владельца 18.11: «две кнопки — одна выдаёт аккаунты с 400 очками, вторая
+ * с 1000; если аккаунтов соответствующих нет — пиши на кнопке „На сегодня
+ * закончились“»).
+ *
+ * `tokenReadyIds` — аккаунты с добытой парой токенов: без пары отдавать нечего
+ * (вход в MiniMax делает владелец), поэтому в счёт не идут.
+ */
+export function availableByTier(
+  accounts: PoolRow[],
+  now: Date = new Date(),
+  tokenReadyIds?: ReadonlySet<number> | number[],
+): { points_400: number; points_1000: number } {
+  const ready = tokenReadyIds ? new Set(tokenReadyIds) : null;
+  let points400 = 0;
+  let points1000 = 0;
+  for (const account of accounts) {
+    // Занятый (окно простоя не истекло) и с исчерпанной неделей в выдачу не идут —
+    // ровно те же правила, что у отдачи в пуле.
+    if (isSpent(account, now)) continue;
+    if (isUnavailable(account, now)) continue;
+    if (ready && !ready.has(account.id)) continue;
+    const tier = poolTierOf(account, now);
+    if (tier === 'points_400') points400 += 1;
+    else if (tier === 'points_1000') points1000 += 1;
+  }
+  return { points_400: points400, points_1000: points1000 };
 }
 
 /**

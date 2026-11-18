@@ -101,7 +101,12 @@
  */
 
 import { moscowLocalToUtcIso, utcToMoscowLocal } from '@/lib/reminders/time';
-import { panelClaimable, panelClaimed } from '@/lib/minimax/panel';
+import {
+  panelClaimable,
+  panelClaimed,
+  PANEL_STATUS_CLAIMABLE,
+  PANEL_STATUS_CLAIMED,
+} from '@/lib/minimax/panel';
 
 /**
  * Часы ночного сброса суточного лимита MiniMax (московское время).
@@ -251,14 +256,109 @@ export function availableAt(usedAt: string | null): string | null {
  * сброс MiniMax (см. шапку модуля). Пока сброс не наступил — суточный бонус
  * сожжён: аккаунт не отдаётся проекту и очков не даёт.
  */
+/**
+ * Очки, которые аккаунт отдаст потребителю сегодня, — по панели и по леджеру.
+ *
+ * Панель для забранной клетки отдаёт ОСТАТОК, а не номинал (живая проба 18.11):
+ * status 2 — очки ждут забора (номинал клетки), status 3 — очки забраны, и остаток
+ * показывает, сколько ещё лежит.
+ *
+ * Кто забрал — видно только по нашему леджеру бонусов (`bonusRemaining`, заказ
+ * владельца 18.11: утренний обход забирает бонусы по всем аккаунтам):
+ *
+ * - остаток равен нашему последнему наблюдению → очки никто не трогал: забор наш
+ *   (ждут потребителя) либо потребитель взял аккаунт и не начал → аккаунт годен,
+ *   очки отдадим тому, кто придёт;
+ * - остаток УПАЛ → по аккаунту работают → второй потребитель получил бы крошки;
+ * - строки в леджере нет → забора не было, status 3 = очки забрал потребитель → не
+ *   отдаём (как и до заказа 18.11).
+ *
+ * null — неизвестно (панель не ответила или её ответ протух).
+ */
+export function panelAvailablePoints(row: {
+  panelStatus?: number | null;
+  panelPoints?: number | null;
+  bonusRemaining?: number | null;
+}): number | null {
+  const points = row.panelPoints ?? null;
+  if (points === null) return null;
+  const status = row.panelStatus ?? null;
+  if (status === PANEL_STATUS_CLAIMABLE) return points;
+  if (status === PANEL_STATUS_CLAIMED) {
+    const seen = row.bonusRemaining ?? null;
+    if (seen === null) return 0;
+    // Остаток упал (меньше нашего наблюдения) → по аккаунту работают.
+    return points >= seen ? points : 0;
+  }
+  return null;
+}
+
+/**
+ * Открыта ли сессия аккаунта: активация была, а ночной сброс ещё не наступил.
+ *
+ * Это «аккаунт занят» в старом смысле: суточный бонус от той активации ещё не
+ * обновился. Отдельно от «очки сожжены»: занятый аккаунт в оборот не идёт, даже
+ * если по панели очки ещё лежат.
+ */
+function isInSession(
+  account: { usedAt: string | null },
+  now: Date = new Date(),
+): boolean {
+  if (!account.usedAt) return false;
+  return dailyResetAfter(new Date(account.usedAt)).getTime() > now.getTime();
+}
+
+/**
+ * Сожжён ли аккаунт: очки сегодня уже забраны.
+ *
+ * **Панель MiniMax — источник правды** (заказ владельца 16.11: «сделать
+ * аккаунты активными, когда очки появятся»). Если панель сказала, что очки
+ * ЕСТЬ (status 2), аккаунт снова в обороте — даже когда наша эвристика ночного
+ * сброса считает его сожжённым. Если панель сказала, что очки СОЖЖЕНЫ
+ * (status 3), аккаунт из оборота выходит, даже когда эвристика считает его
+ * свободным: час ночного сброса у MiniMax мы знаем неточно, а панель знает
+ * точно.
+ *
+ * **Но «сожжены» ≠ «не годен»** (заказ владельца 18.11). Бонус сегодня можно
+ * забрать ОДИН РАЗ в сутки, и утренний обход (05:00 МСК) забирает его заранее —
+ * тогда панель показывает «забрано» (status 3) с НЕНУЛЕВЫМ остатком: очки лежат
+ * и ждут потребителя. Годен аккаунт не «бонус не забран», а «очки ещё есть»:
+ *
+ * - остаток по панели ≥ нашего наблюдения → очки лежат → аккаунт в обороте
+ *   (если он при этом не отдан в работу — см. `isInSession`);
+ * - остаток упал или строки в леджере нет → очки забрал потребитель → не отдаём.
+ *
+ * Без этой правки пул вымирал целиком: после утреннего обхода у всех аккаунтов
+ * статус «забрано», и владелец видел «все аккаунты активированы», хотя потрачено
+ * было около десяти (жалоба 18.11).
+ *
+ * Протухшее состояние (панель не ответила или её ответ старше получаса) — это
+ * «не знаю»: тогда решает эвристика, как и раньше.
+ *
+ * Сравнение с МОМЕНТОМ активации, а не с датой: у каждого аккаунта своё
+ * окно (правило владельца 04.11), и с 15.11 это окно упирается в ночной
+ * сброс MiniMax (см. шапку модуля). Пока сброс не наступил — суточный бонус
+ * сожжён: аккаунт не отдаётся проекту и очков не даёт.
+ */
 export function isSpent(
-  account: { usedAt: string | null; panelStatus?: number | null },
+  account: {
+    usedAt: string | null;
+    panelStatus?: number | null;
+    panelPoints?: number | null;
+    bonusRemaining?: number | null;
+  },
   now: Date = new Date(),
 ): boolean {
   if (panelClaimable(account.panelStatus)) return false;
-  if (panelClaimed(account.panelStatus)) return true;
+  if (panelClaimed(account.panelStatus)) {
+    const available = panelAvailablePoints(account);
+    // Очки ещё лежат (забор наш, утренний обход) → аккаунт в обороте, если он
+    // при этом не отдан в работу.
+    if (available !== null && available > 0) return isInSession(account, now);
+    return true;
+  }
   if (!account.usedAt) return false;
-  return dailyResetAfter(new Date(account.usedAt)).getTime() > now.getTime();
+  return isInSession(account, now);
 }
 
 /**
@@ -272,7 +372,13 @@ export function isSpent(
  * не должен.
  */
 export function isUnavailable(
-  account: { usedAt: string | null; weekExhausted?: boolean },
+  account: {
+    usedAt: string | null;
+    weekExhausted?: boolean;
+    panelStatus?: number | null;
+    panelPoints?: number | null;
+    bonusRemaining?: number | null;
+  },
   now: Date = new Date(),
 ): boolean {
   return isSpent(account, now) || account.weekExhausted === true;
@@ -380,6 +486,10 @@ export type AccountRotationRow = {
    * а не номинал, и без леджера эти два случая неразличимы.
    */
   bonusRemaining?: number | null;
+  /** Номинал сегодняшней клетки по леджеру (400 / 1000) — сколько очков забрали. */
+  bonusPoints?: number | null;
+  /** Клетка вендора по леджеру (1..7) — настоящая серия аккаунта. */
+  bonusDayNo?: number | null;
   /** Номер сегодняшней клетки по панели (null — неизвестно). */
   panelCellNo?: number | null;
   /** Когда панель читали (ISO) или null. */

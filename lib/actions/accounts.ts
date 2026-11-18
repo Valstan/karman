@@ -25,7 +25,9 @@ import {
   updateAccount,
 } from '@/lib/services/accounts';
 import { parseAccountImport } from '@/lib/accounts/import';
+import { pickPoolAccount, poolTierOf } from '@/lib/accounts/pool';
 import { splitAccounts } from '@/lib/accounts/rotation';
+import { tokenBackedAccountIds } from '@/lib/services/account-tokens';
 import { isUniqueViolation } from '@/lib/db/pg-error';
 import { currentUserOrNull, revalidateAll, requireSecretsAccess, type ActionResult } from './_internal';
 
@@ -50,12 +52,15 @@ import { currentUserOrNull, revalidateAll, requireSecretsAccess, type ActionResu
  * (никогда не использованный — самый первый); аккаунты с исчерпанной неделей
  * не предлагаются (`splitAccounts`).
  */
-export async function nextAccountAction(): Promise<
+export async function nextAccountAction(
+  tier?: 'points_400' | 'points_1000',
+): Promise<
   ActionResult<{
     id: number;
     email: string;
     title: string;
     projectId: number | null;
+    points: number | null;
   } | null>
 > {
   const user = await currentUserOrNull();
@@ -63,11 +68,32 @@ export async function nextAccountAction(): Promise<
   if (!user.isSuperuser) return { ok: false, error: 'Раздел доступен только владельцу' };
   const now = new Date();
   const accounts = await listAccounts(user, now);
-  const { next } = splitAccounts(accounts, now);
-  if (!next) return { ok: true, data: null };
+  // Без класса — «следующий» из верхнего слота (как раньше). С классом — аккаунт
+  // ИМЕННО этого класса очков (заказ владельца 18.11: две кнопки выдачи).
+  //
+  // Класс здесь ЖЁСТКИЙ, а не предпочтение: `pickPoolAccount` понижает класс, если
+  // запрошенного не осталось (правило владельца 13.11 — для выдачи по запросу
+  // комнаты). Кнопка обещает конкретный класс («Выдать 1000-очковый»), и отдать
+  // вместо тысячичного четырёхсотовый — обещание, которое не сдержали. Если класса
+  // не осталось — кнопка пишет «На сегодня закончились».
+  const picked = tier
+    ? pickPoolAccount(
+        accounts.filter((account) => poolTierOf(account, now) === tier),
+        now,
+        { tokenReadyIds: await tokenBackedAccountIds() },
+      )
+    : { account: splitAccounts(accounts, now).next };
+  const account = picked.account;
+  if (!account) return { ok: true, data: null };
   return {
     ok: true,
-    data: { id: next.id, email: next.email, title: next.title, projectId: next.projectId },
+    data: {
+      id: account.id,
+      email: account.email,
+      title: account.title,
+      projectId: account.projectId,
+      points: account.weekPointsNext ?? null,
+    },
   };
 }
 

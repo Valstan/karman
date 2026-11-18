@@ -9,6 +9,7 @@ import {
   dailyResetAfter,
   isSpent,
   moscowToday,
+  panelAvailablePoints,
   sortAccounts,
   splitAccounts,
   type AccountRotationRow,
@@ -378,5 +379,67 @@ describe('мультиаккаунт: свод по проектам', () => {
 
   it('пустой журнал — пустой свод', () => {
     expect(aggregateUsage([])).toEqual([]);
+  });
+});
+
+describe('пул: «забрано» ≠ «не годен» (заказ владельца 18.11)', () => {
+  // Утренний обход (05:00 МСК) забирает бонус у ВСЕХ аккаунтов. Панель после
+  // этого показывает «забрано» (status 3) с ненулевым остатком: очки лежат и
+  // ждут потребителя. Если считать такой аккаунт израсходованным, пул вымирает
+  // целиком — владелец видел «все аккаунты активированы», хотя потрачено было
+  // около десяти.
+  const now = new Date('2026-11-18T08:00:00Z');
+
+  it('бонус забрали мы, очки лежат — аккаунт в обороте', () => {
+    expect(
+      isSpent({ usedAt: null, panelStatus: 3, panelPoints: 400, bonusRemaining: 400 }, now),
+    ).toBe(false);
+  });
+
+  it('очки лежат, но аккаунт уже отдан в работу — занят', () => {
+    expect(
+      isSpent(
+        {
+          usedAt: '2026-11-18T06:00:00Z',
+          panelStatus: 3,
+          panelPoints: 400,
+          bonusRemaining: 400,
+        },
+        now,
+      ),
+    ).toBe(true);
+  });
+
+  it('остаток упал — по аккаунту работают, второй потребитель получит крошки', () => {
+    expect(
+      isSpent({ usedAt: null, panelStatus: 3, panelPoints: 120, bonusRemaining: 400 }, now),
+    ).toBe(true);
+  });
+
+  it('строки в леджере нет — очки забрал потребитель, не отдаём', () => {
+    expect(
+      isSpent({ usedAt: null, panelStatus: 3, panelPoints: 400, bonusRemaining: null }, now),
+    ).toBe(true);
+  });
+
+  it('очки можно забрать (status 2) — аккаунт свободен, как и раньше', () => {
+    expect(isSpent({ usedAt: null, panelStatus: 2, panelPoints: 400 }, now)).toBe(false);
+  });
+
+  it('панель не ответила — «не знаю», решает эвристика окна', () => {
+    expect(isSpent({ usedAt: null, panelStatus: null, panelPoints: null }, now)).toBe(false);
+    expect(
+      isSpent({ usedAt: '2026-11-18T06:00:00Z', panelStatus: null, panelPoints: null }, now),
+    ).toBe(true);
+  });
+
+  it('сколько очков доступно — по панели и леджеру', () => {
+    expect(panelAvailablePoints({ panelStatus: 2, panelPoints: 400 })).toBe(400);
+    expect(panelAvailablePoints({ panelStatus: 3, panelPoints: 400, bonusRemaining: 400 })).toBe(
+      400,
+    );
+    expect(panelAvailablePoints({ panelStatus: 3, panelPoints: 120, bonusRemaining: 400 })).toBe(0);
+    expect(panelAvailablePoints({ panelStatus: 3, panelPoints: 400, bonusRemaining: null })).toBe(0);
+    expect(panelAvailablePoints({ panelStatus: null, panelPoints: null })).toBe(null);
   });
 });
