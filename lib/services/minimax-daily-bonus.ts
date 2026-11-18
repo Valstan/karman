@@ -206,7 +206,12 @@ async function writeBonusRow(row: {
       set: {
         dayNo: row.dayNo,
         points: row.points,
-        remaining: row.remaining,
+        // Остаток обновляем по ПРАВИЛУ, а не «как в этом прогоне»:
+        //   клетку забрали МЫ (claim_result = 1) → остаток = номинал клетки (очки
+        //     наши; повторный забор возвращает 2, и без этого оговорка они бы
+        //     обнулились и аккаунт выпал бы из выдачи);
+        //   иначе → сохраняем то, что помечено сторожем (0 = «проверено, пусто»).
+        remaining: sql`case when ${accountsDailyBonus.claimResult} = ${CLAIM_RESULT_CLAIMED}::smallint then ${row.points}::integer else coalesce(${accountsDailyBonus.remaining}, ${row.remaining}::integer) end`,
         status: row.status,
         // Результат забора НЕ понижаем. 1 («забрали мы») — это навсегда наша
         // сегодняшняя клетка: очки свежие, их можно отдавать. Повторный забор в те
@@ -268,9 +273,8 @@ export async function markBonusHanded(
       handedToProjectId: projectId,
       handedAt: now.toISOString(),
       handedPoints: points,
-      // Номинал клетки, которую отдали: по нему видно, сколько очков ушло
-      // потребителю (остатка панель не показывает — см. `claim.ts`).
-      ...(points === null ? {} : { remaining: points }),
+      // Остаток НЕ трогаем: это «сколько очков лежит по нашим данным», а не
+      // «сколько отдали». Помечать аккаунт пустым (остаток = 0) — дело сторожа.
     })
     .where(
       and(
