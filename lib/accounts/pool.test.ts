@@ -372,74 +372,82 @@ describe('пул MiniMax: панель как источник правды', ()
   });
 
   /**
-   * Забор по нашей инициативе (утренний обход, заказ владельца 18.11): очки лежат на
-   * аккаунте и ждут потребителя. Панель для забранной клетки отдаёт ОСТАТОК, а не
-   * номинал, и без нашего леджера нельзя отличить «забрали мы» от «забрал потребитель».
+   * Чьи очки лежат на аккаунте — решает наш забор (заказ владельца 18.11).
+   *
+   * Панель остатка НЕ показывает: `points` клетки — её НОМИНАЛ (400 или 1000),
+   * а не «сколько осталось» (живая проверка 18.11: у аккаунта с давно
+   * потраченными очками панель отвечает `points: 1000, bonus_points: 0`).
+   * Единственный верный признак — ответ вендора на забор: `claim_result` 1 — мы
+   * забрали (очки свежие и наши), 2 — забрали до нас (потребитель; очки давно
+   * потрачены, и такой аккаунт в выдачу не идёт).
    */
-  describe('очки лежат на аккаунте (забор наш, утренний обход)', () => {
-    it('остаток равен нашему наблюдению — очки ждут потребителя', () => {
+  describe('леджер забора: чьи очки лежат на аккаунте', () => {
+    it('забрали мы — клетка и номинал из леджера', () => {
       const row = account(1, [auto('2026-11-12')], {
-        panelStatus: 3,
-        panelPoints: 400,
-        bonusRemaining: 400,
+        panelStatus: null,
+        panelPoints: null,
+        bonusRemaining: 1000,
+        bonusPoints: 1000,
+        bonusDayNo: 4,
+        bonusOurs: true,
       });
-      expect(hintFor(row).points).toBe(400);
+      const hint = hintFor(row);
+      expect(hint.source).toBe('panel');
+      expect(hint.index).toBe(4);
+      expect(hint.points).toBe(1000);
+      expect(hint.unverified).toBe(false);
     });
 
-    it('остаток упал — по аккаунту работают, второй потребитель не идёт', () => {
+    it('забрал потребитель — очки давно потрачены, подсказка нулевая', () => {
       const row = account(1, [auto('2026-11-12')], {
         panelStatus: 3,
-        panelPoints: 120,
-        bonusRemaining: 400,
-      });
-      expect(hintFor(row).points).toBe(0);
-    });
-
-    it('очки сожжены (остаток 0) — подсказка нулевая', () => {
-      const row = account(1, [auto('2026-11-12')], {
-        panelStatus: 3,
-        panelPoints: 0,
-        bonusRemaining: 400,
-      });
-      expect(hintFor(row).points).toBe(0);
-    });
-
-    it('забора не было вовсе (строка в леджере нет) — очки забрал потребитель', () => {
-      const row = account(1, [auto('2026-11-12')], {
-        panelStatus: 3,
-        panelPoints: 400,
-        bonusRemaining: null,
+        panelPoints: 1000,
+        bonusRemaining: 1000,
+        bonusPoints: 1000,
+        bonusDayNo: 4,
+        bonusOurs: false,
       });
       expect(hintFor(row).points).toBe(0);
     });
 
-    /**
-     * Главное следствие правила «очки ещё есть»: аккаунт, чей бонус забрали мы
-     * утренним обходом, не выпадает из пула. Без этого после 05:00 МСК пул
-     * вымирал целиком — владелец видел «все аккаунты активированы», хотя
-     * потрачено было около десяти.
-     */
-    it('аккаунт с нашим забором — в обороте, его отдаём потребителю', () => {
+    it('забрали мы — аккаунт в обороте: его отдаём потребителю', () => {
       const row = account(1, [auto('2026-11-12')], {
         panelStatus: 3,
-        panelPoints: 400,
-        bonusRemaining: 400,
+        panelPoints: 1000,
+        bonusRemaining: 1000,
+        bonusPoints: 1000,
+        bonusDayNo: 4,
+        bonusOurs: true,
       });
       const picked = pickPoolAccount([row], NOW);
       expect(picked.account?.id).toBe(1);
-      expect(picked.tier).toBe('points_400');
+      expect(picked.tier).toBe('points_1000');
       expect(picked.free).toBe(1);
     });
 
-    it('а если очки уже сожжены — аккаунт из оборота выходит', () => {
+    it('забрал потребитель — в выдачу не идёт (очки потрачены)', () => {
       const row = account(1, [auto('2026-11-12')], {
         panelStatus: 3,
-        panelPoints: 0,
-        bonusRemaining: 400,
+        panelPoints: 1000,
+        bonusRemaining: 1000,
+        bonusPoints: 1000,
+        bonusDayNo: 4,
+        bonusOurs: false,
       });
       const picked = pickPoolAccount([row], NOW);
       expect(picked.account).toBeNull();
       expect(picked.free).toBe(0);
+    });
+
+    it('забора сегодня не было, панель говорит «очки есть» — аккаунт свободен', () => {
+      const row = account(1, [auto('2026-11-12')], {
+        panelStatus: 2,
+        panelPoints: 400,
+        panelCellNo: 5,
+      });
+      const picked = pickPoolAccount([row], NOW);
+      expect(picked.account?.id).toBe(1);
+      expect(picked.tier).toBe('points_400');
     });
   });
 

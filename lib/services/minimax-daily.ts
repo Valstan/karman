@@ -1,11 +1,13 @@
 import 'server-only';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
-import { accountToken } from '@/lib/db/schema';
+import { accountToken, accountsDailyBonus, accountsUsage } from '@/lib/db/schema';
 import { signinStatus, SIGNIN_STATUS_CLAIMABLE } from '@/lib/minimax/oauth';
 import { DEFAULT_TIMEZONE, OWNER_TIMEZONE } from '@/lib/minimax/panel';
+import { isBeltsDivergent, moscowToday } from '@/lib/accounts/rotation';
 import { liveAccessToken } from '@/lib/services/account-tokens';
 import {
+  PANEL_IN_WORK_REFRESH_MS,
   PANEL_REFRESH_AGE_MS,
   PANEL_STATE_TTL_MS,
   deletePanelState,
@@ -162,6 +164,90 @@ export async function forgetDailyState(accountId: number): Promise<void> {
 }
 
 /**
+ * Кого автосверка спрашивает у вендора (антиспам, 18.11).
+ *
+ * ## Зачем
+ *
+ * Опрос панели по ВСЕМ аккаунтам стоил ≈21 000 обращений к MiniMax в сутки
+ * (228 состояний × 92 запуска) — риск блокировки вендора. Но после утреннего
+ * забора бонусов (05:00 МСК) подавляющему большинству аккаунтов отвечать НЕЧЕГО:
+ * мы сами забрали их бонус, очки лежат и ждут потребителя, никто по ним не работает.
+ * Правда о таких аккаунтах — в нашем леджере забора (`accounts_daily_bonus`).
+ *
+ * ## Кому панель всё ещё нужна
+ *
+ * 1. **Аккаунты в работе** — отданные потребителю сегодня: их баланс меняется
+ *    (потребитель тратит очки), и сверка журнала должна видеть, потратил ли он.
+ * 2. **Аккаунты, чей сегодняшний бонус мы НЕ забрали** (забора не было или он не
+ *    прошёл): их очки могут появиться — пул должен их увидеть. До 05:00 таких
+ *    нет ни одного (забора ещё не было), а после — единицы.
+ *
+ * Остальное — «мы забрали, очки лежат, никто не работает» — у вендора не спрашиваем.
+ */
+export type PanelSweepTargets = {
+  /** Аккаунты, отданные потребителю сегодня (в работе). */
+  inWork: Set<number>;
+  /** Аккаунты, чей сегодняшний бонус мы забрали сами. */
+  claimedToday: Set<number>;
+};
+
+/**
+ * Кого и как часто спрашивать у вендора — чистое решение (без БД), чтобы правило
+ * можно было проверить юнитом.
+ *
+ * - **забрали мы, по аккаунту не работают** → не спрашиваем вовсе: ответ вендора
+ *   ничего не изменит, правда в леджере;
+ * - **в работе** → спрашиваем, но раз в час: баланс меняется, суточному итогу
+ *   минутная точность не нужна. В ночном окне 00:00–03:00 МСК — по обычному порогу:
+ *   там пояса расходятся, решение принимается по двум ответам и должно быть свежим;
+ * - **забор не прошёл** → по обычному порогу: их очки могут появиться, пул должен
+ *   увидеть это быстро.
+ */
+export type PanelSweepDecision = { read: false } | { read: true; refreshAfterMs: number };
+
+export function panelSweepDecision(
+  accountId: number,
+  targets: PanelSweepTargets,
+  now: Date = new Date(),
+  defaultRefreshMs: number = PANEL_REFRESH_AGE_MS,
+): PanelSweepDecision {
+  if (targets.claimedToday.has(accountId) && !targets.inWork.has(accountId)) {
+    return { read: false };
+  }
+  if (targets.inWork.has(accountId)) {
+    return {
+      read: true,
+      refreshAfterMs: isBeltsDivergent(now) ? defaultRefreshMs : PANEL_IN_WORK_REFRESH_MS,
+    };
+  }
+  return { read: true, refreshAfterMs: defaultRefreshMs };
+}
+
+/**
+ * Собрать фокус опроса по данным БД: кто в работе, чей бонус мы забрали сегодня.
+ */
+export async function panelSweepTargets(
+  userId: number,
+  now: Date = new Date(),
+): Promise<PanelSweepTargets> {
+  const today = moscowToday(now);
+  const [work, claimed] = await Promise.all([
+    db
+      .select({ accountId: accountsUsage.accountId })
+      .from(accountsUsage)
+      .where(and(eq(accountsUsage.userId, userId), eq(accountsUsage.usedOn, today))),
+    db
+      .select({ accountId: accountsDailyBonus.accountId })
+      .from(accountsDailyBonus)
+      .where(and(eq(accountsDailyBonus.userId, userId), eq(accountsDailyBonus.usedOn, today))),
+  ]);
+  return {
+    inWork: new Set(work.map((row) => row.accountId)),
+    claimedToday: new Set(claimed.map((row) => row.accountId)),
+  };
+}
+
+/**
  * Прочитать состояние суток ВСЕХ аккаунтов, у которых есть пара токенов.
  *
  * Тяжёлая операция (сотни вызовов MiniMax, часть — с обновлением цепочки по
@@ -171,13 +257,29 @@ export async function forgetDailyState(accountId: number): Promise<void> {
  *
  * `force` — обновить всё, даже свежее (кнопка владельца «Сверить сутки с
  * MiniMax»); без него обновляется только протухшее (автосверка).
+ *
+ * `targets` — фокус опроса (антиспам): без него читаются все аккаунты, с ним —
+ * только те, кому ответ вендора что-то изменит. С `force` фокус игнорируется:
+ * кнопка владельца — это его право спросить у вендора про всё.
  */
 export async function syncDailyStates(
   userId: number,
   timezoneId: string = OWNER_TIMEZONE,
   now: Date = new Date(),
-  options: { force?: boolean; budgetMs?: number; maxAgeMs?: number } = {},
-): Promise<{ checked: number; skipped: number; claimable: number; failed: number }> {
+  options: {
+    force?: boolean;
+    budgetMs?: number;
+    maxAgeMs?: number;
+    targets?: PanelSweepTargets;
+  } = {},
+): Promise<{
+  checked: number;
+  skipped: number;
+  /** Не спрашивали у вендора вовсе (антиспам) — правда о них в нашем леджере. */
+  notPolled: number;
+  claimable: number;
+  failed: number;
+}> {
   const rows = await db
     .select({ accountId: accountToken.accountId })
     .from(accountToken)
@@ -195,6 +297,7 @@ export async function syncDailyStates(
 
   let checked = 0;
   let skipped = 0;
+  let notPolled = 0;
   let claimable = 0;
   let failed = 0;
   // Бюджет времени: вендор может подвисать, а сверка идёт в фоне. Не начали —
@@ -206,9 +309,18 @@ export async function syncDailyStates(
     const batch = rows.slice(i, i + 5);
     const results = await Promise.all(
       batch.map(async (row) => {
+        // Фокус опроса: с `force` (кнопка владельца «сверить сейчас») спрашиваем
+        // про всё, без — только про тех, кому ответ вендора что-то изменит.
+        const decision: PanelSweepDecision =
+          options.force || !options.targets
+            ? { read: true, refreshAfterMs }
+            : panelSweepDecision(row.accountId, options.targets, now, refreshAfterMs);
+        if (!decision.read) {
+          return { kind: 'notPolled' as const, claimable: false };
+        }
         if (!options.force) {
           const state = stored.get(row.accountId) ?? null;
-          if (isFreshPanelState(state, now, refreshAfterMs)) {
+          if (isFreshPanelState(state, now, decision.refreshAfterMs)) {
             return { kind: 'skipped' as const, claimable: state!.can_claim };
           }
         }
@@ -220,6 +332,10 @@ export async function syncDailyStates(
       }),
     );
     for (const result of results) {
+      if (result.kind === 'notPolled') {
+        notPolled += 1;
+        continue;
+      }
       if (result.kind === 'skipped') {
         skipped += 1;
         if (result.claimable) claimable += 1;
@@ -233,7 +349,7 @@ export async function syncDailyStates(
       if (result.state.can_claim) claimable += 1;
     }
   }
-  return { checked, skipped, claimable, failed };
+  return { checked, skipped, notPolled, claimable, failed };
 }
 
 /**
@@ -251,6 +367,8 @@ export async function sweepPanelStates(
   owners: number;
   checked: number;
   skipped: number;
+  /** Не спрашивали у вендора вовсе (антиспам): правда о них в нашем леджере. */
+  notPolled: number;
   claimable: number;
   failed: number;
   /** True — сверка не уложилась в бюджет: остаток доедет следующим тиком. */
@@ -260,10 +378,14 @@ export async function sweepPanelStates(
   const deadline = Date.now() + (options.budgetMs ?? 120_000);
   let checked = 0;
   let skipped = 0;
+  let notPolled = 0;
   let claimable = 0;
   let failed = 0;
   let stopped = false;
   for (const owner of owners) {
+    // Фокус опроса (антиспам, 18.11): спрашиваем у вендора только про то, чего
+    // не знаем сами. С `force` (кнопка владельца) фокус не применяется.
+    const targets = options.force ? undefined : await panelSweepTargets(owner.userId, now);
     for (const timezoneId of [OWNER_TIMEZONE, DEFAULT_TIMEZONE]) {
       if (Date.now() > deadline) {
         stopped = true;
@@ -276,20 +398,23 @@ export async function sweepPanelStates(
         // Обновляем ответы панели вдвое чаще её срока годности: тогда они не
         // подползают к границе и пул всегда видит свежий ответ.
         maxAgeMs: PANEL_REFRESH_AGE_MS,
+        ...(targets ? { targets } : {}),
       }).catch(() => ({
         checked: 0,
         skipped: 0,
+        notPolled: 0,
         claimable: 0,
         failed: 1,
       }));
       checked += result.checked;
       skipped += result.skipped;
+      notPolled += result.notPolled;
       claimable += result.claimable;
       failed += result.failed;
     }
     if (stopped) break;
   }
-  return { owners: owners.length, checked, skipped, claimable, failed, stopped };
+  return { owners: owners.length, checked, skipped, notPolled, claimable, failed, stopped };
 }
 
 /** Строка состояния из БД — в форму сервиса. */

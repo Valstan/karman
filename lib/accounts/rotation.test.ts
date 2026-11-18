@@ -9,7 +9,6 @@ import {
   dailyResetAfter,
   isSpent,
   moscowToday,
-  panelAvailablePoints,
   sortAccounts,
   splitAccounts,
   type AccountRotationRow,
@@ -383,63 +382,59 @@ describe('мультиаккаунт: свод по проектам', () => {
 });
 
 describe('пул: «забрано» ≠ «не годен» (заказ владельца 18.11)', () => {
-  // Утренний обход (05:00 МСК) забирает бонус у ВСЕХ аккаунтов. Панель после
-  // этого показывает «забрано» (status 3) с ненулевым остатком: очки лежат и
-  // ждут потребителя. Если считать такой аккаунт израсходованным, пул вымирает
-  // целиком — владелец видел «все аккаунты активированы», хотя потрачено было
-  // около десяти.
+  // Утренний обход (05:00 МСК) забирает бонус у ВСЕХ аккаунтов, и панель после
+  // этого отвечает «забрано» (status 3). ОСТАТКА очков панель не показывает:
+  // `points` клетки — её номинал (400 или 1000). Кто забрал клетку, известно
+  // только по ответу на забор (`claim_result`): 1 — мы, 2 — потребитель.
   const now = new Date('2026-11-18T08:00:00Z');
 
-  it('бонус забрали мы, очки лежат — аккаунт в обороте', () => {
+  it('клетку забрали мы — очки свежие и наши, аккаунт в обороте', () => {
     expect(
-      isSpent({ usedAt: null, panelStatus: 3, panelPoints: 400, bonusRemaining: 400 }, now),
+      isSpent({ usedAt: null, panelStatus: 3, panelPoints: 1000, bonusOurs: true }, now),
     ).toBe(false);
   });
 
-  it('очки лежат, но аккаунт уже отдан в работу — занят', () => {
+  it('клетку забрал потребитель — очки давно потрачены, не отдаём', () => {
+    expect(
+      isSpent({ usedAt: null, panelStatus: 3, panelPoints: 1000, bonusOurs: false }, now),
+    ).toBe(true);
+  });
+
+  it('очки наши, но аккаунт отдан в работу — занят', () => {
     expect(
       isSpent(
         {
           usedAt: '2026-11-18T06:00:00Z',
           panelStatus: 3,
-          panelPoints: 400,
-          bonusRemaining: 400,
+          panelPoints: 1000,
+          bonusOurs: true,
         },
         now,
       ),
     ).toBe(true);
   });
 
-  it('остаток упал — по аккаунту работают, второй потребитель получит крошки', () => {
-    expect(
-      isSpent({ usedAt: null, panelStatus: 3, panelPoints: 120, bonusRemaining: 400 }, now),
-    ).toBe(true);
+  it('забора сегодня не было, панель говорит «очки есть» — свободен', () => {
+    expect(isSpent({ usedAt: null, panelStatus: 2, panelPoints: 400, bonusOurs: null }, now)).toBe(
+      false,
+    );
   });
 
-  it('строки в леджере нет — очки забрал потребитель, не отдаём', () => {
-    expect(
-      isSpent({ usedAt: null, panelStatus: 3, panelPoints: 400, bonusRemaining: null }, now),
-    ).toBe(true);
-  });
-
-  it('очки можно забрать (status 2) — аккаунт свободен, как и раньше', () => {
-    expect(isSpent({ usedAt: null, panelStatus: 2, panelPoints: 400 }, now)).toBe(false);
+  it('забора не было, панель говорит «забрано» (не мы) — не отдаём', () => {
+    expect(isSpent({ usedAt: null, panelStatus: 3, panelPoints: 400, bonusOurs: null }, now)).toBe(
+      true,
+    );
   });
 
   it('панель не ответила — «не знаю», решает эвристика окна', () => {
-    expect(isSpent({ usedAt: null, panelStatus: null, panelPoints: null }, now)).toBe(false);
     expect(
-      isSpent({ usedAt: '2026-11-18T06:00:00Z', panelStatus: null, panelPoints: null }, now),
+      isSpent({ usedAt: null, panelStatus: null, panelPoints: null, bonusOurs: null }, now),
+    ).toBe(false);
+    expect(
+      isSpent(
+        { usedAt: '2026-11-18T06:00:00Z', panelStatus: null, panelPoints: null, bonusOurs: null },
+        now,
+      ),
     ).toBe(true);
-  });
-
-  it('сколько очков доступно — по панели и леджеру', () => {
-    expect(panelAvailablePoints({ panelStatus: 2, panelPoints: 400 })).toBe(400);
-    expect(panelAvailablePoints({ panelStatus: 3, panelPoints: 400, bonusRemaining: 400 })).toBe(
-      400,
-    );
-    expect(panelAvailablePoints({ panelStatus: 3, panelPoints: 120, bonusRemaining: 400 })).toBe(0);
-    expect(panelAvailablePoints({ panelStatus: 3, panelPoints: 400, bonusRemaining: null })).toBe(0);
-    expect(panelAvailablePoints({ panelStatus: null, panelPoints: null })).toBe(null);
   });
 });

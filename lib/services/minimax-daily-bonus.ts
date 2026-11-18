@@ -28,7 +28,7 @@ import { liveAccessToken } from './account-tokens';
  *    (живая проба 18.11). Позже потребитель заберёт те же очки повторным `claim`
  *    (`claim_result = 2`, `points` прежние) и потратит их работой.
  * 2. **Леджер.** Каждая строка — «аккаунт + московские сутки»: клетка вендора, номинал
- *    очков, остаток по панели, результат забора, кому и когда отдали.
+ *    очков, результат забора (кто клетку забрал — мы или потребитель), кому и когда отдали.
  * 3. **Раздача.** Выдача аккаунта берёт из леджера РЕАЛЬНЫЕ очки этого аккаунта (а не
  *    прогноз модели) и записывает, кому и сколько отдала.
  * 4. **Статистика.** За сутки: сколько бонусов забрали, сколько очков в банке, сколько
@@ -198,8 +198,14 @@ async function writeBonusRow(row: {
         points: row.points,
         remaining: row.remaining,
         status: row.status,
-        claimResult: row.claimResult,
-        claimId: row.claimId,
+        // Результат забора НЕ понижаем. 1 («забрали мы») — это навсегда наша
+        // сегодняшняя клетка: очки свежие, их можно отдавать. Повторный забор в те
+        // же сутки (обход идёт и по рестарту воркера — 18.11) возвращает 2, и без
+        // этой оговорки «наши» очки терялись бы, а в выдачу попадали бы аккаунты с
+        // давно потраченными очками (жалоба владельца 18.11).
+        claimResult: sql`case when ${accountsDailyBonus.claimResult} = ${CLAIM_RESULT_CLAIMED}::smallint then ${CLAIM_RESULT_CLAIMED}::smallint else ${row.claimResult}::smallint end`,
+        // Идентификатор забора — тот же: он принадлежит НАШЕМУ забору.
+        claimId: sql`case when ${accountsDailyBonus.claimResult} = ${CLAIM_RESULT_CLAIMED} then ${accountsDailyBonus.claimId} else ${row.claimId} end`,
         expireAt: row.expireAt,
         checkedAt: row.now.toISOString(),
       },
@@ -252,8 +258,8 @@ export async function markBonusHanded(
       handedToProjectId: projectId,
       handedAt: now.toISOString(),
       handedPoints: points,
-      // Остаток на момент выдачи — по нему сверка поймёт, потратил ли потребитель
-      // хоть что-то: если баланс с тех пор не менялся, значит по аккаунту не работали.
+      // Номинал клетки, которую отдали: по нему видно, сколько очков ушло
+      // потребителю (остатка панель не показывает — см. `claim.ts`).
       ...(points === null ? {} : { remaining: points }),
     })
     .where(
@@ -279,7 +285,7 @@ export type DailyBonusStats = {
   handed: number;
   /** Сколько очков отдали. */
   handedPoints: number;
-  /** Фактически потрачено (номинал минус остаток по панели). */
+  /** Очки тех аккаунтов, чью клетку забрал потребитель (потрачены). */
   spentPoints: number;
   /** Осталось неиспользованным. */
   leftPoints: number;
@@ -292,9 +298,14 @@ export type DailyBonusStats = {
 /**
  * Статистика за московские сутки.
  *
- * «Потрачено» считается как «номинал минус остаток по панели» — там, где остаток
- * известен. Где остаток неизвестен (панель не ответила), очки считаются не потраченными:
- * это «не знаю», а не «не потрачено».
+ * **«Потрачено» — это очки тех аккаунтов, чью клетку забрал НЕ мы** (потребитель):
+ * клетка вендора сдвигается только в день использования, поэтому у пропущенного
+ * аккаунта клетка стоит на месте и даёт очки, которые потребитель забрал и потратил
+ * (возможно, вчера). Панель остатка НЕ показывает (`points` клетки — её номинал),
+ * поэтому единственный верный признак — `claim_result` из ответа на забор.
+ *
+ * «Осталось» — очки, которые забрали мы и которые ещё лежат на аккаунтах (минус
+ * отданные потребителям).
  */
 export async function dailyBonusStats(
   date: string = moscowToday(),
@@ -312,19 +323,24 @@ export async function dailyBonusStats(
     .from(accountsDailyBonus)
     .where(eq(accountsDailyBonus.usedOn, date));
 
+  const ours = rows.filter((r) => r.claimResult === CLAIM_RESULT_CLAIMED);
+  const theirs = rows.filter((r) => r.claimResult !== CLAIM_RESULT_CLAIMED);
   const stats: DailyBonusStats = {
     date,
     accounts: rows.length,
-    claimed: rows.filter((r) => r.claimResult === CLAIM_RESULT_CLAIMED).length,
-    already: rows.filter((r) => r.claimResult === CLAIM_RESULT_ALREADY).length,
-    points: rows.reduce((sum, r) => sum + r.points, 0),
+    claimed: ours.length,
+    already: theirs.length,
+    points: ours.reduce((sum, r) => sum + r.points, 0),
     handed: rows.filter((r) => r.handedAt !== null).length,
     handedPoints: rows.reduce((sum, r) => sum + (r.handedPoints ?? 0), 0),
-    spentPoints: rows.reduce(
-      (sum, r) => sum + (r.remaining === null ? 0 : Math.max(0, r.points - r.remaining)),
+    // Очки, ушедшие к потребителю без нашего забора: их клетку забрали и потратили
+    // без нас (обычно — ночью, пока аккаунт не использовали).
+    spentPoints: theirs.reduce((sum, r) => sum + r.points, 0),
+    leftPoints: Math.max(
       0,
+      ours.reduce((sum, r) => sum + r.points, 0) -
+        rows.reduce((sum, r) => sum + (r.handedPoints ?? 0), 0),
     ),
-    leftPoints: rows.reduce((sum, r) => sum + (r.remaining ?? 0), 0),
     byCell: [],
     byProject: [],
   };

@@ -50,7 +50,6 @@ import {
   accountPoolSummary,
   isSpent,
   isUnavailable,
-  panelAvailablePoints,
   sortAccounts,
   type AccountRotationRow,
 } from './rotation';
@@ -184,8 +183,34 @@ export function hintFor(row: PoolRow, now: Date = new Date()): PoolHint {
       : null;
   const index = ownerIndex ?? modelIndex;
 
-  // Панель MiniMax ответила — верю ей (заказ владельца 16.11). Она знает и
-  // сегодняшнюю клетку, и её очки; наша модель по датам с ней расходилась
+  // Леджер забора — источник правды о том, ЧЬИ очки лежат на аккаунте.
+  //
+  // Панель остатка НЕ показывает: `points` клетки — её номинал (400 или 1000),
+  // а не «сколько осталось» (живая проверка 18.11: у аккаунта с давно
+  // потраченными очками панель отвечает `points: 1000, bonus_points: 0`).
+  // Поэтому решает не панель, а наш забор: `claim_result` из ответа вендора.
+  //
+  // Клетку забрал ПОТРЕБИТЕЛЬ (bonusOurs = false) → очки давно потрачены → ноль.
+  if (row.bonusOurs === false) {
+    return { index: row.bonusDayNo ?? index, points: 0, source: 'panel', unverified: false };
+  }
+
+  // Панель молчит (её ответ протух или мы её не опрашиваем — антиспам, 18.11), но мы
+  // САМИ забирали сегодняшний бонус: ответ панели на тот момент лежит в нашем леджере
+  // (клетка вендора и её номинал). Это тот же ответ панели, только снятый в момент
+  // забора, а не опросом статуса. Нужно, потому что автосверка больше не опрашивает
+  // у вендора аккаунты, которые лежат нетронутыми: правда о них — в леджере.
+  if (row.bonusOurs === true && row.bonusDayNo !== null && row.bonusDayNo !== undefined) {
+    return {
+      index: row.bonusDayNo,
+      points: row.bonusPoints ?? 0,
+      source: 'panel',
+      unverified: false,
+    };
+  }
+
+  // Панель MiniMax ответила свежо — верим ей (заказ владельца 16.11). Она знает и
+  // сегодняшнюю клетку, и её номинал; наша модель по датам с ней расходилась
   // (отсюда и «аккаунт под вопросом»).
   if (panelClaimable(row.panelStatus)) {
     return {
@@ -196,14 +221,11 @@ export function hintFor(row: PoolRow, now: Date = new Date()): PoolHint {
     };
   }
   if (panelClaimed(row.panelStatus)) {
-    // Панель сказала: бонус за сегодня уже забрали. Очки при этом могут ещё лежать
-    // на аккаунте — для забранной клетки панель отдаёт ОСТАТОК, а не номинал. Лежат
-    // ли они — решает леджер бонусов (`panelAvailablePoints`): забор наш (утренний
-    // обход) — очки ждут потребителя; забрал потребитель — по аккаунту работают.
-    const available = panelAvailablePoints(row);
+    // Панель сказала: бонус за сегодня уже забрали, но забрали не мы (строки в
+    // леджере нет) → очки у потребителя, нам они не достались → нулевая подсказка.
     return {
       index: row.panelCellNo ?? index,
-      points: available ?? 0,
+      points: 0,
       source: 'panel',
       unverified: false,
     };

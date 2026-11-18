@@ -26,7 +26,7 @@ import {
   splitAccounts,
 } from '@/lib/accounts/rotation';
 import { cohortStats, weeklyPoolStats } from '@/lib/accounts/weekly';
-import { availableByTier } from '@/lib/accounts/pool';
+import { availableByTier, poolTierOf } from '@/lib/accounts/pool';
 import { centeredWindowFeatures } from '@/lib/accounts/window-features';
 import { MinimaxFormDialog } from './minimax-form-dialog';
 import { MinimaxActivateDialog } from './minimax-activate-dialog';
@@ -205,6 +205,15 @@ export function MinimaxPanel({
         })),
         moscowToday(new Date(clockMs)),
       ),
+    [accounts, clockMs],
+  );
+
+  // Сколько сегодня дадут тысячные очков — по ТОЙ ЖЕ правде, что и кнопки выдачи
+  // (в когорте было «по модели» — 61 против 30, и владелец видел два разных
+  // числа об одном и том же: модель клетки с панелью расходится у 42 аккаунтов
+  // из 112 — живьём 16.11).
+  const bonusToday = useMemo(
+    () => accounts.filter((account) => poolTierOf(account, new Date(clockMs)) === 'points_1000').length,
     [accounts, clockMs],
   );
 
@@ -568,15 +577,16 @@ export function MinimaxPanel({
               {cohort.atRisk > 0
                 ? ` (если пропустить — минус ${cohort.pointsLostIfSkipped} очков)`
                 : ''}
-              {cohort.bonusToday > 0 ? ` · сегодня доступно тысячных: ${cohort.bonusToday}` : ''}
+              {bonusToday > 0 ? ` · сегодня доступно тысячных: ${bonusToday}` : ''}
             </div>
           ) : null}
           {bonusStats.accounts > 0 ? (
             <div className="-mt-3 text-sm font-medium text-muted-foreground">
-              Бонусы за {bonusStats.date}: забрано у {bonusStats.accounts} аккаунтов на{' '}
-              {bonusStats.points.toLocaleString('ru-RU')} очков, отдано {bonusStats.handed} (
-              {bonusStats.handedPoints.toLocaleString('ru-RU')} очк.), потрачено{' '}
-              {bonusStats.spentPoints.toLocaleString('ru-RU')}, осталось{' '}
+              Бонусы за {bonusStats.date}: забрали у {bonusStats.claimed} аккаунтов на{' '}
+              {bonusStats.points.toLocaleString('ru-RU')} очков; у {bonusStats.already} клетку
+              забрал потребитель — эти {bonusStats.spentPoints.toLocaleString('ru-RU')} очков
+              потрачены и в выдачу не идут; отдано {bonusStats.handed} (
+              {bonusStats.handedPoints.toLocaleString('ru-RU')} очк.), на аккаунтах лежит{' '}
               {bonusStats.leftPoints.toLocaleString('ru-RU')}
             </div>
           ) : null}

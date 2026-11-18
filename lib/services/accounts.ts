@@ -24,7 +24,6 @@ import {
   freeBefore,
   isSpent,
   moscowToday,
-  panelAvailablePoints,
   sortAccounts,
   type AccountRotationRow,
   type ProjectUsage,
@@ -35,7 +34,8 @@ import {
   readPanelStates,
   type PanelState,
 } from '@/lib/accounts/panel-state';
-import { OWNER_TIMEZONE } from '@/lib/minimax/panel';
+import { OWNER_TIMEZONE, panelClaimable } from '@/lib/minimax/panel';
+import { CLAIM_RESULT_CLAIMED } from '@/lib/minimax/claim';
 import {
   WEEKLY_ACTIVATION_LIMIT,
   pointsForIndex,
@@ -160,27 +160,33 @@ function panelFields(
 }
 
 /**
- * Очки следующей активации: панель знает их точно, модель — приблизительно.
+ * Очки следующей активации: правда — по нашему забору, панель — только если мы
+ * сегодня ещё не забирали.
  *
- * Панель ответила — верим ей; ответила «очки сожжены» — берём остаток из
- * `panelAvailablePoints` (у забранной клетки панель отдаёт остаток, а не номинал;
- * ждут ли очки потребителя или по аккаунту уже работают — решает наш леджер
- * бонусов, заказ владельца 18.11). Панели нет или её ответ протух — считаем по
- * недельной квоте, как раньше.
+ * Панель остатка НЕ показывает (`points` клетки — её номинал, а не «сколько
+ * осталось»), поэтому очки определяет то, кто забрал клетку:
+ *
+ * - забрали мы → очки наши и свежие → номинал клетки из леджера;
+ * - забрал потребитель → очки потрачены → ноль;
+ * - забора ещё не было → панель: «очки есть» → номинал; «забрано» → ноль;
+ * - панели нет → считаем по недельной квоте, как раньше.
  */
 function pointsNext(
-  row: { usedAt: string | null; panelStatus?: number | null; bonusRemaining?: number | null },
+  row: {
+    usedAt: string | null;
+    panelStatus?: number | null;
+    bonusOurs?: boolean | null;
+    bonusPoints?: number | null;
+  },
   panel: PanelState | undefined,
   quota: WeeklyQuota | undefined,
   now: Date,
 ): number {
+  if (row.bonusOurs === true) return row.bonusPoints ?? 0;
+  if (row.bonusOurs === false) return 0;
   if (panel && isFreshPanelState(panel, now)) {
-    const available = panelAvailablePoints({
-      panelStatus: panel.status,
-      panelPoints: panel.points,
-      bonusRemaining: row.bonusRemaining ?? null,
-    });
-    if (available !== null) return available;
+    if (panelClaimable(panel.status)) return panel.points ?? 0;
+    return 0;
   }
   if (isSpent(row, now)) return 0;
   return quota?.pointsToday ?? 0;
@@ -209,6 +215,24 @@ async function accountCheckIns(user: SessionUser): Promise<Map<number, WeeklyChe
     byAccount.set(row.accountId, list);
   }
   return byAccount;
+}
+
+/**
+ * Забрали ли сегодняшнюю клетку МЫ (null — судить не по чему).
+ *
+ * Единственный верный признак — `claim_result` из ответа вендора на забор:
+ * 1 — забрали сейчас (мы), 2 — клетку забрали ДО нас (потребитель; обычно это
+ * ночь после пропущенного дня, когда клетка вендора ещё стояла на месте).
+ *
+ * **Почему не «остаток очков»:** панель остатка НЕ показывает — `points` клетки
+ * это её НОМИНАЛ (400 или 1000), а не «сколько осталось» (живая проверка 18.11:
+ * у аккаунта с давно потраченными очками панель отвечает `points: 1000,
+ * bonus_points: 0`). Поэтому «очки ли» по панели не определить, и не нужно:
+ * свежесть очков определяет, кто забрал клетку.
+ */
+function bonusOurs(claimResult: number | null): boolean | null {
+  if (claimResult === null) return null;
+  return claimResult === CLAIM_RESULT_CLAIMED;
 }
 
 /**
@@ -270,22 +294,32 @@ async function accountUsageStats(
 async function dailyBonusStates(
   userId: number,
   today: string,
-): Promise<Map<number, { remaining: number | null; points: number | null; dayNo: number | null }>> {
+): Promise<
+  Map<
+    number,
+    { remaining: number | null; points: number | null; dayNo: number | null; claimResult: number | null }
+  >
+> {
   const rows = await db
     .select({
       accountId: accountsDailyBonus.accountId,
       remaining: accountsDailyBonus.remaining,
       points: accountsDailyBonus.points,
       dayNo: accountsDailyBonus.dayNo,
+      claimResult: accountsDailyBonus.claimResult,
     })
     .from(accountsDailyBonus)
     .where(and(eq(accountsDailyBonus.userId, userId), eq(accountsDailyBonus.usedOn, today)));
-  const out = new Map<number, { remaining: number | null; points: number | null; dayNo: number | null }>();
+  const out = new Map<
+    number,
+    { remaining: number | null; points: number | null; dayNo: number | null; claimResult: number | null }
+  >();
   for (const row of rows) {
     out.set(row.accountId, {
       remaining: row.remaining,
       points: row.points,
       dayNo: row.dayNo,
+      claimResult: row.claimResult,
     });
   }
   return out;
@@ -321,14 +355,19 @@ export async function listAccounts(
     const state = states.get(row.id);
     const panel = panelStates.get(row.id);
     const withPanel = { ...row, ...panelFields(panel, now) };
-    return {
+    // Наш забор сегодня: клетка, её номинал и — главное — забрали ли её МЫ.
+    const bonus = bonusStates.get(row.id) ?? null;
+    const bonusOursValue = bonusOurs(bonus?.claimResult ?? null);
+    const bonusPointsValue = bonus?.points ?? null;
+    const withBonus = {
       ...withPanel,
-      // Остаток очков по нашему леджеру бонусов: нужен, чтобы отличить «очки
-      // забрали мы и они ждут потребителя» от «по аккаунту работает потребитель»
-      // (заказ владельца 18.11) — и показать в строке аккаунта правду.
-      bonusRemaining: bonusStates.get(row.id)?.remaining ?? null,
-      bonusPoints: bonusStates.get(row.id)?.points ?? null,
-      bonusDayNo: bonusStates.get(row.id)?.dayNo ?? null,
+      bonusRemaining: bonus?.remaining ?? null,
+      bonusPoints: bonusPointsValue,
+      bonusDayNo: bonus?.dayNo ?? null,
+      bonusOurs: bonusOursValue,
+    };
+    return {
+      ...withBonus,
       weekUsed: state?.week.used ?? 0,
       weekExhausted: state?.week.exhausted ?? false,
       // Чек-ин за сегодня уже был → сегодняшнего бонуса у аккаунта нет, и в
@@ -339,7 +378,7 @@ export async function listAccounts(
       // Панель ответила — верим ей (заказ владельца 16.11); иначе считаем по
       // недельной квоте, а сожжённый бонус (ночной сброс после активации ещё
       // не наступил) даёт ноль.
-      weekPointsNext: pointsNext(withPanel, panel, state?.week, now),
+      weekPointsNext: pointsNext(withBonus, panel, state?.week, now),
       weekDaysToBonus: state?.week.daysToBonus ?? WEEKLY_ACTIVATION_LIMIT,
       weekStreak: state?.week.streak ?? 0,
     };
@@ -375,23 +414,32 @@ export async function listAccount(
     .where(and(eq(accountsAccount.id, accountId), ownership(user, accountsAccount.userId)))
     .limit(1);
   if (!row) return null;
-  const [stats, checkIns, panelStates] = await Promise.all([
+  const [stats, checkIns, panelStates, bonusStates] = await Promise.all([
     accountUsageStats(user, accountId),
     accountCheckIns(user),
     readPanelStates(user.id, timezoneId, [accountId]),
+    dailyBonusStates(user.id, today),
   ]);
   const state = weekStates(checkIns, today).get(accountId);
   const panel = panelStates.get(accountId);
   const withPanel = { ...row, ...panelFields(panel, now) };
+  const bonus = bonusStates.get(accountId) ?? null;
+  const withBonus = {
+    ...withPanel,
+    bonusRemaining: bonus?.remaining ?? null,
+    bonusPoints: bonus?.points ?? null,
+    bonusDayNo: bonus?.dayNo ?? null,
+    bonusOurs: bonusOurs(bonus?.claimResult ?? null),
+  };
   return toListItem(
     {
-      ...withPanel,
+      ...withBonus,
       weekUsed: state?.week.used ?? 0,
       weekExhausted: state?.week.exhausted ?? false,
       weekCheckedInToday: state?.checkedInToday ?? false,
       // Панель ответила — верим ей (заказ владельца 16.11); иначе считаем по
       // недельной квоте, а сожжённый бонус даёт ноль.
-      weekPointsNext: pointsNext(withPanel, panel, state?.week, now),
+      weekPointsNext: pointsNext(withBonus, panel, state?.week, now),
       weekDaysToBonus: state?.week.daysToBonus ?? WEEKLY_ACTIVATION_LIMIT,
       weekStreak: state?.week.streak ?? 0,
     },
