@@ -20,6 +20,7 @@ import {
   type AccessHandover,
 } from '@/lib/services/account-tokens';
 import { moscowToday } from '@/lib/accounts/rotation';
+import { markBonusHanded } from '@/lib/services/minimax-daily-bonus';
 import {
   dailyStateFor,
   timezoneForRoom,
@@ -465,10 +466,15 @@ export async function issueAccount(
     //      очков он не получит («insufficient balance»). Проверка только чтение,
     //      очки при этом не тратятся. Панель не ответила — решает наша эвристика
     //      ночной границы (не знаем — не отказываем).
+    // ВАЖНО (заказ владельца 18.11): забрать бонус можно один раз в сутки, но очки
+    //      тратятся ПОЗЖЕ работой. Утренний обход забирает бонусы заранее, и тогда
+    //      панель показывает «забрано» (status 3) с НЕНУЛЕВЫМ остатком: очки лежат на
+    //      аккаунте и ждут потребителя. Поэтому годен аккаунт не «бонус не забран», а
+    //      «очки ещё есть»: остаток 0 — очки сожжены, остаток > 0 — можно брать.
     const state = await dailyStateFor(candidate.id, consumerTimezone, now, {
       userId: caller.owner.id,
     });
-    if (state && !state.can_claim) {
+    if (state && state.points <= 0) {
       excluded.add(candidate.id);
       picked = pick();
       continue;
@@ -553,6 +559,16 @@ export async function issueAccount(
   await markAccessHandedOver(account.id, now);
   offer.access_token = handover.access_token;
   offer.expires_at_ms = handover.expires_at_ms;
+
+  // Леджер бонусов: кому и сколько очков отдали (заказ владельца 18.11 — «раздавать
+  // эти аккаунты по запросам, зная, по сколько очков отдаётся»).
+  await markBonusHanded(
+    account.id,
+    today,
+    caller.projectId,
+    offer.account?.points_next ?? null,
+    now,
+  );
 
   // В аудит — без токена: что за аккаунт, кому, с каким прогнозом очков.
   await logAudit(

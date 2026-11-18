@@ -58,7 +58,7 @@ import {
   pointsForIndex,
   type WeeklyQuota,
 } from './weekly';
-import { panelClaimable, panelClaimed } from '@/lib/minimax/panel';
+import { panelClaimable, panelClaimed, PANEL_STATUS_CLAIMABLE, PANEL_STATUS_CLAIMED } from '@/lib/minimax/panel';
 
 /**
  * Аккаунты с открытым вопросом по правилу клетки: подсказку по очкам для них НЕ
@@ -156,6 +156,43 @@ export type PoolHint = {
 };
 
 /**
+ * Очки, которые аккаунт отдаст потребителю сегодня, — по панели и по леджеру.
+ *
+ * Панель для забранной клетки отдаёт ОСТАТОК, а не номинал (живая проба 18.11):
+ * status 2 — очки ждут забора (номинал клетки), status 3 — очки забраны, и остаток
+ * показывает, сколько ещё лежит.
+ *
+ * Кто забрал — видно только по нашему леджеру бонусов (`bonusRemaining`, заказ
+ * владельца 18.11: утренний обход забирает бонусы по всем аккаунтам):
+ *
+ * - остаток равен нашему последнему наблюдению → очки никто не трогал: забор наш
+ *   (ждут потребителя) либо потребитель взял аккаунт и не начал → аккаунт годен,
+ *   очки отдадим тому, кто придёт;
+ * - остаток УПАЛ → по аккаунту работают → второй потребитель получил бы крошки;
+ * - строки в леджере нет → забора не было, status 3 = очки забрал потребитель → не
+ *   отдаём (как и до заказа 18.11).
+ *
+ * null — неизвестно (панель не ответила или её ответ протух).
+ */
+export function panelAvailablePoints(row: {
+  panelStatus?: number | null;
+  panelPoints?: number | null;
+  bonusRemaining?: number | null;
+}): number | null {
+  const points = row.panelPoints ?? null;
+  if (points === null) return null;
+  const status = row.panelStatus ?? null;
+  if (status === PANEL_STATUS_CLAIMABLE) return points;
+  if (status === PANEL_STATUS_CLAIMED) {
+    const seen = row.bonusRemaining ?? null;
+    if (seen === null) return 0;
+    // Остаток упал (меньше нашего наблюдения) → по аккаунту работают.
+    return points >= seen ? points : 0;
+  }
+  return null;
+}
+
+/**
  * Что мы советуем по этому аккаунту: клетка, очки и откуда они.
  *
  * - **панель MiniMax** — источник правды: она знает и клетку, и очки, и говорит
@@ -195,10 +232,14 @@ export function hintFor(row: PoolRow, now: Date = new Date()): PoolHint {
     };
   }
   if (panelClaimed(row.panelStatus)) {
-    // Панель сказала: очки сегодня уже забраны.
+    // Панель сказала: бонус за сегодня уже забрали. Очки при этом могут ещё лежать
+    // на аккаунте — для забранной клетки панель отдаёт ОСТАТОК, а не номинал. Лежат
+    // ли они — решает леджер бонусов (`panelAvailablePoints`): забор наш (утренний
+    // обход) — очки ждут потребителя; забрал потребитель — по аккаунту работают.
+    const available = panelAvailablePoints(row);
     return {
       index: row.panelCellNo ?? index,
-      points: 0,
+      points: available ?? 0,
       source: 'panel',
       unverified: false,
     };

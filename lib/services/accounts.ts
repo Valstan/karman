@@ -1,7 +1,12 @@
 import 'server-only';
 import { and, asc, desc, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
-import { accountsAccount, accountsProject, accountsUsage } from '@/lib/db/schema';
+import {
+  accountsAccount,
+  accountsDailyBonus,
+  accountsProject,
+  accountsUsage,
+} from '@/lib/db/schema';
 import { ownership, type SessionUser } from '@/lib/auth/rbac';
 import { decryptSecret, encryptSecret } from '@/lib/secrets/crypto';
 import { isUniqueViolation } from '@/lib/db/pg-error';
@@ -30,6 +35,7 @@ import {
   type PanelState,
 } from '@/lib/accounts/panel-state';
 import { OWNER_TIMEZONE } from '@/lib/minimax/panel';
+import { panelAvailablePoints } from '@/lib/accounts/pool';
 import {
   WEEKLY_ACTIVATION_LIMIT,
   pointsForIndex,
@@ -156,17 +162,26 @@ function panelFields(
 /**
  * Очки следующей активации: панель знает их точно, модель — приблизительно.
  *
- * Панель ответила «очки можно забрать» — верим ей; ответила «очки сожжены» —
- * ноль (и аккаунт из оборота выходит). Панели нет или её ответ протух —
- * считаем по недельной квоте, как раньше.
+ * Панель ответила — верим ей; ответила «очки сожжены» — берём остаток из
+ * `panelAvailablePoints` (у забранной клетки панель отдаёт остаток, а не номинал;
+ * ждут ли очки потребителя или по аккаунту уже работают — решает наш леджер
+ * бонусов, заказ владельца 18.11). Панели нет или её ответ протух — считаем по
+ * недельной квоте, как раньше.
  */
 function pointsNext(
-  row: { usedAt: string | null; panelStatus?: number | null },
+  row: { usedAt: string | null; panelStatus?: number | null; bonusRemaining?: number | null },
   panel: PanelState | undefined,
   quota: WeeklyQuota | undefined,
   now: Date,
 ): number {
-  if (panel && isFreshPanelState(panel, now) && panel.can_claim) return panel.points;
+  if (panel && isFreshPanelState(panel, now)) {
+    const available = panelAvailablePoints({
+      panelStatus: panel.status,
+      panelPoints: panel.points,
+      bonusRemaining: row.bonusRemaining ?? null,
+    });
+    if (available !== null) return available;
+  }
   if (isSpent(row, now)) return 0;
   return quota?.pointsToday ?? 0;
 }
@@ -245,6 +260,32 @@ async function accountUsageStats(
 }
 
 /**
+ * Остаток очков по нашему леджеру бонусов за московские сутки (заказ владельца
+ * 18.11): сколько очков лежало на аккаунте при последней нашей проверке.
+ *
+ * Нужен строке списка, чтобы отличить «очки забрал наш утренний обход — ждут
+ * потребителя» от «очки забрал потребитель — по аккаунту работают»: у забранной
+ * клетки панель отдаёт остаток, а не номинал, и без леджера эти случаи неразличимы.
+ */
+async function dailyBonusRemainders(
+  userId: number,
+  today: string,
+): Promise<Map<number, number>> {
+  const rows = await db
+    .select({
+      accountId: accountsDailyBonus.accountId,
+      remaining: accountsDailyBonus.remaining,
+    })
+    .from(accountsDailyBonus)
+    .where(and(eq(accountsDailyBonus.userId, userId), eq(accountsDailyBonus.usedOn, today)));
+  const out = new Map<number, number>();
+  for (const row of rows) {
+    if (row.remaining !== null) out.set(row.accountId, row.remaining);
+  }
+  return out;
+}
+
+/**
  * Все аккаунты пользователя в порядке «доступные сверху, израсходованные снизу».
  *
  * `timezoneId` — пояс, по которому берётся ответ панели MiniMax: у панели
@@ -258,7 +299,7 @@ export async function listAccounts(
 ): Promise<AccountListItem[]> {
   const today = moscowToday(now);
   const timezoneId = options.timezoneId ?? OWNER_TIMEZONE;
-  const [rows, stats, checkIns, panelStates] = await Promise.all([
+  const [rows, stats, checkIns, panelStates, bonusStates] = await Promise.all([
     db
       .select(accountColumns)
       .from(accountsAccount)
@@ -267,6 +308,7 @@ export async function listAccounts(
     accountUsageStats(user),
     accountCheckIns(user),
     readPanelStates(user.id, timezoneId),
+    dailyBonusRemainders(user.id, today),
   ]);
   const states = weekStates(checkIns, today);
   const enriched = rows.map((row) => {
@@ -275,6 +317,10 @@ export async function listAccounts(
     const withPanel = { ...row, ...panelFields(panel, now) };
     return {
       ...withPanel,
+      // Остаток очков по нашему леджеру бонусов: нужен, чтобы отличить «очки
+      // забрали мы и они ждут» от «по аккаунту работает потребитель» (заказ
+      // владельца 18.11).
+      bonusRemaining: bonusStates.get(row.id) ?? null,
       weekUsed: state?.week.used ?? 0,
       weekExhausted: state?.week.exhausted ?? false,
       // Чек-ин за сегодня уже был → сегодняшнего бонуса у аккаунта нет, и в

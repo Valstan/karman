@@ -11,6 +11,8 @@ import {
 } from '@/lib/services/accounts';
 import { tokenProgress } from '@/lib/services/account-tokens';
 import { dailyStates, OWNER_TIMEZONE } from '@/lib/services/minimax-daily';
+import { dailyBonusStats } from '@/lib/services/minimax-daily-bonus';
+import { moscowToday } from '@/lib/accounts/rotation';
 import { isFreshPanelState } from '@/lib/accounts/panel-state';
 import { MinimaxPanel } from '@/components/app/minimax-panel';
 
@@ -49,6 +51,11 @@ export default async function MinimaxPage() {
       apiUsageByDay(user),
       tokenProgress(user, now),
     ]);
+
+  // Сводка по суточным бонусам (заказ владельца 18.11): утренний обход забирает
+  // бонусы по всем аккаунтам, днём аккаунты раздаются, а по этим цифрам видно,
+  // сколько очков в банке, сколько отдано и сколько потрачено.
+  const bonus = await dailyBonusStats(moscowToday(now));
 
   // Состояние суток по панели MiniMax: что уже прочитано — показываем в строках.
   // Состояние живёт в БД (не в памяти процесса), поэтому страница и выдача видят
@@ -89,6 +96,17 @@ export default async function MinimaxPage() {
         apiUsage={apiUsage}
         tokenProgress={tokens}
         dailyStates={states}
+        bonusStats={{
+          date: bonus.date,
+          accounts: bonus.accounts,
+          claimed: bonus.claimed,
+          already: bonus.already,
+          points: bonus.points,
+          handed: bonus.handed,
+          handedPoints: bonus.handedPoints,
+          spentPoints: bonus.spentPoints,
+          leftPoints: bonus.leftPoints,
+        }}
         serverNow={now.toISOString()}
       />
     </div>
