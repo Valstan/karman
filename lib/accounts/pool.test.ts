@@ -148,12 +148,20 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
 });
 
 describe('пул MiniMax: очередь выдачи (заказ владельца 19.11)', () => {
-  /** Аккаунт, который сторож вернул в оборот: сессия снята, отметка выдачи осталась. */
+  /**
+   * Аккаунт, который сторож вернул в оборот: сессия снята, а следы использования
+   * сегодня остались — отметка выдачи в леджере и строка журнала.
+   */
   const returnedByWatchdog = (id: number, checkIns: WeeklyCheckIn[] = []) =>
     account(id, checkIns, {
       usedAt: null,
       usedOn: null,
       bonusHandedAt: '2026-11-13T09:00:00.000Z',
+      // Леджер забора: клетку забрали мы → класс и очки считаются по нему.
+      bonusOurs: true,
+      bonusPoints: 400,
+      bonusDayNo: 2,
+      weekCheckedInToday: true,
     });
 
   it('аккаунт, возвращённый сторожем, уходит в конец очереди', () => {
@@ -208,10 +216,34 @@ describe('пул MiniMax: очередь выдачи (заказ владель
     expect(orderByQueue([b, a]).map((row) => row.id)).toEqual([1, 2]);
   });
 
-  it('признак «вернул сторож» — отдали сегодня, а сессии нет', () => {
+  it('признак «вернул сторож» — сегодня включали, а сессии нет', () => {
+    // Отметка выдачи в леджере (потребителю) либо строка журнала за сегодня (кнопка
+    // владельца «Активировать» — сторож работает по журналу, а не по подсистеме API).
     expect(isReturnedToPool({ usedAt: null, bonusHandedAt: '2026-11-13T09:00:00.000Z' })).toBe(true);
-    expect(isReturnedToPool({ usedAt: '2026-11-13T09:00:00.000Z', bonusHandedAt: '2026-11-13T09:00:00.000Z' })).toBe(false);
+    expect(isReturnedToPool({ usedAt: null, weekCheckedInToday: true })).toBe(true);
+    expect(
+      isReturnedToPool({
+        usedAt: '2026-11-13T09:00:00.000Z',
+        bonusHandedAt: '2026-11-13T09:00:00.000Z',
+      }),
+    ).toBe(false);
     expect(isReturnedToPool({ usedAt: null, bonusHandedAt: null })).toBe(false);
+  });
+
+  it('аккаунт, который включал сам владелец, тоже уходит в конец', () => {
+    // Сторож снимает сессию по журналу — в том числе по записям владельца. Значит
+    // «пустые» аккаунты прилетали и в программирование, а не только Сарафану.
+    const ownerUsed = account(3, [auto('2026-11-12')], {
+      usedAt: null,
+      usedOn: null,
+      weekCheckedInToday: true,
+      bonusOurs: true,
+      bonusPoints: 400,
+      bonusDayNo: 2,
+    });
+    const clean = account(1, [auto('2026-11-12')]);
+    const picked = pickPoolAccount([ownerUsed, clean], NOW);
+    expect(picked.account?.id).toBe(1);
   });
 });
 
