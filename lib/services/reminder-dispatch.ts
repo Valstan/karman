@@ -5,7 +5,10 @@ import { reminder, reminderDelivery, reminderSchedule, telegramLink } from '@/li
 import { sendMessage } from '@/lib/telegram/client';
 import { buildReminderKeyboard } from '@/lib/telegram/keyboards';
 import { computeNextFire } from '@/lib/reminders/schedule';
-import { reconcileDomainReminders } from '@/lib/services/reminder-sync';
+import {
+  reconcileDomainReminders,
+  type DomainReminderSyncResult,
+} from '@/lib/services/reminder-sync';
 import { renderReminderMessage } from '@/lib/services/reminder-render';
 import type { ScheduleSpec } from '@/lib/reminders/types';
 
@@ -20,6 +23,8 @@ export type DispatchResult = {
   failed: number;
   skipped: number;
   locked?: boolean;
+  /** Что сделал проход синхронизации доменных напоминаний (след, мандат brain 19.11). */
+  sync?: DomainReminderSyncResult;
 };
 
 async function tryLock(): Promise<boolean> {
@@ -43,8 +48,11 @@ export async function dispatchDueReminders(): Promise<DispatchResult> {
   }
   try {
     // Синхронизируем доменные авто-напоминания (платежи/документы) с текущими данными.
+    // След на каждый проход пишет сама синхронизация (мандат brain 19.11): иначе «задача
+    // идёт» и «задача молчала» неразличимы.
+    let sync: DomainReminderSyncResult | undefined;
     try {
-      await reconcileDomainReminders();
+      sync = await reconcileDomainReminders();
     } catch (error) {
       console.error('[reminders/dispatch] reconcile error', error);
     }
@@ -164,7 +172,7 @@ export async function dispatchDueReminders(): Promise<DispatchResult> {
       }
     }
 
-    return { scanned: due.length, sent, failed, skipped };
+    return { scanned: due.length, sent, failed, skipped, ...(sync ? { sync } : {}) };
   } finally {
     await unlock();
   }
