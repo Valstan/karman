@@ -309,4 +309,26 @@ describe('ежесуточный забор бонусов (D-191-бис)', () =
     expect(stats.spentPoints).toBe(400);
     expect(stats.leftPoints).toBe(0);
   });
+
+  it('статистика видит возвраты сторожа (волна повторных выдач)', async () => {
+    // Заказ владельца 19.11: владелец должен видеть, сколько аккаунтов сторож
+    // вернул в оборот — это и есть «волна» повторных выдач (19.11: 51 из 104).
+    const accountId = await makeAccount('Раздаваемый', 'given@example.test');
+    await sweepDailyBonus({ now: NOW });
+    await markBonusHanded(accountId, TODAY, null, 400, NOW);
+
+    // Сессия открыта — аккаунт ещё в работе, сторож его не возвращал.
+    await refs.current!
+      .update(accountsAccount)
+      .set({ usedOn: TODAY, usedAt: NOW.toISOString() })
+      .where(eq(accountsAccount.id, accountId));
+    expect((await dailyBonusStats(TODAY)).returned).toBe(0);
+
+    // Сторож снял сессию и вернул аккаунт в оборот.
+    await refs.current!
+      .update(accountsAccount)
+      .set({ usedOn: null, usedAt: null })
+      .where(eq(accountsAccount.id, accountId));
+    expect((await dailyBonusStats(TODAY)).returned).toBe(1);
+  });
 });

@@ -19,7 +19,7 @@ import {
   tokenBackedAccountIds,
   type AccessHandover,
 } from '@/lib/services/account-tokens';
-import { moscowToday } from '@/lib/accounts/rotation';
+import { isReturnedToPool, moscowToday } from '@/lib/accounts/rotation';
 import { markBonusHanded } from '@/lib/services/minimax-daily-bonus';
 import {
   dailyStateFor,
@@ -605,6 +605,11 @@ export async function issueAccount(
   );
 
   // В аудит — без токена: что за аккаунт, кому, с каким прогнозом очков.
+  //
+  // Возврат сторожем помечаем явно (заказ владельца 19.11): такой аккаунт уже
+  // отдавали сегодня, и очки прежнего потребителя могли быть потрачены — волну
+  // повторных выдач видно в статистике, а не только по жалобам.
+  const returned = isReturnedToPool(account);
   await logAudit(
     caller.roomId,
     caller.tokenId,
@@ -612,8 +617,10 @@ export async function issueAccount(
     `выдан аккаунт #${account.id} «${account.title}»: класс ${picked.tier ?? '-'}, клетка ${
       offer.account?.activation_index ?? '-'
     }, очки ${offer.account?.points_next ?? '-'}, access отдан${
-      filters.area ? `, область ${filters.area}` : ''
-    }${filters.project ? `, проект ${filters.project}` : ''}, приоритет ${preferredTier}, жизнь access ${
+      returned ? ', ВОЗВРАТ СТОРОЖЕМ (уже отдавали сегодня)' : ''
+    }${filters.area ? `, область ${filters.area}` : ''}${
+      filters.project ? `, проект ${filters.project}` : ''
+    }, приоритет ${preferredTier}, жизнь access ${
       Math.round((handover.expires_at_ms - now.getTime()) / 60000)
     } мин`,
     ip,

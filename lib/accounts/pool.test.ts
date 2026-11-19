@@ -3,13 +3,14 @@ import {
   availableByTier,
   buildOffer,
   hintFor,
+  orderByQueue,
   pickPoolAccount,
   resolveActivation,
   type PoolOffer,
   type PoolRow,
 } from '@/lib/accounts/pool';
 import { weeklyQuota, type WeeklyCheckIn } from '@/lib/accounts/weekly';
-import { accountPoolSummary } from '@/lib/accounts/rotation';
+import { accountPoolSummary, isQueueOrderTime, isReturnedToPool } from '@/lib/accounts/rotation';
 
 const TODAY = '2026-11-13';
 const NOW = new Date('2026-11-13T12:00:00Z');
@@ -143,6 +144,106 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     expect(offer.why).toContain('400 очков');
     // Пароля в ответе нет: Сарафан работает по почте, секрет наружу не выносим.
     expect('password' in (offer.account ?? {})).toBe(false);
+  });
+});
+
+describe('пул MiniMax: очередь выдачи (заказ владельца 19.11)', () => {
+  /**
+   * Аккаунт, который сторож вернул в оборот: сессия снята, а следы использования
+   * сегодня остались — отметка выдачи в леджере и строка журнала.
+   */
+  const returnedByWatchdog = (id: number, checkIns: WeeklyCheckIn[] = []) =>
+    account(id, checkIns, {
+      usedAt: null,
+      usedOn: null,
+      bonusHandedAt: '2026-11-13T09:00:00.000Z',
+      // Леджер забора: клетку забрали мы → класс и очки считаются по нему.
+      bonusOurs: true,
+      bonusPoints: 400,
+      bonusDayNo: 2,
+      weekCheckedInToday: true,
+    });
+
+  it('аккаунт, возвращённый сторожем, уходит в конец очереди', () => {
+    // Раньше он вставал В ПЕРВЫЙ: сторож снимал отметку сессии, и «никогда не
+    // активированный» уходил в начало списка — то есть аккаунт, которого сегодня
+    // уже отдавали и чьи очки могли быть потрачены, оказывался первым кандидатом.
+    const clean = account(1, [auto('2026-11-12')]);
+    const returned = returnedByWatchdog(2, [auto('2026-11-12')]);
+    const picked = pickPoolAccount([returned, clean], NOW);
+    expect(picked.account?.id).toBe(1);
+    expect(picked.tier).toBe('points_400');
+  });
+
+  it('если чистых кандидатов не осталось — отдаём возвращённого', () => {
+    // До возвращённых очередь может не дойти, но если других нет — отдаём лучше,
+    // чем ничего (и честно говорим об этом в объяснении).
+    const returned = returnedByWatchdog(2, [auto('2026-11-12')]);
+    const picked = pickPoolAccount([returned], NOW);
+    expect(picked.account?.id).toBe(2);
+    const offer = buildOffer(picked, { project: 'SARAFAN', today: TODAY });
+    expect(offer.why).toContain('возвращён сторожем');
+  });
+
+  it('возвращённый тысячник не вытесняет чистый четырёхсотковый', () => {
+    // Класс очков по комнате (Сарафан — четырёхсотовые первыми) и очередь
+    // возвращённых — два независимых правила: и то, и другое должно устоять.
+    const cleanFour = account(1, [auto('2026-11-12')]);
+    const returnedThousand = returnedByWatchdog(2, [
+      auto('2026-11-10'),
+      auto('2026-11-11'),
+      auto('2026-11-12'),
+    ]);
+    const picked = pickPoolAccount([returnedThousand, cleanFour], NOW);
+    expect(picked.account?.id).toBe(1);
+    expect(picked.tier).toBe('points_400');
+  });
+
+  it('вечерний режим включается в 17:00 по Москве', () => {
+    expect(isQueueOrderTime(new Date('2026-11-13T13:59:00Z'))).toBe(false); // 16:59 МСК
+    expect(isQueueOrderTime(new Date('2026-11-13T14:00:00Z'))).toBe(true); // 17:00 МСК
+    expect(isQueueOrderTime(new Date('2026-11-13T15:00:00Z'))).toBe(true); // 18:00 МСК
+  });
+
+  it('ключ очереди — отметка выдачи, а не отметка сессии', () => {
+    // Отметка сессии сторож снимает при возврате; отметка выдачи живёт всегда
+    // (мадат владельца 18.11). Значит очередь не «прыгает», когда аккаунт вернули.
+    const a = account(1, [auto('2026-11-12')], { usedAt: '2026-11-12T20:00:00.000Z' });
+    const b = account(2, [auto('2026-11-10')], {
+      usedAt: '2026-11-10T09:00:00.000Z',
+      bonusHandedAt: '2026-11-13T05:00:00.000Z',
+    });
+    expect(orderByQueue([b, a]).map((row) => row.id)).toEqual([1, 2]);
+  });
+
+  it('признак «вернул сторож» — сегодня включали, а сессии нет', () => {
+    // Отметка выдачи в леджере (потребителю) либо строка журнала за сегодня (кнопка
+    // владельца «Активировать» — сторож работает по журналу, а не по подсистеме API).
+    expect(isReturnedToPool({ usedAt: null, bonusHandedAt: '2026-11-13T09:00:00.000Z' })).toBe(true);
+    expect(isReturnedToPool({ usedAt: null, weekCheckedInToday: true })).toBe(true);
+    expect(
+      isReturnedToPool({
+        usedAt: '2026-11-13T09:00:00.000Z',
+        bonusHandedAt: '2026-11-13T09:00:00.000Z',
+      }),
+    ).toBe(false);
+    expect(isReturnedToPool({ usedAt: null, bonusHandedAt: null })).toBe(false);
+  });
+
+  it('аккаунт, который включал сам владелец, тоже уходит в конец', () => {
+    // Сторож снимает сессию по журналу — в том числе по записям владельца. Значит
+    // «пустые» аккаунты прилетали и в программирование, а не только Сарафану.
+    const ownerUsed = account(3, [auto('2026-11-12')], {
+      usedAt: null,
+      usedOn: null,
+      weekCheckedInToday: true,
+      bonusOurs: true,
+      bonusPoints: 400,
+      bonusDayNo: 2,
+    });
+    const clean = account(1, [auto('2026-11-12')]);
+    const picked = pickPoolAccount([ownerUsed, clean], NOW);
+    expect(picked.account?.id).toBe(1);
   });
 });
 
