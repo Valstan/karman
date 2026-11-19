@@ -13,8 +13,6 @@ import { isUniqueViolation } from '@/lib/db/pg-error';
 import { defaultAccountTitle } from '@/lib/accounts/import';
 import {
   aggregateDailyUsage,
-  rankAccounts,
-  type AccountRatingRow,
   type DailyUsage,
 } from '@/lib/accounts/stats';
 import {
@@ -987,29 +985,6 @@ export async function dailyUsage(user: SessionUser): Promise<DailyUsage[]> {
     .from(accountsUsage)
     .where(ownership(user, accountsUsage.userId));
   return aggregateDailyUsage(rows);
-}
-
-/**
- * Рейтинг аккаунтов: кто активировался чаще всего и сколько на них ушло токенов
- * (заказ владельца 05.11: «десятка самых популярных аккаунтов»).
- *
- * Порядок и отсечение — чистой функцией `rankAccounts`, тем же правилом, что
- * покрыто юнит-гейтом.
- */
-export async function accountRating(user: SessionUser, limit = 10): Promise<AccountRatingRow[]> {
-  const rows = await db
-    .select({
-      id: accountsAccount.id,
-      title: accountsAccount.title,
-      email: accountsAccount.email,
-      activations: sql<number>`count(*)::int`,
-      tokens: sql<number>`coalesce(sum(${accountsUsage.tokens}), 0)::int`,
-    })
-    .from(accountsUsage)
-    .innerJoin(accountsAccount, eq(accountsUsage.accountId, accountsAccount.id))
-    .where(ownership(user, accountsUsage.userId))
-    .groupBy(accountsAccount.id, accountsAccount.title, accountsAccount.email);
-  return rankAccounts(rows, limit);
 }
 
 /**

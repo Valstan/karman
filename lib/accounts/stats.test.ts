@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   aggregateDailyUsage,
+  buildChampionship,
+  championshipLeaders,
   fillDailySeries,
-  rankAccounts,
   shiftDate,
   sortDailyUsage,
   sortProjectsByUsage,
-  type AccountRatingRow,
+  type ProjectDayPoints,
 } from './stats';
 
 /**
@@ -122,29 +123,59 @@ describe('сортировка таблицы сумм', () => {
   });
 });
 
-describe('рейтинг аккаунтов', () => {
-  const rows: AccountRatingRow[] = [
-    { id: 1, title: 'А', email: 'a@example.test', activations: 3, tokens: 10 },
-    { id: 2, title: 'Б', email: 'b@example.test', activations: 7, tokens: 5 },
-    { id: 3, title: 'В', email: 'c@example.test', activations: 7, tokens: 90 },
-    { id: 4, title: 'Г', email: 'd@example.test', activations: 1, tokens: 0 },
+describe('чемпионат по проектам', () => {
+  const rows: ProjectDayPoints[] = [
+    // 18.11: А потратил больше всех (3), Б — второй (2), В — третий (1).
+    { usedOn: '2026-11-18', projectId: 1, projectName: 'А', points: 2000 },
+    { usedOn: '2026-11-18', projectId: 2, projectName: 'Б', points: 1000 },
+    { usedOn: '2026-11-18', projectId: 3, projectName: 'В', points: 400 },
+    // 19.11: Б обошёл А (теперь Б первый), В выбыл из тройки.
+    { usedOn: '2026-11-19', projectId: 2, projectName: 'Б', points: 1600 },
+    { usedOn: '2026-11-19', projectId: 1, projectName: 'А', points: 800 },
   ];
 
-  it('сортирует по числу активаций, при равенстве — по токенам', () => {
-    const ranked = rankAccounts(rows, 10);
-    expect(ranked.map((r) => r.id)).toEqual([3, 2, 1, 4]);
+  it('за сутки даёт 3, 2 и 1 балл лидерам по потраченным очкам', () => {
+    const table = buildChampionship(rows);
+    const byName = new Map(table.map((row) => [row.projectName, row]));
+    // 18.11: А (2000) — 3 балла, Б (1000) — 2, В (400) — 1.
+    // 19.11: Б (1600) — 3 балла, А (800) — 2 (В в тот день ничего не тратил).
+    expect(byName.get('Б')?.points).toBe(5); // 2 (18.11) + 3 (19.11)
+    expect(byName.get('А')?.points).toBe(5); // 3 (18.11) + 2 (19.11)
+    expect(byName.get('В')?.points).toBe(1); // 1 (18.11)
   });
 
-  it('обрезает до десятки', () => {
-    const many: AccountRatingRow[] = Array.from({ length: 25 }, (_, i) => ({
-      id: i + 1,
-      title: `А${i}`,
-      email: `a${i}@example.test`,
-      activations: i,
-      tokens: i,
-    }));
-    expect(rankAccounts(many, 10)).toHaveLength(10);
-    expect(rankAccounts(many, 10)[0]!.id).toBe(25);
+  it('таблицу строит по набранным баллам, при равенстве — по потраченным очкам', () => {
+    const table = buildChampionship(rows);
+    // Б и А набрали по 4 балла. Потратили А — 2800, Б — 2600, значит выше А.
+    expect(table.map((row) => row.projectName)).toEqual(['А', 'Б', 'В']);
+  });
+
+  it('считает потраченные очки, сутки в тройке и победы', () => {
+    const table = buildChampionship(rows);
+    const a = table.find((row) => row.projectName === 'А')!;
+    expect(a.spent).toBe(2800);
+    expect(a.topDays).toBe(2);
+    expect(a.wins).toBe(1);
+    expect(a.days).toBe(2);
+  });
+
+  it('проект без очков в сутки баллов не получает, а активация без проекта не участвует', () => {
+    const table = buildChampionship([
+      ...rows,
+      { usedOn: '2026-11-19', projectId: 4, projectName: 'Г', points: 0 },
+      { usedOn: '2026-11-19', projectId: null, projectName: null, points: 5000 },
+    ]);
+    expect(table.find((row) => row.projectName === 'Г')).toBeUndefined();
+    expect(table).toHaveLength(3);
+  });
+
+  it('лидеры последних суток — по очкам этого дня', () => {
+    const { usedOn, leaders } = championshipLeaders(rows);
+    expect(usedOn).toBe('2026-11-19');
+    expect(leaders.map((leader) => [leader.projectName, leader.score, leader.points])).toEqual([
+      ['Б', 3, 1600],
+      ['А', 2, 800],
+    ]);
   });
 });
 

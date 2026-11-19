@@ -1,7 +1,6 @@
 import { notFound } from 'next/navigation';
 import { requireUser } from '@/lib/auth/current-user';
 import {
-  accountRating,
   apiUsageByDay,
   dailyUsage,
   listAccounts,
@@ -11,6 +10,7 @@ import {
 } from '@/lib/services/accounts';
 import { tokenProgress } from '@/lib/services/account-tokens';
 import { dailyBonusStats } from '@/lib/services/minimax-daily-bonus';
+import { consumerTiers } from '@/lib/services/minimax-consumer-tiers';
 import { moscowToday } from '@/lib/accounts/rotation';
 import { MinimaxPanel } from '@/components/app/minimax-panel';
 
@@ -38,16 +38,16 @@ export default async function MinimaxPage() {
   // Один момент на весь список: иначе «свободен через …» в разных строках
   // считалось бы по разным часам, а список мог бы разъехаться при гидрации.
   const now = new Date();
-  const [accounts, projects, usage, usageByDay, daily, rating, apiUsage, tokens] =
+  const [accounts, projects, usage, usageByDay, daily, apiUsage, tokens, tiers] =
     await Promise.all([
       listAccounts(user, now),
       listProjects(user),
       projectUsage(user),
       projectUsageByDay(user),
       dailyUsage(user),
-      accountRating(user),
       apiUsageByDay(user),
       tokenProgress(user, now),
+      consumerTiers(30),
     ]);
 
   // Сводка по суточным бонусам (заказ владельца 18.11): утренний обход забирает
@@ -72,8 +72,8 @@ export default async function MinimaxPage() {
         usage={usage}
         usageByDay={usageByDay}
         daily={daily}
-        rating={rating}
         apiUsage={apiUsage}
+        tiers={tiers}
         tokenProgress={tokens}
         bonusStats={{
           date: bonus.date,

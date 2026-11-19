@@ -5,7 +5,6 @@ import { createTestDb, type TestDb } from '@/lib/db/test-db';
 import { accountsAccount, accountsUsage, authUser } from '@/lib/db/schema';
 import {
   accountPassword,
-  accountRating,
   activateAccount,
   apiUsageByDay,
   createAccount,
@@ -533,47 +532,6 @@ describe('мультиаккаунт: свод по дням и рейтинг',
     });
   });
 
-  it('рейтинг: чаще активируемый аккаунт выше, и он ограничен десяткой', async () => {
-    const projectId = await createProject(owner, { name: 'Матрица РМЗ' });
-    const busy = await createAccount(owner, {
-      title: 'Занятой',
-      email: 'busy@example.test',
-      password: 'p',
-    });
-    const quiet = await createAccount(owner, {
-      title: 'Тихий',
-      email: 'quiet@example.test',
-      password: 'p',
-    });
-    await activateAccount(owner, { id: busy, projectId, tokens: 10 }, LONG_AGO);
-    await activateAccount(owner, { id: busy, projectId, tokens: 20 }, NOW);
-    await activateAccount(owner, { id: quiet, projectId, tokens: 5 }, NOW);
-
-    const rating = await accountRating(owner);
-    expect(rating[0]!.id).toBe(busy);
-    expect(rating[0]!.activations).toBe(2);
-    expect(rating[0]!.tokens).toBe(30);
-    expect(rating[1]!.id).toBe(quiet);
-    expect(rating[1]!.activations).toBe(1);
-
-    // Десятка — верхний срез: активируем ОДИН аккаунт одиннадцать раз. Порядок
-    // важен: активации идут ХРОНОЛОГИЧЕСКИ (от самой старой к самой новой) —
-    // иначе вторая «назад по времени» попадает в ещё открытое окно первой и
-    // считается продолжением той же сессии.
-    const many = await createAccount(owner, {
-      title: 'Одиннадцать',
-      email: 'many@example.test',
-      password: 'p',
-    });
-    for (let day = 11; day >= 1; day -= 1) {
-      const at = new Date(NOW.getTime() - day * 25 * 60 * 60 * 1000);
-      await activateAccount(owner, { id: many, projectId, tokens: 1 }, at);
-    }
-    const limited = await accountRating(owner, 3);
-    expect(limited).toHaveLength(3);
-    expect(limited[0]!.id).toBe(many);
-    expect(limited[0]!.activations).toBe(11);
-  });
 });
 
 /**
