@@ -40,7 +40,8 @@ import { useMinimaxTokenFlow } from './minimax-token-flow';
 import { MinimaxActivationsByDay } from './minimax-activations-by-day';
 import { MinimaxDailySums } from './minimax-daily-sums';
 import { MinimaxApiUsage } from './minimax-api-usage';
-import { MinimaxAccountRating } from './minimax-account-rating';
+import { MinimaxChampionship } from './minimax-championship';
+import { MinimaxThousands } from './minimax-thousands';
 import { MinimaxActivityChart } from './minimax-activity-chart';
 import {
   copyAccountSecret,
@@ -55,7 +56,8 @@ import type {
   ProjectUsageDay,
 } from '@/lib/services/accounts';
 import type { TokenProgress } from '@/lib/services/account-tokens';
-import type { AccountRatingRow, DailyUsage } from '@/lib/accounts/stats';
+import type { ConsumerTiers } from '@/lib/accounts/consumer-tiers';
+import type { DailyUsage } from '@/lib/accounts/stats';
 import { sortProjectsByUsage } from '@/lib/accounts/stats';
 import type { ProjectUsage } from '@/lib/accounts/rotation';
 
@@ -102,8 +104,8 @@ export function MinimaxPanel({
   usage,
   usageByDay,
   daily,
-  rating,
   apiUsage,
+  tiers,
   tokenProgress,
   bonusStats,
   serverNow,
@@ -114,10 +116,10 @@ export function MinimaxPanel({
   usageByDay: ProjectUsageDay[];
   /** Суммы по дням: активации, задействованные проекты, очки (заказ 05.11). */
   daily: DailyUsage[];
-  /** Рейтинг аккаунтов: кто активировался чаще всего (заказ 05.11). */
-  rating: AccountRatingRow[];
   /** Расход по запросам проектов по дням — отдельно от расхода на программирование (14.11). */
   apiUsage: ApiUsageDay[];
+  /** Куда ушли тысячные: программирование или продсервер Сарафана (заказ 19.11). */
+  tiers: ConsumerTiers;
   /** Состояние токенов аккаунтов (заказ 15.11: статусы «Без токена»/«Токен получен»). */
   tokenProgress: TokenProgress;
 
@@ -439,42 +441,63 @@ export function MinimaxPanel({
             id: 'pool',
             title: 'Пул и бонусы',
             node: (
-              <div className="flex flex-col gap-2">
-                <div className="text-sm font-medium text-muted-foreground">
-                  Живых аккаунтов - {pool.free}, За день - {week.today}
-                  {week.freesIn5h > 0 ? ` (в ближайшие 5 ч - ${week.freesIn5h})` : ''}, За неделю -{' '}
-                  {week.week} ({week.weekPoints} очков, сброс {week.weekResetsOn})
-                  {week.pointsPerDay !== null
-                    ? ` · темп ${Math.round(week.pointsPerDay).toLocaleString('ru-RU')} очков/день (срез ${week.sliceFrom}—${week.sliceTo})`
-                    : ''}
-                  {week.coversWeek === null
-                    ? ''
-                    : week.coversWeek
-                      ? ' (на неделю хватает)'
-                      : ' (на неделю НЕ хватает)'}
+              <dl className="flex flex-col gap-1 text-sm">
+                <div className="flex flex-wrap gap-x-2">
+                  <dt className="text-muted-foreground">Пул</dt>
+                  <dd>
+                    {pool.free} живых · за день {week.today}
+                    {week.freesIn5h > 0 ? ` (через 5 ч ещё ${week.freesIn5h})` : ''} · за неделю{' '}
+                    {week.week} ({week.weekPoints} очк., сброс {week.weekResetsOn})
+                  </dd>
+                </div>
+                <div className="flex flex-wrap gap-x-2">
+                  <dt className="text-muted-foreground">Темп</dt>
+                  <dd>
+                    {week.pointsPerDay !== null
+                      ? `${Math.round(week.pointsPerDay).toLocaleString('ru-RU')} очк./день (срез ${week.sliceFrom}—${week.sliceTo})`
+                      : '—'}
+                    {week.coversWeek === null
+                      ? ''
+                      : week.coversWeek
+                        ? ' · на неделю хватает'
+                        : ' · на неделю НЕ хватает'}
+                  </dd>
                 </div>
                 {cohort.liveYesterday > 0 ? (
-                  <div className="text-sm font-medium text-muted-foreground">
-                    Живых серий вчера — {cohort.liveYesterday}, продолжено сегодня —{' '}
-                    {cohort.continuedToday}, не отмечены сегодня — {cohort.atRisk}
-                    {cohort.atRisk > 0
-                      ? ` (если пропустить — минус ${cohort.pointsLostIfSkipped} очков)`
-                      : ''}
-                    {bonusToday > 0 ? ` · сегодня доступно тысячных: ${bonusToday}` : ''}
+                  <div className="flex flex-wrap gap-x-2">
+                    <dt className="text-muted-foreground">Серии</dt>
+                    <dd>
+                      вчера живых {cohort.liveYesterday} · продолжено сегодня {cohort.continuedToday} ·
+                      под риском {cohort.atRisk}
+                      {cohort.atRisk > 0 ? ` (−${cohort.pointsLostIfSkipped} очк.)` : ''}
+                      {bonusToday > 0 ? ` · тысячных сегодня ${bonusToday}` : ''}
+                    </dd>
                   </div>
                 ) : null}
                 {bonusStats.accounts > 0 ? (
-                  <div className="text-sm font-medium text-muted-foreground">
-                    Бонусы за {bonusStats.date}: забрали у {bonusStats.claimed} аккаунтов на{' '}
-                    {bonusStats.points.toLocaleString('ru-RU')} очков; у {bonusStats.already} клетку
-                    забрал потребитель — эти {bonusStats.spentPoints.toLocaleString('ru-RU')} очков
-                    потрачены и в выдачу не идут; отдано {bonusStats.handed} (
-                    {bonusStats.handedPoints.toLocaleString('ru-RU')} очк.), на аккаунтах лежит{' '}
-                    {bonusStats.leftPoints.toLocaleString('ru-RU')}
+                  <div className="flex flex-wrap gap-x-2">
+                    <dt className="text-muted-foreground">Бонусы {bonusStats.date}</dt>
+                    <dd>
+                      забрали {bonusStats.claimed} на {bonusStats.points.toLocaleString('ru-RU')} очков ·
+                      забрал потребитель {bonusStats.already} клеток (
+                      {bonusStats.spentPoints.toLocaleString('ru-RU')} очк. — в выдачу не идут) · отдано{' '}
+                      {bonusStats.handed} ({bonusStats.handedPoints.toLocaleString('ru-RU')} очк.) · на
+                      аккаунтах {bonusStats.leftPoints.toLocaleString('ru-RU')}
+                    </dd>
                   </div>
                 ) : null}
-              </div>
+              </dl>
             ),
+          },
+          {
+            id: 'championship',
+            title: 'Чемпионат по очкам',
+            node: <MinimaxChampionship rows={usageByDay} />,
+          },
+          {
+            id: 'thousands',
+            title: 'Тысячные: куда ушли',
+            node: <MinimaxThousands tiers={tiers} />,
           },
           {
             id: 'usage',
@@ -521,11 +544,6 @@ export function MinimaxPanel({
             id: 'byDay',
             title: 'Активации по дням',
             node: <MinimaxActivationsByDay rows={usageByDay} />,
-          },
-          {
-            id: 'rating',
-            title: 'Рейтинг аккаунтов',
-            node: <MinimaxAccountRating rows={rating} />,
           },
           {
             id: 'chart',

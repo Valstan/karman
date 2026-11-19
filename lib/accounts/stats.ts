@@ -37,16 +37,143 @@ export type UsageRecord = {
   tokens: number;
 };
 
-/** Аккаунт в рейтинге: сколько раз активировался и сколько токенов унёс. */
-export type AccountRatingRow = {
-  id: number;
-  title: string;
-  email: string;
-  /** Сколько сессий активации у аккаунта. */
-  activations: number;
-  /** Сколько очков на них ушло суммарно. */
-  tokens: number;
+/**
+ * Чемпионат по проектам (заказ владельца 19.11): «проекты типа участвуют в
+ * чемпионате по потраченным очкам. Одна игра — это одни сутки. Какой проект больше
+ * остальных потратил очков в сутки — тот и выиграл: за 1 место 3 балла, за 2 — 2, за 3 —
+ * 1. Таким образом турнирная таблица: кто больше набрал баллов по суткам, тот выше».
+ *
+ * Очки за сутки — это `tokens` из журнала активаций в сумме по проекту за московский
+ * день (то же число, что в разделе «Расход по проектам»).
+ */
+export type ChampionshipRow = {
+  projectId: number;
+  projectName: string;
+  /** Баллы чемпионата: 3 за первое место в сутках, 2 за второе, 1 за третье. */
+  points: number;
+  /** Очки, потраченные проектом суммарно (за все учтённые сутки). */
+  spent: number;
+  /** Сколько суток проект был в тройке. */
+  topDays: number;
+  /** Сколько раз проект был первым за сутки. */
+  wins: number;
+  /** Сколько суток проект вообще что-то тратил. */
+  days: number;
 };
+
+/** Строка «проект × сутки» — вход для подсчёта чемпионата. */
+export type ProjectDayPoints = {
+  usedOn: string;
+  projectId: number | null;
+  projectName: string | null;
+  /** Очки, потраченные проектом за этот день. */
+  points: number;
+};
+
+/** Баллы за места в суточном заезде: первое — 3, второе — 2, третье — 1. */
+export const CHAMPIONSHIP_SCORES = [3, 2, 1] as const;
+
+/** Лидер одного дня: проект, его очки и набранный балл. */
+export type ChampionshipDayLeader = {
+  projectName: string;
+  /** Очки, потраченные проектом за сутки. */
+  points: number;
+  /** Балл за место в этот день. */
+  score: number;
+};
+
+/**
+ * Свести строки «проект × день» в карту «день → проекты с очками» и отсортировать
+ * проекты дня: больше очков — выше; при равенстве — по названию (чтобы порядок не
+ * прыгал между прогонами).
+ */
+function groupChampionshipByDay(rows: ProjectDayPoints[]): Map<string, { id: number; name: string; points: number }[]> {
+  const byDay = new Map<string, Map<number, { id: number; name: string; points: number }>>();
+  for (const row of rows) {
+    // Проект без проекта (активация владельца) в чемпионате не участвует, и день без
+    // очков никому балла не приносит.
+    if (row.projectId === null || row.points <= 0) continue;
+    const day = byDay.get(row.usedOn) ?? new Map();
+    const current = day.get(row.projectId) ?? {
+      id: row.projectId,
+      name: row.projectName ?? '—',
+      points: 0,
+    };
+    current.points += row.points;
+    day.set(row.projectId, current);
+    byDay.set(row.usedOn, day);
+  }
+  const ranked = new Map<string, { id: number; name: string; points: number }[]>();
+  for (const [usedOn, day] of byDay) {
+    ranked.set(
+      usedOn,
+      [...day.values()].sort((a, b) => b.points - a.points || a.name.localeCompare(b.name)),
+    );
+  }
+  return ranked;
+}
+
+/**
+ * Турнирная таблица чемпионата по проектам.
+ *
+ * За каждый московский день тройка лидеров по потраченным очкам получает 3, 2 и 1
+ * балл; баллы по дням суммируются. Порядок таблицы: больше баллов — выше; при
+ * равенстве — больше суммарно потраченных очков; затем по названию.
+ */
+export function buildChampionship(rows: ProjectDayPoints[]): ChampionshipRow[] {
+  const ranked = groupChampionshipByDay(rows);
+  const totals = new Map<number, ChampionshipRow>();
+
+  for (const day of ranked.values()) {
+    day.forEach((project, index) => {
+      const row = totals.get(project.id) ?? {
+        projectId: project.id,
+        projectName: project.name,
+        points: 0,
+        spent: 0,
+        topDays: 0,
+        wins: 0,
+        days: 0,
+      };
+      row.spent += project.points;
+      row.days += 1;
+      const score = CHAMPIONSHIP_SCORES[index];
+      if (score !== undefined) {
+        row.points += score;
+        row.topDays += 1;
+        if (index === 0) row.wins += 1;
+      }
+      totals.set(project.id, row);
+    });
+  }
+
+  return [...totals.values()].sort(
+    (a, b) =>
+      b.points - a.points ||
+      b.spent - a.spent ||
+      a.projectName.localeCompare(b.projectName),
+  );
+}
+
+/**
+ * Лидеры последних учтённых суток — строка «кто выиграл вчера» над таблицей.
+ * Пусто, если в журнале нет ни одной строки с очками.
+ */
+export function championshipLeaders(rows: ProjectDayPoints[]): {
+  usedOn: string;
+  leaders: ChampionshipDayLeader[];
+} {
+  const ranked = groupChampionshipByDay(rows);
+  const days = [...ranked.keys()].sort((a, b) => (a < b ? 1 : -1));
+  const usedOn = days[0];
+  if (!usedOn) return { usedOn: '', leaders: [] };
+  const leaders = ranked.get(usedOn)!.slice(0, CHAMPIONSHIP_SCORES.length).map((project, index) => ({
+    projectName: project.name,
+    points: project.points,
+    score: CHAMPIONSHIP_SCORES[index]!,
+  }));
+  return { usedOn, leaders };
+}
 
 /**
  * Свод журнала по дням: активации, задействованные проекты, токены.
@@ -105,23 +232,6 @@ export function sortDailyUsage(
     if (diff !== 0) return diff * sign;
     return byDateDesc(a, b);
   });
-}
-
-/**
- * Рейтинг аккаунтов: кто активировался чаще всего, а сверху — сколько на них
- * ушло токенов. Порядок: активации, потом токены, потом почта (чтобы список был
- * стабильным между прогонами).
- */
-export function rankAccounts(rows: AccountRatingRow[], limit: number): AccountRatingRow[] {
-  return [...rows]
-    .sort(
-      (a, b) =>
-        b.activations - a.activations ||
-        b.tokens - a.tokens ||
-        a.email.localeCompare(b.email) ||
-        a.id - b.id,
-    )
-    .slice(0, limit);
 }
 
 /** Календарный сдвиг московской даты на целые сутки. */

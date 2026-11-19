@@ -9,7 +9,6 @@ import {
 } from '@/lib/validation/account';
 import {
   accountPassword,
-  accountRating,
   activateAccount,
   correctActivationIndex,
   createAccount,
@@ -144,21 +143,19 @@ export async function listAccountsAction(): Promise<
     usage: Awaited<ReturnType<typeof projectUsage>>;
     usageByDay: Awaited<ReturnType<typeof projectUsageByDay>>;
     daily: Awaited<ReturnType<typeof dailyUsage>>;
-    rating: Awaited<ReturnType<typeof accountRating>>;
   }>
 > {
   const user = await currentUserOrNull();
   if (!user) return { ok: false, error: 'Требуется авторизация' };
   if (!user.isSuperuser) return { ok: false, error: 'Раздел доступен только владельцу' };
-  const [accounts, projects, usage, usageByDay, daily, rating] = await Promise.all([
+  const [accounts, projects, usage, usageByDay, daily] = await Promise.all([
     listAccounts(user),
     listProjects(user),
     projectUsage(user),
     projectUsageByDay(user),
     dailyUsage(user),
-    accountRating(user),
   ]);
-  return { ok: true, data: { accounts, projects, usage, usageByDay, daily, rating } };
+  return { ok: true, data: { accounts, projects, usage, usageByDay, daily } };
 }
 
 export async function createAccountAction(values: unknown): Promise<ActionResult<{ id: number }>> {
