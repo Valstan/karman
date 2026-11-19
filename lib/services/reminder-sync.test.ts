@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PGlite } from '@electric-sql/pglite';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { createTestDb, type TestDb } from '@/lib/db/test-db';
 import { authUser, reminder, telegramLink } from '@/lib/db/schema';
 import {
