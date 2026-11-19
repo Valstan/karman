@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { after } from 'next/server';
 import { checkInternalBearer } from '@/lib/telegram/config';
 import { dailyBonusStats, sweepDailyBonus } from '@/lib/services/minimax-daily-bonus';
+import { writeSweepMarker } from '@/lib/services/minimax-sweep-marker';
 
 // Ежесуточный забор бонусов MiniMax — вызывается воркером по расписанию
 // (05:00 МСК, Bearer-секрет). proxy.ts не трогает /api/* → защищаемся сами.
@@ -58,6 +59,23 @@ export async function POST(req: Request) {
         stats.spentPoints,
         stats.leftPoints,
       );
+      // МАРКЕР — ПО ФАКТУ ЗАВЕРШЕНИЯ (и только если ошибок нет). Раньше его писал воркер
+      // сразу по ответу роута, а ответ уходит мгновенно: обход, который начался и умер
+      // (деплой убил процесс), считался сделанным — и сутки терялись: у части аккаунтов не
+      // было строки леджера, клетка вендора не сдвигалась, серия дней рвалась.
+      //
+      // Теперь маркер пишет приложение, когда обход реально отработал. Если ошибки есть —
+      // маркера нет: воркер (раз в 30 минут) начнёт обход заново, и неудавшие аккаунты
+      // получат вторую попытку (забор идемпотентен, лишних очков не начислится).
+      if (report.failed === 0) {
+        writeSweepMarker(report.date);
+      } else {
+        console.error(
+          '[minimax/daily-bonus] %s: ошибок %d — маркер не записан, обход повторится',
+          report.date,
+          report.failed,
+        );
+      }
     } catch (error) {
       console.error('[minimax/daily-bonus] ошибка обхода', error);
     }

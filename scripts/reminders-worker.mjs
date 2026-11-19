@@ -32,9 +32,12 @@ const DISPATCH_INTERVAL_MS = Number(process.env.REMINDERS_DISPATCH_INTERVAL_MS |
 // Сверка журнала активаций с панелью MiniMax: раз в полчаса (заказ владельца 17.11).
 // автосверка; сверка их сама освобождает и уточняет.
 const RECONCILE_INTERVAL_MS = Number(process.env.MINIMAX_RECONCILE_INTERVAL_MS || 30 * 60_000);
-// Повтор сверки, если она не удалась (воркер после деплою поднимается раньше
+// Повтор забора, если он не удался (воркер после деплою поднимается раньше
 // приложения и первый запрос падает) — иначе сверка пропускала бы полчаса.
 const RECONCILE_RETRY_MS = Number(process.env.MINIMAX_RECONCILE_RETRY_MS || 5 * 60_000);
+// Проверка ежесуточного забора: как часто смотрим, не нужен ли он (маркер ставит
+// приложение по факту завершения обхода — если обход умер, маркера нет).
+const DAILY_BONUS_CHECK_MS = Number(process.env.MINIMAX_DAILY_BONUS_CHECK_MS || 30 * 60_000);
 // Ежесуточный забор бонусов MiniMax: час в МСК (по умолчанию 5 утра).
 // 05:00 МСК выбран не «на глаз»: сутки MiniMax считаются по поясу запроса, а поясов
 // у нас два — московский (владелец) и UTC (потребитель); их границы — 00:00 и 03:00
@@ -172,36 +175,52 @@ function startReconcileLoop() {
  * сутки вперёд. Из-за этого «догон» при старте не срабатывал никогда, а упавший забор
  * (приложение ещё поднимается после деплоя) ждал до следующего дня: сутки обхода
  * просто терялись, и у аккаунтов не сдвигалась клетка вендора.
+ *
+ * Проверяем РАЗ В 30 МИНУТ, а не раз в сутки: маркер «обход завершён» пишет само
+ * приложение — по факту завершения обхода, — и если обход начался и умер (деплой убил
+ * процесс), маркера нет. Тогда следующая проверка (через полчаса) начнёт обход заново:
+ * забор идемпотентен, лишних очков не начислится, а сутки не пропадут.
  */
 function startDailyBonusLoop() {
   const tick = async () => {
-    // Обход за сегодня уже был — вендора больше не дёргаем.
-    if (sweepDoneToday()) {
-      setTimeout(startDailyBonusLoop, msUntilDailyBonus());
-      return;
-    }
     try {
-      const res = await postInternal('/api/internal/minimax/daily-bonus', {});
-      if (!res.ok) {
-        log('daily-bonus HTTP', res.status, '— повтор через 5 мин');
-        setTimeout(startDailyBonusLoop, DAILY_BONUS_RETRY_MS);
-        return;
+      // Час забора наступил, а маркера «обход завершён» нет → обход не состоялся
+      // (или умер на середине) → начинаем заново.
+      if (shouldSweep()) {
+        const res = await postInternal('/api/internal/minimax/daily-bonus', {});
+        if (!res.ok) {
+          log('daily-bonus HTTP', res.status, '— повтор через 5 мин');
+          setTimeout(startDailyBonusLoop, DAILY_BONUS_RETRY_MS);
+          return;
+        }
+        log('daily-bonus: обход запущен');
       }
-      markSweepDone();
     } catch (error) {
       log('daily-bonus error', String(error), '— повтор через 5 мин');
       setTimeout(startDailyBonusLoop, DAILY_BONUS_RETRY_MS);
       return;
     }
-    setTimeout(startDailyBonusLoop, msUntilDailyBonus());
+    // Маркера нет (обход только запустился — приложение запишет его по факту
+    // завершения) → проверяем снова скоро. Маркер есть → до следующих 05:00 можно спать.
+    setTimeout(
+      startDailyBonusLoop,
+      sweepDoneToday() ? msUntilDailyBonus() : DAILY_BONUS_CHECK_MS,
+    );
   };
 
-  // Час забора уже прошёл, а обхода за сегодня ещё не было — догоняем сейчас.
-  if (dailyBonusTimePassed()) {
-    tick();
-    return;
-  }
-  setTimeout(tick, msUntilDailyBonus());
+  // Первый тик: сразу, если час забора уже наступил (ловим «догон» после рестарта),
+  // иначе — в ближайшие 05:00 МСК.
+  setTimeout(startDailyBonusLoop, dailyBonusTimePassed() ? 0 : msUntilDailyBonus());
+}
+
+/**
+ * Пора ли начинать ежесуточный обход: час забора наступил (по МОСКОВСКИМ суткам) и
+ * маркера «обход завершён» нет.
+ *
+ * Чистая функция — под тест (scripts/reminders-worker.test.ts).
+ */
+function shouldSweep(now = new Date(), dir = STATE_DIR) {
+  return dailyBonusTimePassed(now) && !sweepDoneToday(dir);
 }
 
 /** Московская дата сегодняшних суток (UTC+3; перехода на летнее время нет). */
@@ -209,27 +228,27 @@ function moscowDate(now = new Date()) {
   return new Date(now.getTime() + 3 * 60 * 60_000).toISOString().slice(0, 10);
 }
 
-/** Путь маркера «обход за московские сутки уже был». */
+/**
+ * Маркер «обход за московские сутки завершён».
+ *
+ * ПИШЕТ ЕГО НЕ МЫ, а приложение — по факту завершения обхода
+ * (`lib/services/minimax-sweep-marker.ts`): роут отвечает сразу, обход идёт в фоне, и
+ * обход, который начался и умер (деплой убил процесс), не должен считаться сделанным.
+ * Мы только читаем маркер — и если его нет, а час забора наступил, начинаем обход заново.
+ *
+ * Путь маркера тут повторён вручную (воркер едет в артефакт отдельным файлом и не может
+ * импортировать код приложения) — это единственное намеренное дублирование.
+ */
 function sweepMarkerPath(date = moscowDate(), dir = STATE_DIR) {
   return path.join(dir, `daily-bonus-${date}.done`);
 }
 
-/** Был ли обход за сегодняшние московские сутки. */
+/** Был ли обход за сегодняшние московские сутки завершён (маркер от приложения). */
 function sweepDoneToday(dir = STATE_DIR) {
   try {
     return fs.existsSync(sweepMarkerPath(moscowDate(), dir));
   } catch {
     return false;
-  }
-}
-
-/** Отметить: обход за сегодняшние сутки сделан. */
-function markSweepDone(dir = STATE_DIR) {
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(sweepMarkerPath(moscowDate(), dir), new Date().toISOString());
-  } catch (error) {
-    log('daily-bonus marker error', String(error));
   }
 }
 
@@ -320,9 +339,9 @@ if (isEntryPoint) {
 // Чистые помощники расписания — под тест (scripts/reminders-worker.test.ts).
 export {
   dailyBonusTimePassed,
-  markSweepDone,
   moscowDate,
   msUntilDailyBonus,
+  shouldSweep,
   sweepDoneToday,
   sweepMarkerPath,
 };
