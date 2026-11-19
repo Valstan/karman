@@ -426,14 +426,6 @@
   `parked` `until:` владелец выберет вариант баланса.
   `added: 2026-11-18` `last-touch: 2026-11-19`
 
-- **Гейт прав CLI и хвосты инструментов MiniGen (19.11).** `mcode exec` без TUI не умеет
-  спрашивать → любой запрос подтверждения падает с `HOST_CAPABILITY_UNAVAILABLE`, а хранилища
-  прав закрыты от агента. Снимает владелец одной командой:
-  `node D:\valstan\REPO\karman\.agents\patch-autheal-panel.mjs` — правила доступа,
-  лаунчер `--permission full` и оба хвоста. Уборка `/tmp` на боксе — руками владельца.
-  Подробности — `docs/SESSION_HANDOFF.md`.
-  `added: 2026-11-19` `last-touch: 2026-11-19`
-
 ## Заметки (не задачи)
 
 - **Постоянные заметки — в архиве:** `docs/pending-archive/2026-11-17-closed.md`.
