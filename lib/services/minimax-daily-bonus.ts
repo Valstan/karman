@@ -313,6 +313,14 @@ export type DailyBonusStats = {
   spentPoints: number;
   /** Осталось неиспользованным. */
   leftPoints: number;
+  /**
+   * Сколько аккаунтов сторож вернул в оборот за сегодня: отдали потребителю, а
+   * сессию снял (значит, очки прежнего потребителя могли быть уже потрачены).
+   *
+   * Это и есть «волна» повторных выдач, которую владелец видел в 19.11: 51 повторная
+   * выдача из 104. Теперь такие аккаунты уходят в конец очереди (заказ 19.11).
+   */
+  returned: number;
   /** Клетка → аккаунтов. */
   byCell: { cell: number; accounts: number; points: number }[];
   /** Комната-потребитель → аккаунтов. */
@@ -343,8 +351,11 @@ export async function dailyBonusStats(
       handedAt: accountsDailyBonus.handedAt,
       handedPoints: accountsDailyBonus.handedPoints,
       projectId: accountsDailyBonus.handedToProjectId,
+      // Сессия аккаунта сейчас: нет её — сторож вернул аккаунт в оборот.
+      accountUsedAt: accountsAccount.usedAt,
     })
     .from(accountsDailyBonus)
+    .leftJoin(accountsAccount, eq(accountsAccount.id, accountsDailyBonus.accountId))
     .where(eq(accountsDailyBonus.usedOn, date));
 
   const ours = rows.filter((r) => r.claimResult === CLAIM_RESULT_CLAIMED);
@@ -365,6 +376,8 @@ export async function dailyBonusStats(
       ours.reduce((sum, r) => sum + r.points, 0) -
         rows.reduce((sum, r) => sum + (r.handedPoints ?? 0), 0),
     ),
+    // Вернул сторож: отдали сегодня, а сессии аккаунта уже нет.
+    returned: rows.filter((r) => r.handedAt !== null && r.accountUsedAt === null).length,
     byCell: [],
     byProject: [],
   };
