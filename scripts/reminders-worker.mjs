@@ -80,6 +80,9 @@ function startDispatchLoop() {
       log('dispatch error', String(error));
     }
   };
+  // Строка о старте задачи (мандат brain 19.11: «видно и задача идёт, и задача молчала»).
+  // След за сам проход синхронизации пишет приложение в свой журнал.
+  log('диспетчер напоминаний запущен, тик раз в', Math.round(DISPATCH_INTERVAL_MS / 1000), 'с');
   setInterval(tick, DISPATCH_INTERVAL_MS);
   tick();
 }
