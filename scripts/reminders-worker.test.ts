@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 // @ts-expect-error .mjs без деклараций — импортируем как есть (мандат brain 2026-09-09).
-import { dailyBonusTimePassed, markSweepDone, moscowDate, msUntilDailyBonus, sweepDoneToday, sweepMarkerPath } from './reminders-worker.mjs';
+import { dailyBonusTimePassed, moscowDate, msUntilDailyBonus, shouldSweep, sweepDoneToday, sweepMarkerPath } from './reminders-worker.mjs';
 
 // Расписание ежесуточного забора бонусов MiniMax (живая находка 18.11).
 //
@@ -54,7 +54,7 @@ describe('расписание ежесуточного забора', () => {
   });
 });
 
-describe('маркер «обход за сутки уже был»', () => {
+describe('маркер «обход за сутки завершён»', () => {
   let dir: string;
 
   beforeEach(() => {
@@ -64,9 +64,10 @@ describe('маркер «обход за сутки уже был»', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('до обхода маркера нет, после — обход считается сделанным', () => {
+  it('маркера нет — обход считаем незавершённым (его пишет приложение по факту конца)', () => {
     expect(sweepDoneToday(dir)).toBe(false);
-    markSweepDone(dir);
+    // Маркер ставит приложение, а не воркер: воркер только читает.
+    fs.writeFileSync(sweepMarkerPath(moscowDate(), dir), '2026-11-19T02:00:48.000Z');
     expect(sweepDoneToday(dir)).toBe(true);
   });
 
@@ -74,5 +75,15 @@ describe('маркер «обход за сутки уже был»', () => {
     const file = sweepMarkerPath('2026-11-18', dir);
     expect(path.basename(file)).toBe('daily-bonus-2026-11-18.done');
     expect(path.dirname(file)).toBe(dir);
+  });
+
+  it('обход начинаем, только если час забора наступил И маркера нет', () => {
+    // Ночью (01:56 МСК) час забора ещё не наступил — не начинаем.
+    expect(shouldSweep(new Date('2026-11-18T22:56:00Z'), dir)).toBe(false);
+    // После 05:00 МСК и без маркера — начинаем (обход ещё не был или он умер).
+    expect(shouldSweep(new Date('2026-11-19T02:30:00Z'), dir)).toBe(true);
+    // Маркер появился (приложение отработало) — не начинаем повторно.
+    fs.writeFileSync(sweepMarkerPath(moscowDate(), dir), '2026-11-19T02:00:48.000Z');
+    expect(shouldSweep(new Date('2026-11-19T02:30:00Z'), dir)).toBe(false);
   });
 });
