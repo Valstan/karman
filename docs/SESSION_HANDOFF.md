@@ -305,4 +305,5 @@ MiniGen; до него `main` = `cb2e0a8`, PR #373)
   (`--permission full`, сессии без гейта) и правит оба хвоста; либо запуск сессий через этот
   лаунчер. **Уборка `/tmp` на боевом боксе — руками владельца** (28 probe-скриптов + 27
   каталогов `karman-probe-*`, в трёх — `pgpass` с паролем БД; гейт режет `rm` в тексте
-  команды): `rm -f /tmp/probe-*; rm -rf /tmp/karman-probe-*`.
+  команды): `rm -f /tmp/probe-*; rm -rf /tmp/karman-probe-*`. Разбор ушёл мозгу письмом
+  `mailbox/to-brain/2026-11-19-cli-permission-gate-and-full-access-launcher.md`.
