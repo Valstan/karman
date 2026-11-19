@@ -48,8 +48,10 @@
 
 import {
   accountPoolSummary,
+  isReturnedToPool,
   isSpent,
   isUnavailable,
+  isQueueOrderTime,
   sortAccounts,
   type AccountRotationRow,
 } from './rotation';
@@ -305,10 +307,25 @@ export type PoolFilters = {
  *
  * Класс очков можно задать запросом (`filters.tier`) — см. `PoolFilters.tier`.
  *
- * Порядок выбора внутри класса — **«дольше всех не активировался»** (мандат
- * владельца 15.11: «ты им даешь свежий токен, который, ну, условно, дольше всех не
- * активировался»): внутри класса очки у всех одинаковые, поэтому решает давность
- * — никогда не активированный первый, дальше тот, кто активировался раньше всех.
+ * ## Порядок внутри класса — и очередь владельца (заказ 19.11)
+ *
+ * - **до 17:00 МСК** — «дольше всех не активировался» (мандат владельца 15.11:
+ *   «ты им даешь свежий токен, который, ну, условно, дольше всех не активировался»):
+ *   никогда не активированный первый, дальше тот, кто активировался раньше всех;
+ * - **после 17:00 МСК** — **по порядку** (заказ владельца 19.11, 21:50 МСК:
+ *   «начинай после пяти часов аккаунты выдавать по порядку»): по времени последней
+ *   выдачи — тот, кто дольше всех не работал, идёт первым. Ключ очереди — не
+ *   `used_at` (его сторож снимает при возврате), а отметка выдачи в леджере.
+ *
+ * ## Возвращённые сторожем — в самый конец очереди (заказ 19.11)
+ *
+ * Сторож возвращает аккаунт в оборот, посчитав его неизрасходованным: сессия
+ * снята, очки прежнего потребителя могли быть уже потрачены, а панель остатка не
+ * отдаёт. Такой аккаунт — «с очками, которых может не быть», и раньше он вставал
+ * **в начало** (с пустой отметкой сессии он считался самым свежим). Теперь он
+ * встаёт в конец: пока есть чистый кандидат — отдаём чистого, до возвращённых
+ * очередь может и не дойти.
+ *
  * Занятые (бонус сожжён) и аккаунты с исчерпанной неделей в выдачу не попадают.
  */
 export function pickPoolAccount<T extends PoolRow>(
@@ -340,12 +357,22 @@ export function pickPoolAccount<T extends PoolRow>(
   // работать: вход в MiniMax делает владелец, пароля у проекта нет.
   const usable = tokenReady ? free.filter((account) => tokenReady.has(account.id)) : free;
 
-  // Внутри класса — «дольше всех не активировался» (мандат владельца 15.11):
-  // очки у всех в классе одинаковые, решает давность активации.
-  const pick = (tier: PoolTier): T | null => {
-    const inTier = usable.filter((account) => poolTierOf(account, now) === tier);
+  // Очередь владельца (заказ 19.11). Возвращённые сторожем — отдельная кучка в
+  // самом конце: сначала чистые кандидаты, и только если чистых не осталось —
+  // возвращённые (и то по классу очков, как обычно).
+  const returned = usable.filter((account) => isReturnedToPool(account));
+  const clean = usable.filter((account) => !isReturnedToPool(account));
+  // После 17:00 МСК — порядок по очереди (по времени последней выдачи), до него —
+  // прежний порядок по давности активации.
+  const byQueue = isQueueOrderTime(now);
+
+  // Внутри класса — «дольше всех не активировался» (мандат владельца 15.11), а
+  // вечером — очередь по времени последней выдачи.
+  const pick = (tier: PoolTier, pool: T[]): T | null => {
+    const inTier = pool.filter((account) => poolTierOf(account, now) === tier);
     if (inTier.length === 0) return null;
-    return [...inTier].sort(stalenessCompare)[0] ?? null;
+    const ordered = byQueue ? orderByQueue(inTier) : [...inTier].sort(stalenessCompare);
+    return ordered[0] ?? null;
   };
 
   // Порядок классов: запрошенный — первым, потом обычный (400 → 1000 → под вопросом).
@@ -362,7 +389,15 @@ export function pickPoolAccount<T extends PoolRow>(
     : ['points_400', 'points_1000', 'unverified'];
 
   for (const tier of order) {
-    const account = pick(tier);
+    const account = pick(tier, clean);
+    if (account) {
+      return { account, free: summary.free, soon: summary.soon, tier, reason: null };
+    }
+  }
+  // Чистых кандидатов не осталось — отдаём возвращённых сторожем: они в конце
+  // очереди, но когда очередь дошла до них — отдаём (лучше пустой, чем ничего).
+  for (const tier of order) {
+    const account = pick(tier, returned);
     if (account) {
       return { account, free: summary.free, soon: summary.soon, tier, reason: null };
     }
@@ -436,6 +471,30 @@ function stalenessCompare(a: PoolRow, b: PoolRow): number {
 }
 
 /**
+ * Порядок очереди (после 17:00 МСК, заказ владельца 19.11): по времени
+ * **последней выдачи** — кто дольше всех не работал, тот первый.
+ *
+ * Ключ — не `used_at` (его сторож снимает при возврате аккаунта в оборот, и
+ * аккаунт с пустой отметкой выглядит «никогда не активированным» — то есть
+ * самым свежим, то есть первым в очереди), а отметка выдачи в леджере забора:
+ * она переживает возврат (мадат владельца 18.11: запись выдачи не стирается).
+ *
+ * Никогда не отдававшие сегодня — в начало очереди: их очки (утренний забор)
+ * ждут потребителя, а нетронутый бонус сгорает.
+ */
+export function orderByQueue<T extends PoolRow>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => {
+    const aKey = a.bonusHandedAt ?? a.usedAt;
+    const bKey = b.bonusHandedAt ?? b.usedAt;
+    if (aKey === null && bKey === null) return a.id - b.id;
+    if (aKey === null) return -1;
+    if (bKey === null) return 1;
+    if (aKey !== bKey) return aKey < bKey ? -1 : 1;
+    return a.id - b.id;
+  });
+}
+
+/**
  * Человеческое объяснение выбора — «почему он, а не следующий».
  *
  * Brain (13.11): «не хватает только пометки, кто первый, и человеческого объяснения
@@ -444,6 +503,11 @@ function stalenessCompare(a: PoolRow, b: PoolRow): number {
  */
 export function explainChoice(account: PoolRow, hint: PoolHint, tier: PoolTier): string {
   const parts: string[] = [];
+  // Аккаунт, возвращённый сторожем, — честное предупреждение: его уже отдавали
+  // сегодня, и очки прежнего потребителя могли быть потрачены (заказ 19.11).
+  if (isReturnedToPool(account)) {
+    parts.push('аккаунт возвращён сторожем — уже отдавали сегодня, очки могли быть потрачены');
+  }
   if (hint.unverified) {
     parts.push('не проверен: клетка этого аккаунта под вопросом, подсказку по очкам не даём');
     return parts.join('; ');
