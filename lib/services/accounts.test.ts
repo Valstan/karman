@@ -177,6 +177,31 @@ describe('мультиаккаунт: активация и тушение до 
     expect(new Date(row!.usedAt!).getTime()).toBe(morning.getTime());
   });
 
+  it('активация аккаунта, чью сессию сняли (сторож вернул в оборот), — НОВОЕ событие, а не перезапись прежней строки', async () => {
+    // Миграция 0036: журнал — события. Раньше строка дня была одна (UNIQUE), и
+    // активация такого аккаунта ПЕРЕЗАПИСЫВАЛА чужую выдачу того же дня — запись
+    // терялась вместе с её очками и проектом.
+    const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+    // Строка журнала за 3 ноября есть, а сессии нет: `used_at` пуст (сторож когда-то
+    // вернул аккаунт в оборот, сняв отметку).
+    await refs.current!.insert(accountsUsage).values({
+      userId: owner.id,
+      accountId: a,
+      usedOn: '2026-11-03',
+      tokens: 400,
+      activationIndex: 2,
+      source: 'api',
+    });
+
+    await activateAccount(owner, { id: a, projectId: null, tokens: 400 }, NOW);
+
+    // Прежняя строка не тронута, новая выдача — отдельной строкой.
+    const rows = await refs.current!.select().from(accountsUsage);
+    expect(rows.length).toBe(2);
+    const sources = rows.map((row) => row.source).sort();
+    expect(sources).toEqual(['api', 'owner']);
+  });
+
   it('после ночного сброса — новая сессия: своя строка журнала на новые сутки', async () => {
     const a = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
     // 05:50 по Москве 3 ноября.
