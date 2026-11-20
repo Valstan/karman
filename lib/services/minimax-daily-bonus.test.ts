@@ -13,6 +13,7 @@ import { accountTokenAad } from '@/lib/services/account-tokens';
 import {
   dailyBonusStats,
   markBonusHanded,
+  operationalBonusStats,
   sweepDailyBonus,
 } from '@/lib/services/minimax-daily-bonus';
 
@@ -319,5 +320,106 @@ describe('ежесуточный забор бонусов (D-191-бис)', () =
     const stats = await dailyBonusStats(TODAY);
     expect(stats.handed).toBe(1);
     expect(stats.handedPoints).toBe(400);
+  });
+});
+
+/**
+ * Сводка по операционным суткам 05:00→05:00 МСК (заказ владельца 21.11).
+ *
+ * Сутки владельца начинаются в 05:00 МСК — в этот момент утренний обход забирает
+ * бонусы. Значит забор между 00:00 и 05:00 относится к ПРЕДЫДУЩИМ суткам, даже
+ * если по календарной дате он «сегодняшний». Считаем по времени события, а не по
+ * `used_on` строки леджера.
+ */
+describe('сводка по операционным суткам 05:00→05:00 МСК', () => {
+  /** 04:00 МСК 18.11 — сутки ещё вчерашние (смена в 05:00). */
+  const EARLY = new Date('2026-11-18T01:00:00Z');
+  /** 08:00 МСК 18.11 — сутки сегодняшние. */
+  const LATE = NOW;
+
+  it('подпись окна и забор внутри окна — в текущие сутки', async () => {
+    await makeAccount('Первый', 'one@example.test');
+    await makeAccount('Второй', 'two@example.test');
+    await sweepDailyBonus({ now: LATE });
+
+    const stats = await operationalBonusStats(LATE);
+
+    expect(stats.label).toBe('18.11 → 19.11');
+    expect(stats.collected).toBe(2);
+    expect(stats.collectedPoints).toBe(800);
+    expect(stats.handed).toBe(0);
+    expect(stats.consumerTaken).toBe(0);
+    // Остаток — сток на аккаунтах, а не «за окно»: обе клетки на месте.
+    expect(stats.stockPoints).toBe(800);
+    expect(stats.stockAccounts).toBe(2);
+  });
+
+  it('выдача считается по времени выдачи, а остаток — сток, а не окно', async () => {
+    const accountId = await makeAccount('Раздаваемый', 'given@example.test');
+    const stockId = await makeAccount('Копящий', 'stock@example.test');
+    await sweepDailyBonus({ now: LATE });
+    await markBonusHanded(accountId, TODAY, null, 400, LATE);
+
+    const stats = await operationalBonusStats(LATE);
+
+    expect(stats.handed).toBe(1);
+    expect(stats.handedPoints).toBe(400);
+    // Отданная клетка в остатке не числится — остался только копящий аккаунт.
+    expect(stats.stockPoints).toBe(400);
+    expect(stats.stockAccounts).toBe(1);
+    expect(stockId).toBeGreaterThan(0);
+  });
+
+  it('забор ДО 05:00 МСК — в предыдущие сутки, хотя по календарю он сегодняшний', async () => {
+    await makeAccount('Ночной', 'night@example.test');
+    await sweepDailyBonus({ now: EARLY });
+
+    // Спросили в 04:00 МСК — сутки вчерашние (17.11 → 18.11).
+    const atNight = await operationalBonusStats(EARLY);
+    expect(atNight.label).toBe('17.11 → 18.11');
+    expect(atNight.collected).toBe(1);
+    expect(atNight.collectedPoints).toBe(400);
+
+    // Спросили после смены суток (08:00 МСК) — этот забор уже вчерашний.
+    const atMorning = await operationalBonusStats(LATE);
+    expect(atMorning.label).toBe('18.11 → 19.11');
+    expect(atMorning.collected).toBe(0);
+    // Но остаток он всё равно увеличил — сток он не привязан к окну.
+    expect(atMorning.stockPoints).toBe(400);
+  });
+
+  it('темп — по полным операционным суткам; текущее окно в срез не входит', async () => {
+    // Прошлые сутки: обход 17.11 08:00 МСК и выдача в тот же час.
+    const yesterday = await makeAccount('Вчерашний', 'yesterday@example.test');
+    await sweepDailyBonus({ now: new Date('2026-11-17T05:00:00Z') });
+    await markBonusHanded(yesterday, '2026-11-17', null, 400, new Date('2026-11-17T05:00:00Z'));
+
+    // Текущие сутки: обход и выдача внутри окна — в срез темпа не входят.
+    const today = await makeAccount('Сегодняшний', 'today@example.test');
+    await sweepDailyBonus({ now: LATE });
+    await markBonusHanded(today, TODAY, null, 400, LATE);
+
+    const stats = await operationalBonusStats(LATE);
+
+    expect(stats.sliceTo).toBe('2026-11-17');
+    expect(stats.sliceDays).toBe(1);
+    expect(stats.pointsPerDay).toBe(400);
+  });
+
+  it('клетку забрал потребитель — эти очки не наши', async () => {
+    const accountId = await makeAccount('Работающий', 'busy@example.test');
+    await sweepDailyBonus({ now: LATE });
+    await refs.current!
+      .update(accountsDailyBonus)
+      .set({ claimResult: 2 })
+      .where(eq(accountsDailyBonus.accountId, accountId));
+
+    const stats = await operationalBonusStats(LATE);
+
+    expect(stats.collected).toBe(0);
+    expect(stats.consumerTaken).toBe(1);
+    expect(stats.consumerTakenPoints).toBe(400);
+    // Чужую клетку в наш остаток не кладём.
+    expect(stats.stockPoints).toBe(0);
   });
 });

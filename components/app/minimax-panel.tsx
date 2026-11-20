@@ -24,7 +24,7 @@ import {
   moscowToday,
   splitAccounts,
 } from '@/lib/accounts/rotation';
-import { cohortStats, weeklyPoolStats } from '@/lib/accounts/weekly';
+import { cohortStats, WEEKLY_CYCLE_DAYS, weeklyPoolStats } from '@/lib/accounts/weekly';
 import { availableCount } from '@/lib/accounts/pool';
 import { centeredWindowFeatures } from '@/lib/accounts/window-features';
 import { MinimaxFormDialog } from './minimax-form-dialog';
@@ -83,21 +83,36 @@ import type { ProjectUsage } from '@/lib/accounts/rotation';
  * свежий аккаунт), всё равно скопировать / активировать, или открыть правку.
  */
 /**
- * Сводка по суточным бонусам (заказ владельца 18.11) — серверная функция отдаёт её
- * в панель prop'ом, поэтому тип здесь свой (клиентская часть не тянет server-only).
+ * Сводка по бонусам за ОПЕРАЦИОННЫЕ сутки — окно 05:00→05:00 МСК (заказ владельца
+ * 21.11) — серверная функция отдаёт её в панель prop'ом, поэтому тип здесь свой
+ * (клиентская часть не тянет server-only).
  */
 export type BonusStatsView = {
-  date: string;
-  accounts: number;
-  claimed: number;
-  already: number;
-  points: number;
+  /** Подпись окна: '20.11 → 21.11'. */
+  label: string;
+  /** Сколько клеток забрали мы за сутки. */
+  collected: number;
+  /** Сколько очков забрали мы за сутки. */
+  collectedPoints: number;
+  /** Сколько клеток забрал потребитель (мимо нас). */
+  consumerTaken: number;
+  /** Сколько очков забрал потребитель. */
+  consumerTakenPoints: number;
+  /** Сколько аккаунтов отдали за сутки. */
   handed: number;
+  /** Сколько очков отдали за сутки. */
   handedPoints: number;
-  spentPoints: number;
-  leftPoints: number;
-  /** Сколько аккаунтов несут тысячные очки сегодня — по леджеру (правда). */
+  /** Остаток на аккаунтах: наши клетки, которые ещё не отдали. */
+  stockPoints: number;
+  /** Сколько РАЗНЫХ аккаунтов держат этот остаток. */
+  stockAccounts: number;
+  /** Сколько тысячных клеток забрали за сутки — по леджеру (правда). */
   thousands: number;
+  /** Темп: очков в сутки по срезу последних полных операционных суток. */
+  pointsPerDay: number | null;
+  /** Срез темпа: начало и конец (московские даты начала суток). */
+  sliceFrom: string;
+  sliceTo: string;
 };
 
 export function MinimaxPanel({
@@ -172,8 +187,7 @@ export function MinimaxPanel({
   }, [accounts, clockMs, tokenStates]);
 
   // Сводка по недельной квоте (заказ владельца 07.11): сколько активаций
-  // возможно сегодня, сколько осталось в неделях и сколько это очков, плюс
-  // прогноз по текущему темпу — хватит ли до конца недели.
+  // возможно сегодня, сколько осталось в неделях и сколько это очков.
   const week = useMemo(
     () =>
       weeklyPoolStats(
@@ -184,10 +198,9 @@ export function MinimaxPanel({
           checkedInToday: account.weekCheckedInToday,
           quota: account.week,
         })),
-        usageByDay.map((day) => ({ usedOn: day.usedOn, activations: day.activations, tokens: day.tokens })),
         moscowToday(new Date(clockMs)),
       ),
-    [accounts, usageByDay, clockMs],
+    [accounts, clockMs],
   );
 
   // Здоровье когорты (стратегия владельца 11.11): живые серии вчера, сколько
@@ -207,10 +220,18 @@ export function MinimaxPanel({
     [accounts, clockMs],
   );
 
-  // Сколько сегодня дадут тысячные очков — по ЛЕДЖЕРУ (ответ вендора на забор),
+  // Сколько за сутки дадут тысячные очки — по ЛЕДЖЕРУ (ответ вендора на забор),
   // а не по модели клетки: модель с панелью расходилась у 42 аккаунтов из 112
   // (живая сверка 16.11), и владелец видел два разных числа об одном и том же.
+  // Считается за операционные сутки 05:00→05:00 МСК (заказ владельца 21.11).
   const bonusToday = bonusStats.thousands;
+
+  // Темп расхода — очки, которые мы отдаём за операционные сутки. Считает сервер
+  // по леджеру выдач (`operationalBonusStats`); сравнение с недельным запасом —
+  // здесь, где есть и запас пула, и темп.
+  const pace = bonusStats.pointsPerDay;
+  const weekDemand = pace === null ? null : pace * WEEKLY_CYCLE_DAYS;
+  const coversWeek = weekDemand === null ? null : week.weekPoints >= weekDemand;
 
   // Активация — только явной кнопкой (заказ владельца 05.11). Копирование
   // почты или пароля аккаунт больше НЕ гасит.
@@ -426,12 +447,12 @@ export function MinimaxPanel({
                 <div className="flex flex-wrap gap-x-2">
                   <dt className="text-muted-foreground">Темп</dt>
                   <dd>
-                    {week.pointsPerDay !== null
-                      ? `${Math.round(week.pointsPerDay).toLocaleString('ru-RU')} очк./день (срез ${week.sliceFrom}—${week.sliceTo})`
+                    {pace !== null
+                      ? `${Math.round(pace).toLocaleString('ru-RU')} очк./сутки (срез ${bonusStats.sliceFrom}—${bonusStats.sliceTo})`
                       : '—'}
-                    {week.coversWeek === null
+                    {coversWeek === null
                       ? ''
-                      : week.coversWeek
+                      : coversWeek
                         ? ' · на неделю хватает'
                         : ' · на неделю НЕ хватает'}
                   </dd>
@@ -443,19 +464,19 @@ export function MinimaxPanel({
                       вчера живых {cohort.liveYesterday} · продолжено сегодня {cohort.continuedToday} ·
                       под риском {cohort.atRisk}
                       {cohort.atRisk > 0 ? ` (−${cohort.pointsLostIfSkipped} очк.)` : ''}
-                      {bonusToday > 0 ? ` · тысячных сегодня ${bonusToday}` : ''}
+                      {bonusToday > 0 ? ` · тысячных за сутки ${bonusToday}` : ''}
                     </dd>
                   </div>
                 ) : null}
-                {bonusStats.accounts > 0 ? (
+                {bonusStats.collected > 0 || bonusStats.handed > 0 || bonusStats.consumerTaken > 0 ? (
                   <div className="flex flex-wrap gap-x-2">
-                    <dt className="text-muted-foreground">Бонусы {bonusStats.date}</dt>
+                    <dt className="text-muted-foreground">Бонусы · сутки {bonusStats.label}</dt>
                     <dd>
-                      забрали {bonusStats.claimed} на {bonusStats.points.toLocaleString('ru-RU')} очков ·
-                      забрал потребитель {bonusStats.already} клеток (
-                      {bonusStats.spentPoints.toLocaleString('ru-RU')} очк. — в выдачу не идут) · отдано{' '}
-                      {bonusStats.handed} ({bonusStats.handedPoints.toLocaleString('ru-RU')} очк.) · на
-                      аккаунтах {bonusStats.leftPoints.toLocaleString('ru-RU')}
+                      забрали {bonusStats.collected} на {bonusStats.collectedPoints.toLocaleString('ru-RU')}{' '}
+                      очков · отдали {bonusStats.handed} ({bonusStats.handedPoints.toLocaleString('ru-RU')} очк.) ·
+                      забрал потребитель {bonusStats.consumerTaken} клеток (
+                      {bonusStats.consumerTakenPoints.toLocaleString('ru-RU')} очк. — в выдачу не идут) · на
+                      аккаунтах {bonusStats.stockPoints.toLocaleString('ru-RU')} ({bonusStats.stockAccounts} акк.)
                     </dd>
                   </div>
                 ) : null}
