@@ -133,28 +133,28 @@ function startDailyBonusLoop() {
       if (shouldSweep()) {
         const res = await postInternal('/api/internal/minimax/daily-bonus', {});
         if (!res.ok) {
-          log('daily-bonus HTTP', res.status, '— повтор через 5 мин');
-          setTimeout(startDailyBonusLoop, DAILY_BONUS_RETRY_MS);
+          log('daily-bonus HTTP', res.status, '— повтор через 30 мин');
           return;
         }
         log('daily-bonus: обход запущен');
       }
     } catch (error) {
-      log('daily-bonus error', String(error), '— повтор через 5 мин');
-      setTimeout(startDailyBonusLoop, DAILY_BONUS_RETRY_MS);
-      return;
+      log('daily-bonus error', String(error), '— повтор через 30 мин');
     }
-    // Маркера нет (обход только запустился — приложение запишет его по факту
-    // завершения) → проверяем снова скоро. Маркер есть → до следующих 05:00 можно спать.
-    setTimeout(
-      startDailyBonusLoop,
-      sweepDoneToday() ? msUntilDailyBonus() : DAILY_BONUS_CHECK_MS,
-    );
   };
 
-  // Первый тик: сразу, если час забора уже наступил (ловим «догон» после рестарта),
-  // иначе — в ближайшие 05:00 МСК.
-  setTimeout(startDailyBonusLoop, dailyBonusTimePassed() ? 0 : msUntilDailyBonus());
+  // Проверяем РАЗ В 30 МИНУТ, а не «спим до следующего 05:00»:
+  //
+  // Живая находка 20.11: воркер, поднятый после часа забора (деплой в 22:40),
+  // засыпал до следующего 05:00 ОДНИМ длинным таймером — и таймер не выстрелил.
+  // Забора за 20.11 не было: сутки клеток вендора потеряны, а две карусели остались
+  // без класса очков (класс берётся из нашего забора).
+  //
+  // Теперь короткий опрос — страховка: маркер ставит приложение по факту завершения
+  // обхода, поэтому обход, который начался и умер, не считается сделанным и будет
+  // повторён. Плюс точный таймер на 05:00 МСК — чтобы обход начинался вовремя.
+  setInterval(tick, DAILY_BONUS_CHECK_MS);
+  setTimeout(tick, dailyBonusTimePassed() ? 0 : msUntilDailyBonus());
 }
 
 /**
@@ -281,6 +281,7 @@ if (isEntryPoint) {
 
 // Чистые помощники расписания — под тест (scripts/reminders-worker.test.ts).
 export {
+  DAILY_BONUS_CHECK_MS,
   dailyBonusTimePassed,
   moscowDate,
   msUntilDailyBonus,
