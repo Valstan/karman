@@ -24,9 +24,11 @@ import {
   updateAccount,
 } from '@/lib/services/accounts';
 import { parseAccountImport } from '@/lib/accounts/import';
-import { pickPoolAccount, poolTierOf } from '@/lib/accounts/pool';
-import { splitAccounts } from '@/lib/accounts/rotation';
-import { tokenBackedAccountIds } from '@/lib/services/account-tokens';
+import { pickPoolAccount } from '@/lib/accounts/pool';
+import { moscowToday } from '@/lib/accounts/rotation';
+import { ensureLiveAccessToken, tokenBackedAccountIds } from '@/lib/services/account-tokens';
+import { claimForIssue, markBonusHanded } from '@/lib/services/minimax-daily-bonus';
+import { OWNER_TIMEZONE } from '@/lib/minimax/panel';
 import { isUniqueViolation } from '@/lib/db/pg-error';
 import { currentUserOrNull, revalidateAll, requireSecretsAccess, type ActionResult } from './_internal';
 
@@ -51,9 +53,7 @@ import { currentUserOrNull, revalidateAll, requireSecretsAccess, type ActionResu
  * (никогда не использованный — самый первый); аккаунты с исчерпанной неделей
  * не предлагаются (`splitAccounts`).
  */
-export async function nextAccountAction(
-  tier?: 'points_400' | 'points_1000',
-): Promise<
+export async function nextAccountAction(): Promise<
   ActionResult<{
     id: number;
     email: string;
@@ -66,74 +66,81 @@ export async function nextAccountAction(
   if (!user) return { ok: false, error: 'Требуется авторизация' };
   if (!user.isSuperuser) return { ok: false, error: 'Раздел доступен только владельцу' };
   const now = new Date();
+  const today = moscowToday(now);
   const accounts = await listAccounts(user, now);
-  // Без класса — «следующий» из верхнего слота (как раньше). С классом — аккаунт
-  // ИМЕННО этого класса очков (заказ владельца 18.11: две кнопки выдачи).
-  //
-  // Класс здесь ЖЁСТКИЙ, а не предпочтение: `pickPoolAccount` понижает класс, если
-  // запрошенного не осталось (правило владельца 13.11 — для выдачи по запросу
-  // комнаты). Кнопка обещает конкретный класс («Выдать 1000-очковый»), и отдать
-  // вместо тысячичного четырёхсотовый — обещание, которое не сдержали. Если класса
-  // не осталось — кнопка пишет «На сегодня закончились».
-  const picked = tier
-    ? pickPoolAccount(
-        accounts.filter((account) => poolTierOf(account, now) === tier),
-        now,
-        { tokenReadyIds: await tokenBackedAccountIds() },
-      )
-    : { account: splitAccounts(accounts, now).next };
-  const account = picked.account;
-  if (!account) return { ok: true, data: null };
-  // Активацию записываем СРАЗУ (заказ владельца 18.11: страница «Минимакса» теперь
-  // без списка аккаунтов, выдача идёт кнопками «Выдать N-очковый», и ручная выдача
-  // обязана попадать в журнал — иначе статистика и сторож её не видят).
-  const activated = await activateAccount(
-    user,
-    { id: account.id, projectId: null, source: 'owner' },
-    now,
-    { onlyIfFree: true },
-  );
-  if (!activated) {
-    // Аккаунт только что забрал кто-то другой — берём следующий.
-    const retry = tier
-      ? pickPoolAccount(
-          accounts.filter(
-            (candidate) =>
-              candidate.id !== account.id && poolTierOf(candidate, now) === tier,
-          ),
-          now,
-          { tokenReadyIds: await tokenBackedAccountIds() },
-        )
-      : { account: null };
-    if (!retry.account) return { ok: true, data: null };
-    const ok = await activateAccount(
+  const tokenBacked = await tokenBackedAccountIds();
+  // Одна карусель (заказ владельца 20.11): класс очков больше не выбираем — ни
+  // для владельца, ни для потребителей. Порядок — тот же, что у потребителей.
+  const excluded = new Set<number>();
+  const pick = () =>
+    pickPoolAccount(accounts, now, {
+      excludeIds: [...excluded],
+      tokenReadyIds: tokenBacked,
+    });
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const account = pick().account;
+    if (!account) return { ok: true, data: null };
+    // Без живой цепочки токенов отдавать нечего (вход в MiniMax делает владелец).
+    const token = await ensureLiveAccessToken(account.id, now);
+    if (!token) {
+      excluded.add(account.id);
+      continue;
+    }
+    // Забор бонуса В МОМЕНТ ВЫДАЧИ — как у потребителей: владелец получает
+    // аккаунт, у которого очки действительно есть. Чужая клетка или уже
+    // отданная — берём следующего.
+    const claim = await claimForIssue({
+      userId: user.id,
+      accountId: account.id,
+      access: token.access_token,
+      timezoneId: OWNER_TIMEZONE,
+      date: today,
+      now,
+    });
+    if (!claim.ok || !claim.claim.ours || claim.claim.handed) {
+      excluded.add(account.id);
+      continue;
+    }
+    // Активацию записываем СРАЗУ (заказ владельца 18.11: страница «Минимакса» теперь
+    // без списка аккаунтов, и ручная выдача обязана попадать в журнал — иначе
+    // статистика и сторож её не видят).
+    const activated = await activateAccount(
       user,
-      { id: retry.account.id, projectId: null, source: 'owner' },
+      {
+        id: account.id,
+        projectId: null,
+        source: 'owner',
+        ...(claim.claim.dayNo > 0 ? { activationIndex: claim.claim.dayNo } : {}),
+      },
       now,
       { onlyIfFree: true },
     );
-    if (!ok) return { ok: true, data: null };
+    if (!activated) {
+      excluded.add(account.id);
+      continue;
+    }
+    // Леджер бонусов: кому отдали аккаунт и сколько очков он нёс.
+    await markBonusHanded(
+      account.id,
+      today,
+      null,
+      claim.claim.points,
+      now,
+      claim.claim.claimId,
+    );
     return {
       ok: true,
       data: {
-        id: retry.account.id,
-        email: retry.account.email,
-        title: retry.account.title,
-        projectId: retry.account.projectId,
-        points: retry.account.weekPointsNext ?? null,
+        id: account.id,
+        email: account.email,
+        title: account.title,
+        projectId: account.projectId,
+        points: claim.claim.points,
       },
     };
   }
-  return {
-    ok: true,
-    data: {
-      id: account.id,
-      email: account.email,
-      title: account.title,
-      projectId: account.projectId,
-      points: account.weekPointsNext ?? null,
-    },
-  };
+  return { ok: true, data: null };
 }
 
 export async function listAccountsAction(): Promise<

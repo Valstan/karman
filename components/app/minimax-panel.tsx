@@ -25,7 +25,7 @@ import {
   splitAccounts,
 } from '@/lib/accounts/rotation';
 import { cohortStats, weeklyPoolStats } from '@/lib/accounts/weekly';
-import { availableByTier, poolTierOf } from '@/lib/accounts/pool';
+import { availableCount } from '@/lib/accounts/pool';
 import { centeredWindowFeatures } from '@/lib/accounts/window-features';
 import { MinimaxFormDialog } from './minimax-form-dialog';
 import { MinimaxActivateDialog } from './minimax-activate-dialog';
@@ -96,6 +96,8 @@ export type BonusStatsView = {
   handedPoints: number;
   spentPoints: number;
   leftPoints: number;
+  /** Сколько аккаунтов несут тысячные очки сегодня — по леджеру (правда). */
+  thousands: number;
 };
 
 export function MinimaxPanel({
@@ -158,14 +160,15 @@ export function MinimaxPanel({
     [accounts, clockMs],
   );
 
-  // Сколько СВОБОДНЫХ аккаунтов каждого очкового класса — для двух кнопок выдачи
-  // (заказ владельца 18.11). В счёт идут только аккаунты с добытой парой токенов:
-  // без пары отдавать нечего (вход в MiniMax делает владелец).
+  // Сколько аккаунтов готовы к выдаче — для кнопки выдачи (заказ владельца
+  // 20.11: одна карусель без разделения, значит и кнопка одна). В счёт идут
+  // только аккаунты с добытой парой токенов: без пары отдавать нечего (вход в
+  // MiniMax делает владелец).
   const available = useMemo(() => {
     const ready = [...tokenStates.values()]
       .filter((row) => row.state === 'obtained')
       .map((row) => row.account_id);
-    return availableByTier(accounts, new Date(clockMs), ready);
+    return availableCount(accounts, new Date(clockMs), ready);
   }, [accounts, clockMs, tokenStates]);
 
   // Сводка по недельной квоте (заказ владельца 07.11): сколько активаций
@@ -204,14 +207,10 @@ export function MinimaxPanel({
     [accounts, clockMs],
   );
 
-  // Сколько сегодня дадут тысячные очков — по ТОЙ ЖЕ правде, что и кнопки выдачи
-  // (в когорте было «по модели» — 61 против 30, и владелец видел два разных
-  // числа об одном и том же: модель клетки с панелью расходится у 42 аккаунтов
-  // из 112 — живьём 16.11).
-  const bonusToday = useMemo(
-    () => accounts.filter((account) => poolTierOf(account, new Date(clockMs)) === 'points_1000').length,
-    [accounts, clockMs],
-  );
+  // Сколько сегодня дадут тысячные очков — по ЛЕДЖЕРУ (ответ вендора на забор),
+  // а не по модели клетки: модель с панелью расходилась у 42 аккаунтов из 112
+  // (живая сверка 16.11), и владелец видел два разных числа об одном и том же.
+  const bonusToday = bonusStats.thousands;
 
   // Активация — только явной кнопкой (заказ владельца 05.11). Копирование
   // почты или пароля аккаунт больше НЕ гасит.
@@ -328,21 +327,15 @@ export function MinimaxPanel({
    * «кто сейчас следующий» перечитывается с сервера, и окно открывается уже
    * для СВЕЖЕГО аккаунта — того, что дольше всех не активировался.
    */
-  async function openNextAccountWindow(tier?: 'points_400' | 'points_1000') {
-    const outcome = await nextAccountAction(tier);
+  async function openNextAccountWindow() {
+    const outcome = await nextAccountAction();
     if (!outcome.ok) {
       toast.error(outcome.error);
       return;
     }
     const fresh = outcome.data;
     if (!fresh) {
-      toast.info(
-        tier === 'points_1000'
-          ? 'Тысячных на сегодня закончились'
-          : tier === 'points_400'
-            ? 'Четырёхсотовых на сегодня закончились'
-            : 'Свободных аккаунтов нет — все погашены или недели исчерпаны',
-      );
+      toast.info('Свободных аккаунтов нет — все погашены или недели исчерпаны');
       router.refresh();
       return;
     }
@@ -399,24 +392,12 @@ export function MinimaxPanel({
         <div className="flex flex-wrap items-center justify-center gap-2">
           <MinimaxToolbar onAccountCreated={(id) => tokenFlow.start(id)} />
           <Button
-            variant={available.points_400 > 0 ? 'default' : 'outline'}
-            disabled={available.points_400 === 0}
-            onClick={() => void openNextAccountWindow('points_400')}
-            title="Выдать аккаунт на 400 очков (откроется быстрое окно, почта скопируется сама)"
+            variant={available > 0 ? 'default' : 'outline'}
+            disabled={available === 0}
+            onClick={() => void openNextAccountWindow()}
+            title="Выдать аккаунт из общей карусели (бонус забирается в момент выдачи, почта скопируется сама)"
           >
-            {available.points_400 > 0
-              ? `Выдать 400-очковый (${available.points_400})`
-              : 'На сегодня закончились'}
-          </Button>
-          <Button
-            variant={available.points_1000 > 0 ? 'default' : 'outline'}
-            disabled={available.points_1000 === 0}
-            onClick={() => void openNextAccountWindow('points_1000')}
-            title="Выдать аккаунт на 1000 очков (бонусная клетка)"
-          >
-            {available.points_1000 > 0
-              ? `Выдать 1000-очковый (${available.points_1000})`
-              : 'На сегодня закончились'}
+            {available > 0 ? `Выдать аккаунт (${available})` : 'На сегодня закончились'}
           </Button>
           <Button variant="outline" size="sm" onClick={() => setAllOpen(true)}>
             <LayoutList className="mr-1 h-4 w-4" /> Показать все аккаунты

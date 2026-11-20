@@ -50,6 +50,14 @@ vi.mock('@/lib/minimax/oauth', async (importOriginal) => {
   return { ...actual, refreshAccessToken: oauth.refreshAccessToken, signinStatus: oauth.signinStatus };
 });
 
+// Вендор: забор бонуса в момент выдачи (заказ владельца 20.11). Без него выдача не
+// проходит: аккаунт отдаём только с клеткой, которую забрали мы.
+const claim = vi.hoisted(() => ({ claimDailyBonus: vi.fn() }));
+vi.mock('@/lib/minimax/claim', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/minimax/claim')>();
+  return { ...actual, claimDailyBonus: claim.claimDailyBonus };
+});
+
 let pg: PGlite | undefined;
 
 const OWNER_ID = 1; // admin из scripts/bootstrap.sql
@@ -182,6 +190,19 @@ beforeEach(async () => {
   });
   oauth.signinStatus.mockReset();
   oauth.signinStatus.mockResolvedValue(panelAnswer());
+  // Забор в момент выдачи: клетка 2 — 400 очков, забрали мы.
+  claim.claimDailyBonus.mockReset();
+  claim.claimDailyBonus.mockResolvedValue({
+    ok: true,
+    data: {
+      claim_result: 1,
+      claim_id: 'claim-1',
+      day_no: 2,
+      points: 400,
+      expire_at_ms: NOW.getTime() + 30 * 24 * 3_600_000,
+      panel: { days: [{ day_no: 2, status: 3, points: 400, is_today: true }] },
+    },
+  });
 });
 
 afterEach(async () => {

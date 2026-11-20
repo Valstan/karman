@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
-  availableByTier,
+  availableCount,
   buildOffer,
-  hintFor,
   pickPoolAccount,
-  poolTierOf,
   resolveActivation,
+  tierOfPoints,
+  type ClaimFact,
   type PoolOffer,
   type PoolRow,
 } from '@/lib/accounts/pool';
@@ -17,8 +17,7 @@ const NOW = new Date('2026-11-13T12:00:00Z');
 
 /**
  * Аккаунт с НАСТОЯЩЕЙ недельной квотой: поля строки и квота считаются из одних и
- * тех же отметок, иначе подсказка («сколько очков») разойдётся с моделью, а тест
- * будет врать.
+ * тех же отметок, иначе тест будет врать.
  */
 function account(
   id: number,
@@ -31,8 +30,8 @@ function account(
     title: `Аккаунт ${id}`,
     email: `acc${id}@example.test`,
     usedOn: checkIns.length ? checkIns[checkIns.length - 1]!.date : null,
-    // Момент последней активации — по последней отметке: внутри класса порядок
-    // выдачи решает давность (мандат владельца 15.11).
+    // Момент последней активации — по последней отметке: порядок выдачи решает
+    // давность (мандат владельца 15.11).
     usedAt: checkIns.length ? `${checkIns[checkIns.length - 1]!.date}T09:00:00.000Z` : null,
     projectId: null,
     projectName: null,
@@ -51,64 +50,52 @@ function account(
 /** Отметка без названного номера — как пишет программа сама. */
 const auto = (date: string): WeeklyCheckIn => ({ date, index: null });
 
-describe('пул MiniMax: раздача аккаунта проекту', () => {
-  it('проекту отдаётся аккаунт на 400 очков, даже если рядом есть тысячник', () => {
-    // Правило владельца 13.11: тысячные остаются владельцу (комп, программирование).
-    const thousand = account(1, [auto('2026-11-10'), auto('2026-11-11'), auto('2026-11-12')]);
-    const four = account(2, [auto('2026-11-12')]);
-    const picked = pickPoolAccount([thousand, four], NOW);
-    expect(picked.account?.id).toBe(2);
-    expect(picked.tier).toBe('points_400');
-  });
+/** Ответ вендора на забор при выдаче: клетка и номинал — факт, а не прогноз. */
+function fact(over: Partial<ClaimFact> = {}): ClaimFact {
+  return { index: 3, points: 400, result: 1, claimId: 'claim-1', ...over };
+}
 
-  it('тысячник без приоритета программирования не отдаётся', () => {
-    // Заказ владельца 19.11 (ночь): тысячная карусель — исключительно на
-    // программирование; остальным идёт четырёхсотковая.
-    const thousand = account(1, [auto('2026-11-10'), auto('2026-11-11'), auto('2026-11-12')]);
-    const picked = pickPoolAccount([thousand], NOW);
-    expect(picked.account).toBeNull();
-  });
-
-  it('уже отмеченный сегодня аккаунт (0 очков) НЕ выдаётся', () => {
-    // Просьба Сарафана (линия, id 146, 14.11): «не выдавай аккаунты, у которых
-    // сегодняшний чек-ин уже был: мы их всё равно пропускаем, и пул уменьшается зря».
-    // Чек-ин в сутки один — очки у такого аккаунта уже сожжены.
-    const zero = account(1, [auto('2026-11-12'), auto(TODAY)]);
-    const picked = pickPoolAccount([zero], NOW);
-    expect(picked.account).toBeNull();
-    expect(picked.tier).toBeNull();
-  });
-
-  it('запрошенный класс очков идёт первым, остальные — запасным', () => {
-    // Десктоп-панель (программирование владельца) просит тысячные явно.
-    const thousand = account(1, [auto('2026-11-10'), auto('2026-11-11'), auto('2026-11-12')]);
-    const four = account(2, [auto('2026-11-12')]);
-    const picked = pickPoolAccount([four, thousand], NOW, { tier: 'points_1000' });
+describe('пул MiniMax: одна карусель (заказ владельца 20.11)', () => {
+  it('разделения на 400 и 1000 нет: отдаётся первый в общей очереди', () => {
+    // Раньше тысячные уходили только программированию, а продсерверу шла
+    // четырёхсотковая каруселя. Теперь карусель одна (заказ владельца 20.11:
+    // «сделай одну карусель без разделения… выдавай всем просто то что есть»).
+    const thousand = account(1, [], {
+      usedAt: '2026-11-11T09:00:00.000Z',
+      bonusOurs: true,
+      bonusPoints: 1000,
+      bonusDayNo: 4,
+    });
+    const four = account(2, [], {
+      usedAt: '2026-11-12T09:00:00.000Z',
+      bonusOurs: true,
+      bonusPoints: 400,
+      bonusDayNo: 2,
+    });
+    const picked = pickPoolAccount([four, thousand], NOW);
+    // Давность решает: тысячник давно не выдавали — он и идёт первым.
     expect(picked.account?.id).toBe(1);
-    expect(picked.tier).toBe('points_1000');
   });
 
-  it('запрошенного класса нет — берём оставшиеся (правило владельца)', () => {
-    const four = account(2, [auto('2026-11-12')]);
-    const picked = pickPoolAccount([four], NOW, { tier: 'points_1000' });
+  it('в очереди — по времени последней выдачи, никогда не выданный первый', () => {
+    const old = account(1, [], { usedAt: '2026-11-10T09:00:00.000Z' });
+    const fresh = account(2, [], { usedAt: '2026-11-12T09:00:00.000Z' });
+    const never = account(3, []);
+    const picked = pickPoolAccount([fresh, old, never], NOW);
+    expect(picked.account?.id).toBe(3);
+  });
+
+  it('клетку забрал потребитель — аккаунт уходит в конец очереди, но не исчезает', () => {
+    // Очки такого аккаунта потрачены: забор при выдаче его отсечёт (claim_result = 2
+    // и клетка не наша). Но из пула он НЕ выпадает — ждёт следующих суток в хвосте.
+    const dead = account(1, [], { usedAt: '2026-11-10T09:00:00.000Z', bonusOurs: false });
+    const live = account(2, [], { usedAt: '2026-11-11T09:00:00.000Z', bonusOurs: true });
+    const picked = pickPoolAccount([dead, live], NOW);
     expect(picked.account?.id).toBe(2);
-    expect(picked.tier).toBe('points_400');
   });
 
-  it('внутри класса — тот, кто дольше всех не активировался', () => {
-    // Мандат владельца 15.11: «ты им даешь свежий токен, который, ну, условно,
-    // дольше всех не активировался». Внутри класса очки у всех одинаковые, поэтому
-    // решает давность активации.
-    const old = account(1, [auto('2026-11-10')]);
-    const fresh = account(2, [auto('2026-11-12')]);
-    const picked = pickPoolAccount([fresh, old], NOW);
-    expect(picked.account?.id).toBe(1);
-    expect(picked.tier).toBe('points_400');
-  });
-
-  it('аккаунт с сожжённым бонусом не предлагается', () => {
-    // Бонус сожжён = ночной сброс после активации ещё не наступил (мандат
-    // владельца 15.11). Активирован час назад — точно сожжён.
+  it('занятый аккаунт (открытая сессия) не предлагается', () => {
+    // Ночной сброс после активации ещё не наступил — аккаунт в работе.
     const usedAt = new Date(NOW.getTime() - 60 * 60 * 1000).toISOString();
     const busy = account(1, [auto('2026-11-12')], { usedAt, usedOn: TODAY });
     const free = account(2, [auto('2026-11-12')]);
@@ -123,6 +110,13 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     expect(picked.account?.id).toBe(2);
   });
 
+  it('аккаунт, который владелец включил вручную, проекту не отдаётся', () => {
+    const held = account(1, [], { ownerUsedAt: NOW.toISOString() });
+    const free = account(2, [auto('2026-11-12')]);
+    const picked = pickPoolAccount([held, free], NOW);
+    expect(picked.account?.id).toBe(2);
+  });
+
   it('пустой пул — честная пустота, а не ошибка', () => {
     const offer = buildOffer(pickPoolAccount([], NOW), { project: 'SARAFAN', today: TODAY });
     expect(offer.account).toBeNull();
@@ -133,119 +127,37 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     expect(offer.project).toBe('SARAFAN');
   });
 
-  it('в ответе — почта, клетка и сколько очков ждать; пароля нет', () => {
+  it('в ответе — почта, клетка и очки из ФАКТА забора; пароля нет', () => {
     const offer: PoolOffer = buildOffer(pickPoolAccount([account(7, [auto('2026-11-12')])], NOW), {
       project: 'SARAFAN',
       today: TODAY,
+      fact: fact({ index: 4, points: 1000 }),
     });
     expect(offer.account?.email).toBe('acc7@example.test');
-    expect(offer.account?.activation_index).toBe(2);
-    expect(offer.account?.points_next).toBe(400);
+    // Клетка и номинал — из ответа вендора на забор, а не из модели по датам.
+    expect(offer.account?.activation_index).toBe(4);
+    expect(offer.account?.points_next).toBe(1000);
+    expect(offer.account?.unverified).toBe(false);
+    expect(offer.tier).toBe('points_1000');
     expect(offer.recommended).toBe(true);
-    expect(offer.why).toContain('400 очков');
+    expect(offer.why).toContain('1000 очков');
     // Пароля в ответе нет: Сарафан работает по почте, секрет наружу не выносим.
     expect('password' in (offer.account ?? {})).toBe(false);
   });
-});
 
-describe('пул MiniMax: две карусели (заказ владельца 19.11, ночь)', () => {
-  /** Аккаунт, которому наш забор дал 1000 очков (клетка 4 или 7). */
-  const thousand = (id: number, over: Partial<PoolRow> = {}) =>
-    account(id, [auto('2026-11-10'), auto('2026-11-11'), auto('2026-11-12')], {
-      bonusOurs: true,
-      bonusPoints: 1000,
-      bonusDayNo: 4,
-      ...over,
+  it('без факта забора очки не обещаем: клетка и номинал — null', () => {
+    const offer = buildOffer(pickPoolAccount([account(7, [auto('2026-11-12')])], NOW), {
+      project: 'SARAFAN',
+      today: TODAY,
     });
-
-  /** Аккаунт, которому забор дал 400 очков. */
-  const fourHundred = (id: number, over: Partial<PoolRow> = {}) =>
-    account(id, [auto('2026-11-12')], {
-      bonusOurs: true,
-      bonusPoints: 400,
-      bonusDayNo: 2,
-      ...over,
-    });
-
-  it('тысячная карусель — только программированию', () => {
-    // Продсервер (комната setka) крутит четырёхсотковую: тысячную ему не отдаём.
-    const picked = pickPoolAccount([thousand(1), fourHundred(2)], NOW, { tier: 'points_400' });
-    expect(picked.account?.id).toBe(2);
-    expect(picked.tier).toBe('points_400');
+    expect(offer.account?.activation_index).toBeNull();
+    expect(offer.account?.points_next).toBeNull();
   });
 
-  it('программированию — тысячная карусель', () => {
-    const picked = pickPoolAccount([fourHundred(2), thousand(1)], NOW, { tier: 'points_1000' });
-    expect(picked.account?.id).toBe(1);
-    expect(picked.tier).toBe('points_1000');
-  });
-
-  it('когда тысячная кончилась — программирование берёт четырёхсотковую', () => {
-    // «Как только 1000 карусель кончилась то программирование переключается на
-    // карусель 400 и так до 5 утра по Москве».
-    const picked = pickPoolAccount([fourHundred(2)], NOW, { tier: 'points_1000' });
-    expect(picked.account?.id).toBe(2);
-    expect(picked.tier).toBe('points_400');
-  });
-
-  it('отданные сегодня — в конец четырёхсотковой карусели', () => {
-    // У отданного очки прежнего потребителя могли быть потрачены, поэтому из тысячной
-    // карусели он уходит (иначе она крутилась бы с использованными и не дошла бы до
-    // конца) и стоит в конце четырёхсотковой.
-    const used = thousand(1, { weekCheckedInToday: true });
-    const clean = fourHundred(2);
-    expect(poolTierOf(clean, NOW)).toBe('points_400');
-    expect(poolTierOf(used, NOW)).toBe('points_400');
-    // А неотданный тысячник — в тысячной карусели.
-    expect(poolTierOf(thousand(3), NOW)).toBe('points_1000');
-  });
-
-  it('карусель: первым идёт тот, кто дольше всех не работал', () => {
-    // Простой перебор по времени последней выдачи: выданный уезжает в конец.
-    const old = account(1, [auto('2026-11-10')], { usedAt: '2026-11-10T09:00:00.000Z' });
-    const fresh = account(2, [auto('2026-11-12')], { usedAt: '2026-11-12T09:00:00.000Z' });
-    const picked = pickPoolAccount([fresh, old], NOW);
-    expect(picked.account?.id).toBe(1);
-  });
-});
-
-describe('пул MiniMax: подсказка по очкам', () => {
-  it('если владелец называл клетку — считаем от ЕГО числа (панель — истина)', () => {
-    // Вчера на панели было 3 → сегодня 4-я клетка → 1000 очков.
-    // Модель по датам сказала бы 2-ю клетку (400) — очки сгорели бы вхолостую.
-    const row = account(1, [{ date: '2026-11-12', index: 3 }]);
-    const hint = hintFor(row);
-    expect(hint.source).toBe('owner_confirmed');
-    expect(hint.index).toBe(4);
-    expect(hint.points).toBe(1000);
-  });
-
-  it('если владелец не называл — считаем по модели, как раньше', () => {
-    const hint = hintFor(account(1, [auto('2026-11-12')]));
-    expect(hint.source).toBe('model');
-    expect(hint.index).toBe(2);
-    expect(hint.points).toBe(400);
-  });
-
-  it('после пропущенного дня серия мертва — подсказка по модели (клетка 1)', () => {
-    const hint = hintFor(account(1, [{ date: '2026-11-10', index: 3 }]));
-    expect(hint.source).toBe('model');
-    expect(hint.index).toBe(1);
-    expect(hint.points).toBe(400);
-  });
-
-  it('аккаунт под вопросом (3@) — подсказки по очкам нет вовсе', () => {
-    const hint = hintFor(account(86, [auto('2026-11-12')]));
-    expect(hint.unverified).toBe(true);
-    expect(hint.points).toBeNull();
-
-    const picked = pickPoolAccount([account(86, [auto('2026-11-12')])], NOW);
-    expect(picked.tier).toBe('unverified');
-  });
-
-  it('чек-ин за сегодня уже был — очков сегодня не будет ни при какой клетке', () => {
-    const hint = hintFor(account(1, [auto('2026-11-12'), auto(TODAY)]));
-    expect(hint.points).toBe(0);
+  it('класс очков — по номиналу клетки', () => {
+    expect(tierOfPoints(1000)).toBe('points_1000');
+    expect(tierOfPoints(400)).toBe('points_400');
+    expect(tierOfPoints(null)).toBe('points_0');
   });
 });
 
@@ -340,200 +252,77 @@ describe('пул MiniMax: запись активации по ответу пр
 });
 
 /**
- * Панель MiniMax — источник правды (заказ владельца 16.11: «сделать аккаунты
- * активными, когда очки появятся»).
+ * Счётчик для кнопки выдачи: одна карусель — одно число (заказ владельца 20.11).
  *
- * Час ночного сброса у MiniMax точно не известен, поэтому наша эвристика
- * ошибается в обе стороны: то держит аккаунт вне оборота, когда очки уже есть,
- * то отдаёт аккаунт, у которого очков ещё нет (ровно из-за этого 15.11 пятнадцать
- * аккаунтов подряд отказали с «insufficient balance»). Панель отвечает точно.
+ * Очки здесь НЕ проверяются: их проверяет забор в момент выдачи. Проверять их
+ * заранее было бессмысленно — панель остатка не отдаёт, а модель клетки с вендором
+ * расходилась у 274 строк леджера из 416.
  */
-describe('пул MiniMax: панель как источник правды', () => {
-  it('панель сказала «очки есть» — аккаунт возвращается в оборот', () => {
-    // Активирован час назад: наша эвристика ночного сброса говорит «сожжён».
+describe('пул MiniMax: сколько аккаунтов готовы к выдаче', () => {
+  it('считаем всех доступных, а не по классам очков', () => {
+    const four = account(1, [auto('2026-11-12')], { bonusOurs: true, bonusPoints: 400 });
+    const thousand = account(2, [auto('2026-11-12')], { bonusOurs: true, bonusPoints: 1000 });
+    const exhausted = account(3, [auto('2026-11-12')], { weekExhausted: true });
+    expect(availableCount([four, thousand, exhausted], NOW, [1, 2, 3])).toBe(2);
+    // Без пары токенов отдавать нечего (вход в MiniMax делает владелец).
+    expect(availableCount([four, thousand], NOW, [1])).toBe(1);
+  });
+
+  it('занятый аккаунт в счёт не идёт', () => {
     const usedAt = new Date(NOW.getTime() - 60 * 60 * 1000).toISOString();
-    const returned = account(1, [auto('2026-11-12')], {
-      usedAt,
-      usedOn: TODAY,
-      panelStatus: 2,
-      panelPoints: 400,
-      panelCellNo: 2,
+    const busy = account(1, [auto('2026-11-12')], { usedAt, usedOn: TODAY });
+    expect(availableCount([busy], NOW, [1])).toBe(0);
+  });
+});
+
+/**
+ * Леджер забора: чьи очки лежат на аккаунте.
+ *
+ * Панель остатка НЕ показывает: `points` клетки — её НОМИНАЛ (400 или 1000),
+ * а не «сколько осталось». Единственный верный признак — ответ вендора на забор.
+ */
+describe('пул MiniMax: леджер забора в порядке очереди', () => {
+  it('забрали мы — аккаунт в обороте и идёт по общей очереди', () => {
+    const row = account(1, [auto('2026-11-12')], {
+      bonusRemaining: 1000,
+      bonusPoints: 1000,
+      bonusDayNo: 4,
+      bonusOurs: true,
     });
-    const picked = pickPoolAccount([returned], NOW);
+    const picked = pickPoolAccount([row], NOW);
     expect(picked.account?.id).toBe(1);
-    expect(picked.tier).toBe('points_400');
     expect(picked.free).toBe(1);
   });
 
-  it('панель сказала «очки сожжены» — аккаунт из оборота выходит', () => {
-    // Свободный по эвристике (активирован давно), но панель говорит, что
-    // сегодняшние очки уже забрали: отдавать такой нельзя.
-    const burned = account(1, [auto('2026-11-12')], {
-      usedAt: new Date(NOW.getTime() - 48 * 60 * 60 * 1000).toISOString(),
-      panelStatus: 3,
-      panelPoints: 400,
-      panelCellNo: 2,
-    });
-    const picked = pickPoolAccount([burned], NOW);
-    expect(picked.account).toBeNull();
-    expect(picked.free).toBe(0);
-  });
-
-  it('подсказка по очкам — из панели: клетка и очки её', () => {
+  it('забрал потребитель — очки потрачены: аккаунт ждёт в хвосте очереди', () => {
+    // Из выдачи он не выпадает (очки проверяет забор при выдаче), но и в начало
+    // очереди не встаёт — очки прежнего потребителя могли быть потрачены.
     const row = account(1, [auto('2026-11-12')], {
-      panelStatus: 2,
-      panelPoints: 1000,
-      panelCellNo: 7,
+      bonusRemaining: 1000,
+      bonusPoints: 1000,
+      bonusDayNo: 4,
+      bonusOurs: false,
     });
-    const hint = hintFor(row);
-    expect(hint.source).toBe('panel');
-    expect(hint.index).toBe(7);
-    expect(hint.points).toBe(1000);
-    expect(hint.unverified).toBe(false);
+    const picked = pickPoolAccount([row], NOW);
+    expect(picked.account?.id).toBe(1);
   });
 
-  /**
-   * Доступных по очковому классу — для двух кнопок выдачи (заказ владельца 18.11):
-   * одна кнопка отдаёт аккаунты на 400 очков, другая — на 1000, а если таких нет,
-   * кнопка пишет «На сегодня закончились».
-   */
-  it('доступных по очковому классу — сколько 400-очковых и сколько 1000-очковых', () => {
-    const four = account(1, [auto('2026-11-12')], {
-      panelStatus: 2,
-      panelPoints: 400,
-      panelCellNo: 2,
-    });
-    const thousand = account(2, [auto('2026-11-12')], {
-      panelStatus: 2,
-      panelPoints: 1000,
-      panelCellNo: 4,
-    });
-    // С исчерпанной неделей в выдачу не идёт (окно простоя тут ни при чём — неделя
-    // кончилась, и аккаунт уходит вниз списка).
-    const exhausted = account(3, [auto('2026-11-12')], {
-      panelStatus: 2,
-      panelPoints: 400,
-      weekExhausted: true,
-    });
-
-    expect(availableByTier([four, thousand, exhausted], NOW, [1, 2, 3])).toEqual({
-      points_400: 1,
-      points_1000: 1,
-    });
-    // Без пары токенов отдавать нечего (вход в MiniMax делает владелец).
-    expect(availableByTier([four, thousand], NOW, [1])).toEqual({
-      points_400: 1,
-      points_1000: 0,
-    });
-  });
-
-  it('панель ответила «очки сожжены» — подсказка по очкам нулевая', () => {
-    const row = account(1, [auto('2026-11-12')], { panelStatus: 3, panelPoints: 400 });
-    const hint = hintFor(row);
-    expect(hint.source).toBe('panel');
-    expect(hint.points).toBe(0);
-  });
-
-  /**
-   * Чьи очки лежат на аккаунте — решает наш забор (заказ владельца 18.11).
-   *
-   * Панель остатка НЕ показывает: `points` клетки — её НОМИНАЛ (400 или 1000),
-   * а не «сколько осталось» (живая проверка 18.11: у аккаунта с давно
-   * потраченными очками панель отвечает `points: 1000, bonus_points: 0`).
-   * Единственный верный признак — ответ вендора на забор: `claim_result` 1 — мы
-   * забрали (очки свежие и наши), 2 — забрали до нас (потребитель; очки давно
-   * потрачены, и такой аккаунт в выдачу не идёт).
-   */
-  describe('леджер забора: чьи очки лежат на аккаунте', () => {
-    it('забрали мы — клетка и номинал из леджера', () => {
-      const row = account(1, [auto('2026-11-12')], {
-        panelStatus: null,
-        panelPoints: null,
-        bonusRemaining: 1000,
-        bonusPoints: 1000,
-        bonusDayNo: 4,
-        bonusOurs: true,
-      });
-      const hint = hintFor(row);
-      expect(hint.source).toBe('panel');
-      expect(hint.index).toBe(4);
-      expect(hint.points).toBe(1000);
-      expect(hint.unverified).toBe(false);
-    });
-
-    it('забрал потребитель — очки давно потрачены, подсказка нулевая', () => {
-      const row = account(1, [auto('2026-11-12')], {
-        panelStatus: 3,
-        panelPoints: 1000,
-        bonusRemaining: 1000,
-        bonusPoints: 1000,
-        bonusDayNo: 4,
-        bonusOurs: false,
-      });
-      expect(hintFor(row).points).toBe(0);
-    });
-
-    it('забрали мы — аккаунт в обороте: его отдаём программированию', () => {
-      // Тысячная карусель — исключительно для программирования (заказ владельца
-      // 19.11, ночь), поэтому в тесте — комната brain.
-      const row = account(1, [auto('2026-11-12')], {
-        panelStatus: 3,
-        panelPoints: 1000,
-        bonusRemaining: 1000,
-        bonusPoints: 1000,
-        bonusDayNo: 4,
-        bonusOurs: true,
-      });
-      const picked = pickPoolAccount([row], NOW, { tier: 'points_1000' });
-      expect(picked.account?.id).toBe(1);
-      expect(picked.tier).toBe('points_1000');
-      expect(picked.free).toBe(1);
-    });
-
-    it('забрал потребитель — в выдачу не идёт (очки потрачены)', () => {
-      const row = account(1, [auto('2026-11-12')], {
-        panelStatus: 3,
-        panelPoints: 1000,
-        bonusRemaining: 1000,
-        bonusPoints: 1000,
-        bonusDayNo: 4,
-        bonusOurs: false,
-      });
-      const picked = pickPoolAccount([row], NOW);
-      expect(picked.account).toBeNull();
-      expect(picked.free).toBe(0);
-    });
-
-    it('забора сегодня не было, панель говорит «очки есть» — аккаунт свободен', () => {
-      const row = account(1, [auto('2026-11-12')], {
-        panelStatus: 2,
-        panelPoints: 400,
-        panelCellNo: 5,
-      });
-      const picked = pickPoolAccount([row], NOW);
-      expect(picked.account?.id).toBe(1);
-      expect(picked.tier).toBe('points_400');
-    });
-  });
-
-  it('счётчик свободных считает аккаунт, возвращённый панелью', () => {
-    const usedAt = new Date(NOW.getTime() - 60 * 60 * 1000).toISOString();
+  it('счётчик свободных считает аккаунты карусели', () => {
+    // Активирован двое суток назад: сессия (окно после активации) истекла, аккаунт
+    // снова в карусели. Панель при этом ничего не говорит — очки проверяет забор.
+    const usedAt = new Date(NOW.getTime() - 48 * 60 * 60 * 1000).toISOString();
     const returned = account(1, [auto('2026-11-12')], {
       usedAt,
-      usedOn: TODAY,
-      panelStatus: 2,
-      panelPoints: 400,
-      panelCellNo: 2,
+      usedOn: '2026-11-12',
     });
-    const summary = accountPoolSummary([returned], NOW);
+    const summary = accountPoolSummary([returned], NOW, { pointsMatter: false });
     expect(summary.free).toBe(1);
     expect(summary.soon).toBe(0);
   });
 
-  it('без ответа панели всё остаётся как было: решает эвристика ночного сброса', () => {
+  it('аккаунт с открытой сессией (работает) в счётчик не идёт', () => {
     const usedAt = new Date(NOW.getTime() - 60 * 60 * 1000).toISOString();
-    const spent = account(1, [auto('2026-11-12')], { usedAt, usedOn: TODAY });
-    expect(pickPoolAccount([spent], NOW).account).toBeNull();
-    expect(hintFor(spent).source).toBe('model');
+    const busy = account(1, [auto('2026-11-12')], { usedAt, usedOn: TODAY });
+    expect(accountPoolSummary([busy], NOW, { pointsMatter: false }).free).toBe(0);
   });
 });
