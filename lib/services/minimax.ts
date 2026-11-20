@@ -20,20 +20,17 @@ import {
   type AccessHandover,
 } from '@/lib/services/account-tokens';
 import { moscowToday } from '@/lib/accounts/rotation';
-import { markBonusHanded } from '@/lib/services/minimax-daily-bonus';
-import {
-  dailyStateFor,
-  timezoneForRoom,
-} from '@/lib/services/minimax-daily';
+import { claimForIssue, markBonusHanded } from '@/lib/services/minimax-daily-bonus';
+import { timezoneForRoom } from '@/lib/services/minimax-daily';
 import { pointsForIndex, weeklyQuota } from '@/lib/accounts/weekly';
 import {
   buildOffer,
   pickPoolAccount,
-  poolTierOf,
   resolveActivation,
+  tierOfPoints,
+  type ClaimFact,
   type PoolFilters,
   type PoolOffer,
-  type PoolTier,
 } from '@/lib/accounts/pool';
 
 /**
@@ -43,13 +40,20 @@ import {
  *
  * Сарафан (и любой другой проект с токеном комнаты) приходит по HTTP за аккаунтом:
  *
- * - `GET /api/minimax/accounts/available` → **один** аккаунт — тот же верхний слот,
- *   что и в интерфейсе владельца, — с почтой, паролем, ожидаемой клеткой и ожидаемыми
- *   очками;
+ * - `GET /api/minimax/accounts/available` → **один** аккаунт — первый в общей
+ *   карусели, — с почтой, клеткой и очками (пароля в ответе нет);
  * - `POST /api/minimax/activations` → запись факта: аккаунт активирован, вот столько
  *   очков, вот какая клетка была на панели;
  * - `POST /api/minimax/renew` → **продление цепочки**: тот же аккаунт, свежий access
  *   (D-219, мандат владельца 17.11).
+ *
+ * ## Очки — по забору, в момент выдачи (заказ владельца 20.11)
+ *
+ * Одна карусель без разделения на 400/1000; очки при выборе не проверяются. Перед
+ * выдачей мы зовём вендора (`signin/claim`) и решаем по ответу: клетку забрали мы и её
+ * не отдавали раньше → отдаём; клетку забрали до нас → очки потрачены, аккаунт уходит
+ * в конец очереди, берём следующий. Поэтому потребителю обещается факт (клетка и
+ * номинал из ответа вендора), а не прогноз по модели.
  *
  * Учёт при этом НЕ переписывается: подбор — `lib/accounts/rotation.ts`, клетка и очки —
  * `lib/accounts/weekly.ts`, запись — тот же `activateAccount`, что и кнопка владельца.
@@ -193,27 +197,6 @@ async function resolveCaller(
     },
   };
 }
-
-/**
- * Приоритет класса очков по потребителю.
- *
- * Мандат владельца (14.11, 00:30 МСК): «Сарафану в приоритете предлагать 400 очковые
- * токены, если нету то 1000-е предлагать, а панели программирования предлагать в
- * приоритете 1000 токоны, а если нет то 400 очковые». Ключ — slug комнаты-потребителя.
- *
- * Кто спрашивает — не решает: выбор класса делаем мы (учёт и ротация — наши), поэтому
- * потребитель никакого параметра не передаёт.
- */
-const TIER_PREFERENCE: Record<string, PoolTier> = {
-  /** Сарафан (фильтрация постов ВК): четырёхсотковая карусель. */
-  setka: 'points_400',
-  /** Панель программирования (Мозг): тысячная карусель, а когда она кончилась —
-   *  четырёхсотковая (заказ владельца 19.11, ночь). */
-  brain: 'points_1000',
-};
-
-/** Приоритет по умолчанию (проекты вообще): четырёхсотовые — как решил владелец 13.11. */
-const DEFAULT_TIER_PREFERENCE: PoolTier = 'points_400';
 
 /**
  * Наблюдение потребителя: сколько очков было на выданном токене.
@@ -441,17 +424,14 @@ export async function issueAccount(
   // оживим по refresh при выдаче (refresh остаётся у нас), а аккаунт без пары
   // проекту бесполезен — вход в MiniMax делает владелец.
   const tokenBacked = await tokenBackedAccountIds();
-  // Класс очков выбираем МЫ — по потребителю (см. TIER_PREFERENCE); потребитель в
-  // этом не участвует и никаких параметров не задаёт.
-  const preferredTier = TIER_PREFERENCE[caller.roomSlug] ?? DEFAULT_TIER_PREFERENCE;
   const today = moscowToday(now);
   // Пояс потребителя: его «сегодня» и наше «сегодня» — разные дни в ночном
-  // окне между 00:00 и 03:00 МСК, поэтому состояние панели берём для ЕГО пояса.
+  // окне между 00:00 и 03:00 МСК, поэтому забор бонуса берём для ЕГО пояса.
   const consumerTimezone = timezoneForRoom(caller.roomSlug);
 
   // Кандидатов перебираем: аккаунт может оказаться непригодным (цепочка токенов
-  // оборвана) или его только что забрал другой проект — тогда берём следующего, а
-  // не отдаём потребителю пустоту.
+  // оборвана) или у его клетки окажется НЕ наша клетка (очки уже потрачены) —
+  // тогда берём следующего, а не отдаём потребителю пустоту.
   //
   // СКОЛЬКО КАНДИДАТОВ (живая находка 18.11, 21:00 МСК): пять было мало. Пул
   // показывал 101 свободный аккаунт, а потребитель получал «no_free_accounts»:
@@ -463,11 +443,11 @@ export async function issueAccount(
     pickPoolAccount(accounts, now, {
       ...filters,
       excludeIds: [...excluded],
-      tier: preferredTier,
       tokenReadyIds: tokenBacked,
     });
   let picked = pick();
   let handover: AccessHandover | null = null;
+  let fact: ClaimFact | null = null;
   const skipped: { id: number; why: string }[] = [];
   for (let attempt = 0; attempt < 25 && picked.account; attempt += 1) {
     const candidate = picked.account;
@@ -480,57 +460,54 @@ export async function issueAccount(
       picked = pick();
       continue;
     }
-    // 1.5) Панель MiniMax: у потребителя в ЕГО сутках клетка уже забрана — значит
-    //      очков он не получит («insufficient balance»). Проверка только чтение,
-    //      очки при этом не тратятся. Панель не ответила — решает наша эвристика
-    //      ночной границы (не знаем — не отказываем).
-    // ВАЖНО (заказ владельца 18.11): забрать бонус можно один раз в сутки, но очки
-    //      тратятся ПОЗЖЕ работой. Утренний обход забирает бонусы заранее, и тогда
-    //      панель показывает «забрано» (status 3) с НЕНУЛЕВЫМ остатком: очки лежат на
-    //      аккаунте и ждут потребителя. Поэтому годен аккаунт не «бонус не забран», а
-    //      «очки ещё есть»: остаток 0 — очки сожжены, остаток > 0 — можно брать.
-    const state = await dailyStateFor(candidate.id, consumerTimezone, now, {
-      // ЖИВОЕ чтение панели, а не кэш: класс и клетка обещаем потребителю по
-      // ответу вендора, и кэш в получаса может быть старше смены клетки. Живая
-      // проверка — один запрос на выдачу (выдач в сутки порядка сотни).
-      force: true,
+    // 2) ЗАБОР БОНУСА В МОМЕНТ ВЫДАЧИ (заказ владельца 20.11).
+    //      Проверять очки по модели или по панели бессмысленно: панель остатка не
+    //      отдаёт, а модель клетки с вендором разошлась (274 строки леджера из 416
+    //      на 20.11). Единственный честный признак — ответ вендора на забор:
+    //      - `claim_result = 1` — клетку забрали МЫ, очки свежие и наши, отдаём;
+    //      - `claim_result = 2` — клетку забрали раньше. Чья она — смотрим по
+    //        леджеру (идентификатор забора один на вендорские сутки): наша и не
+    //        отданная — очки наши, отдаём; чужая или уже отданная — очки потрачены,
+    //        аккаунт уходит в конец очереди, берём следующий.
+    const claim = await claimForIssue({
       userId: caller.owner.id,
+      accountId: candidate.id,
+      access: token.access_token,
+      timezoneId: consumerTimezone,
+      date: today,
+      now,
     });
-    if (state && state.points <= 0) {
-      skipped.push({ id: candidate.id, why: 'панель: очков нет' });
+    if (!claim.ok) {
+      skipped.push({ id: candidate.id, why: 'вендор не ответил на забор' });
       excluded.add(candidate.id);
       picked = pick();
       continue;
     }
-    // Ответ панели — источник правды про очки. Обещаем потребителю ровно то,
-    // что подтвердила панель: модель по датам с панелью разошлась (живая
-    // сверка 16.11: класс очков расходится у 48 аккаунтов из 109), и
-    // обещание «1000 очков» от модели оказалось бы пустым — Мозг получил бы
-    // «тысячный» аккаунт, который даёт 400.
-    if (state) {
-      const verified = {
-        ...candidate,
-        panelStatus: state.status,
-        panelPoints: state.points,
-        panelCellNo: state.cell_no,
-        panelCheckedAt: state.checked_at,
-      };
-      picked = { ...picked, account: verified, tier: poolTierOf(verified, now) };
+    if (!claim.claim.ours) {
+      skipped.push({ id: candidate.id, why: 'клетку забрал потребитель — очки потрачены' });
+      excluded.add(candidate.id);
+      picked = pick();
+      continue;
     }
-    // 2) Захват аккаунта: если его только что забрал другой проект — тоже идём к
+    if (claim.claim.handed) {
+      skipped.push({ id: candidate.id, why: 'эту клетку уже отдавали — очки могли потратить' });
+      excluded.add(candidate.id);
+      picked = pick();
+      continue;
+    }
+    // 3) Захват аккаунта: если его только что забрал другой проект — тоже идём к
     //    следующему (гонка закрыта на уровне БД, `onlyIfFree`).
     //
-    //    Номер клетки в журнал пишем **ИЗ ПАНЕЛИ** (когда панель ответила): наша
-    //    модель по датам с панелью расходится (живая сверка 16.11 — 42 из 112), а
-    //    журнал должен хранить правду — иначе отчёт по очкам и предсказания для
-    //    следующей активации считаются по догадке.
+    //    Номер клетки в журнал пишем ИЗ ЗАБОРА (клетка вендора — истина): наша
+    //    модель по датам с вендором расходилась (живая сверка 16.11 — 42 из 112),
+    //    а журнал должен хранить правду.
     const claimed = await activateAccount(
       caller.owner,
       {
         id: candidate.id,
         projectId: targetProject.id,
         source: 'api',
-        ...(state ? { activationIndex: state.cell_no } : {}),
+        ...(claim.claim.dayNo > 0 ? { activationIndex: claim.claim.dayNo } : {}),
       },
       now,
       { onlyIfFree: true },
@@ -542,8 +519,13 @@ export async function issueAccount(
       continue;
     }
     handover = token;
-    // Клетку только что забрали — ответ панели помечен «очки сожжены» (это делает
-    // activateAccount: панель об этом ещё не знает, а обещать «очки есть» нельзя).
+    fact = {
+      index: claim.claim.dayNo > 0 ? claim.claim.dayNo : null,
+      points: claim.claim.points,
+      result: claim.claim.claimResult,
+      claimId: claim.claim.claimId,
+    };
+    picked = { ...picked, tier: tierOfPoints(claim.claim.points) };
     break;
   }
 
@@ -582,6 +564,7 @@ export async function issueAccount(
   const offer = buildOffer(picked, {
     project: caller.projectName,
     today,
+    fact,
     now,
   });
   // Аккаунт только что погас — в счётчике свободных он больше не числится.
@@ -596,34 +579,33 @@ export async function issueAccount(
   offer.expires_at_ms = handover.expires_at_ms;
 
   // Леджер бонусов: кому и сколько очков отдали (заказ владельца 18.11 — «раздавать
-  // эти аккаунты по запросам, зная, по сколько очков отдаётся»).
+  // эти аккаунты по запросам, зная, по сколько очков отдаётся»). Строка — по
+  // забору (`claim_id`), а не по дате: вендорские сутки и наши московские — разные
+  // календари, и в ночном окне отметка уехала бы не к той клетке.
   await markBonusHanded(
     account.id,
     today,
     targetProject.id,
     offer.account?.points_next ?? null,
     now,
+    fact?.claimId ?? null,
   );
 
-  // В аудит — без токена: что за аккаунт, кому, с каким прогнозом очков.
+  // В аудит — без токена: что за аккаунт, кому, с каким фактом по очкам.
   //
-  // Отданный сегодня аккаунт помечаем явно (заказ владельца 19.11): его очки
-  // прежнего потребителя могли быть потрачены, поэтому он стоит в конце
-  // четырёхсотковой карусели.
-  const usedToday = account.weekCheckedInToday === true;
+  // Факт, а не прогноз: клетка и номинал — из ответа вендора на забор, который мы
+  // сделали в момент выдачи (заказ владельца 20.11).
   await logAudit(
     caller.roomId,
     caller.tokenId,
     'minimax_account_issued',
     `выдан аккаунт #${account.id} «${account.title}»: класс ${picked.tier ?? '-'}, клетка ${
       offer.account?.activation_index ?? '-'
-    }, очки ${offer.account?.points_next ?? '-'}, access отдан${
-      usedToday ? ', ОТДАН СЕГОДНЯ (в конец четырёхсотковой карусели)' : ''
-    }${filters.area ? `, область ${filters.area}` : ''}${
+    }, очки ${offer.account?.points_next ?? '-'} (забор при выдаче, claim ${
+      fact?.result ?? '-'
+    }), access отдан${filters.area ? `, область ${filters.area}` : ''}${
       filters.project ? `, проект ${filters.project}` : ''
-    }, приоритет ${preferredTier}, жизнь access ${
-      Math.round((handover.expires_at_ms - now.getTime()) / 60000)
-    } мин`,
+    }, жизнь access ${Math.round((handover.expires_at_ms - now.getTime()) / 60000)} мин`,
     ip,
     caller.actor,
   );

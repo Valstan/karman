@@ -316,10 +316,17 @@ export function isSpent(
     ownerUsedAt?: string | null;
   },
   now: Date = new Date(),
+  options: { pointsMatter?: boolean } = {},
 ): boolean {
+  // Очки — по умолчанию решают (панель и леджер). Но в ВЫДАЧЕ их проверять не
+  // надо (заказ владельца 20.11): там очки проверяет сам забор `signin/claim` в
+  // момент выдачи, и он — единственный верный признак (панель остатка не
+  // отдаёт). Поэтому `pointsMatter: false` убирает очковые отсечки, а
+  // структурные (занятость сессией, ручная активация владельца) оставляет.
+  const pointsMatter = options.pointsMatter ?? true;
   // Проверен сторожем и признан пустым на сегодня (клетку забрал потребитель, очки
   // у него и они потрачены) — до 05:00 следующего дня в выдачу не идёт.
-  if (account.bonusRemaining === 0) return true;
+  if (pointsMatter && account.bonusRemaining === 0) return true;
   // **Ручная активация владельцем** — аккаунт убран из счётчика до следующего
   // забора (заказ владельца 19.11, ночь): его очки — владельца, и проектному
   // потребителю он не отдаётся.
@@ -329,7 +336,7 @@ export function isSpent(
   // тогда возврат в оборот был невозможен: запись выдачи и след выдачи терялись
   // вместе с ней (мадат владельца 18.11, 21:40 МСК). Теперь «занят» — это сессия
   // аккаунта (`used_at`): сторож снимает её, когда возвращает аккаунт в оборот.
-  if (panelClaimable(account.panelStatus)) return false;
+  if (pointsMatter && panelClaimable(account.panelStatus)) return false;
   // Клетку забрали МЫ (утренний обход; клетка вендора сдвинулась после прошлой
   // активации) → очки СВЕЖИЕ и наши: аккаунт в обороте, если его не отдали в
   // работу (сессия открыта → занят).
@@ -337,8 +344,8 @@ export function isSpent(
   // Клетку забрали НЕ мы — потребитель, в день когда аккаунт не использовали
   // (клетка вендора сдвигается только в день использования): очки давно
   // потрачены, отдавать такой аккаунт нельзя. Ждёт следующего утра.
-  if (account.bonusOurs === false) return true;
-  if (panelClaimed(account.panelStatus)) return true;
+  if (pointsMatter && account.bonusOurs === false) return true;
+  if (pointsMatter && panelClaimed(account.panelStatus)) return true;
   if (!account.usedAt) return false;
   return isInSession(account, now);
 }
@@ -364,8 +371,9 @@ export function isUnavailable(
     bonusHandedAt?: string | null;
   },
   now: Date = new Date(),
+  options: { pointsMatter?: boolean } = {},
 ): boolean {
-  return isSpent(account, now) || account.weekExhausted === true;
+  return isSpent(account, now, options) || account.weekExhausted === true;
 }
 
 /**
@@ -431,12 +439,13 @@ export function isOwnerActivationHold(
 export function accountPoolSummary(
   accounts: AccountRotationRow[],
   now: Date = new Date(),
+  options: { pointsMatter?: boolean } = {},
 ): { free: number; soon: number } {
   let free = 0;
   let soon = 0;
   for (const account of accounts) {
     if (account.weekExhausted) continue;
-    if (!isSpent(account, now)) {
+    if (!isSpent(account, now, options)) {
       free += 1;
       continue;
     }

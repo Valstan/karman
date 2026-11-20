@@ -4,7 +4,6 @@ import { and, eq } from 'drizzle-orm';
 import { createTestDb, type TestDb } from '@/lib/db/test-db';
 import {
   accountsAccount,
-  accountsDailyBonus,
   accountsProject,
   accountsUsage,
   accountToken,
@@ -16,8 +15,6 @@ import { encryptSecret } from '@/lib/secrets/crypto';
 import { accountPasswordAad } from '@/lib/services/accounts';
 import { accountTokenAad } from '@/lib/services/account-tokens';
 import { issueAccount, recordObservation } from '@/lib/services/minimax';
-import { writePanelState } from '@/lib/accounts/panel-state';
-import { OWNER_TIMEZONE } from '@/lib/minimax/panel';
 
 /**
  * Гейт машинного доступа к пулу MiniMax (заказ владельца 13.11).
@@ -43,12 +40,19 @@ vi.mock('@/lib/db/client', () => ({
 }));
 
 // Refresh одноразовый, но цепочку продлевает: при протухшем access мы обновляем
-// пару сами (мандат владельца 15.11 — «токены не протухли»). Панель читаем при
-// выдаче — она источник правды про очки.
+// пару сами (мандат владельца 15.11 — «токены не протухли»).
 const oauth = vi.hoisted(() => ({ refreshAccessToken: vi.fn(), signinStatus: vi.fn() }));
 vi.mock('@/lib/minimax/oauth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/minimax/oauth')>();
   return { ...actual, refreshAccessToken: oauth.refreshAccessToken, signinStatus: oauth.signinStatus };
+});
+
+// Вендор: забор бонуса (заказ владельца 20.11 — забор В МОМЕНТ ВЫДАЧИ).
+// Ответ на забор — единственный честный признак «есть ли на аккаунте очки».
+const claim = vi.hoisted(() => ({ claimDailyBonus: vi.fn() }));
+vi.mock('@/lib/minimax/claim', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/minimax/claim')>();
+  return { ...actual, claimDailyBonus: claim.claimDailyBonus };
 });
 
 let pg: PGlite | undefined;
@@ -139,20 +143,25 @@ async function makeTokenPair(accountId: number, access = 'ACCESS-1', refresh = '
 }
 
 /**
- * Ответ панели MiniMax: сегодняшняя клетка забираема, очки — сколько скажем.
+ * Ответ вендора на забор бонуса (заказ владельца 20.11: забор в момент выдачи).
  *
- * Панель — источник правды про очки (заказ владельца 16.11): модель клетки с
- * панелью разошлась (живьём 16.11 класс очков разошёлся у 48 аккаунтов из
- * 109), поэтому ответ выдачи считается по панели.
+ * `claim_result` 1 — клетку забрали мы (очки наши и свежие), 2 — клетку забрали
+ * до нас (очки у потребителя и потрачены).
  */
-function panelAnswer(points: number, dayNo = 4) {
+function claimAnswer(
+  over: { claim_result?: number; day_no?: number; points?: number; claim_id?: string } = {},
+) {
+  const dayNo = over.day_no ?? 2;
+  const points = over.points ?? 400;
   return {
     ok: true as const,
     data: {
-      days: [{ day_no: dayNo, status: 2, points, is_today: true }],
-      today: { day_no: dayNo, status: 2, points, is_today: true },
-      canClaim: true,
+      claim_result: over.claim_result ?? 1,
+      claim_id: over.claim_id ?? 'claim-1',
+      day_no: dayNo,
       points,
+      expire_at_ms: NOW.getTime() + 30 * 24 * 3_600_000,
+      panel: { days: [{ day_no: dayNo, status: 3, points, is_today: true }] },
     },
   };
 }
@@ -181,6 +190,19 @@ beforeEach(async () => {
       points: 400,
     },
   });
+  // Забор в момент выдачи: по умолчанию клетка 2 — 400 очков, забрали мы.
+  claim.claimDailyBonus.mockReset();
+  claim.claimDailyBonus.mockResolvedValue({
+    ok: true,
+    data: {
+      claim_result: 1,
+      claim_id: 'claim-1',
+      day_no: 2,
+      points: 400,
+      expire_at_ms: NOW.getTime() + 30 * 24 * 3_600_000,
+      panel: { days: [{ day_no: 2, status: 3, points: 400, is_today: true }] },
+    },
+  });
 });
 
 afterEach(async () => {
@@ -190,8 +212,10 @@ afterEach(async () => {
 });
 
 describe('пул MiniMax: раздача аккаунта проекту', () => {
-  it('отдаёт аккаунт на 400 очков, а тысячник оставляет владельцу', async () => {
-    // Два аккаунта: у одного серия даст сегодня 1000, у другого — 400.
+  it('одна карусель: разделения на 400 и 1000 больше нет', async () => {
+    // Заказ владельца 20.11: «сделай одну карусель без разделения… выдавай всем
+    // проектам и прод и программированию просто то что есть». Раньше тысячные
+    // уходили только программированию, а продсерверу шла отдельная карусель.
     const thousand = await makeAccount('Тысячник', 'thousand@example.test', null, null);
     const four = await makeAccount('Обычный', 'four@example.test', null, null);
     // Клетка 4 → 1000 очков: три отметки подряд (10, 11, 12 → сегодня 4-я).
@@ -199,71 +223,66 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     await makeCheckIn(thousand, '2026-11-11', 2);
     await makeCheckIn(thousand, '2026-11-12', 3);
     await makeCheckIn(four, '2026-11-12', 2);
-    await makeTokenPair(thousand);
-    await makeTokenPair(four);
+    await makeTokenPair(thousand, 'ACCESS-T');
+    await makeTokenPair(four, 'ACCESS-F');
+    // Забор вендора в момент выдачи: у тысячника клетка 4 — 1000 очков.
+    claim.claimDailyBonus.mockImplementation(async (access: string) =>
+      access === 'ACCESS-T' ? claimAnswer({ day_no: 4, points: 1000 }) : claimAnswer(),
+    );
 
     const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.offer.account?.id).toBe(four);
-    expect(result.offer.tier).toBe('points_400');
-    expect(result.offer.account?.points_next).toBe(400);
-    expect(result.offer.account?.email).toBe('four@example.test');
+    // Никто не делит пул по классам: первый в очереди — и есть.
+    expect(result.offer.account?.id).toBe(thousand);
+    expect(result.offer.tier).toBe('points_1000');
+    expect(result.offer.account?.points_next).toBe(1000);
+    expect(result.offer.account?.email).toBe('thousand@example.test');
     // Пароля в ответе нет: Сарафан работает по почте, секрет наружу не выносим.
     expect('password' in (result.offer.account ?? {})).toBe(false);
   });
 
-  it('продсерверу тысячник не отдаётся: тысячная карусель только программированию', async () => {
+  it('комната-потребителя не влияет на выдачу: тот же пул у продсервера и у панели', async () => {
     await makeRoom('gonba', 'GONBA', OTHER_ROOM_TOKEN);
     const thousand = await makeAccount('Тысячник2', 'thousand2@example.test', null, null);
     await makeCheckIn(thousand, '2026-11-10', 1);
     await makeCheckIn(thousand, '2026-11-11', 2);
     await makeCheckIn(thousand, '2026-11-12', 3);
     await makeTokenPair(thousand);
-    // Панель подтверждает: сегодня клетка 4 — 1000 очков.
-    oauth.signinStatus.mockResolvedValue(panelAnswer(1000, 4));
+    // Забор вендора: сегодня клетка 4 — 1000 очков.
+    claim.claimDailyBonus.mockResolvedValue(claimAnswer({ day_no: 4, points: 1000 }));
 
     const result = await issueAccount(OTHER_ROOM_TOKEN, '127.0.0.1', {}, NOW);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // Заказ владельца 19.11 (ночь): «1000 карусель тратим исключительно на
-    // программирование, а 400 карусель крутим на все остальные вызовы».
-    expect(result.offer.account).toBeNull();
+    // Раньше тысячная карусель была только для программирования. Теперь — одна
+    // очередь на всех.
+    expect(result.offer.account?.id).toBe(thousand);
+    expect(result.offer.tier).toBe('points_1000');
   });
 
   /**
-   * Очки и класс в ответе — ИЗ ПАНЕЛИ, а не из модели по датам.
+   * Очки и класс в ответе — ИЗ ЗАБОРА, а не из модели по датам.
    *
-   * Модель клетки с панелью разошлась: живая сверка 16.11 — класс очков
+   * Модель клетки с вендором разошлась: живая сверка 16.11 — класс очков
    * (400 или 1000) расходится у 48 аккаунтов из 109. Значит обещание «1000
-   * очков» от модели может оказаться пустым, и Мозг получил бы «тысячный»
-   * аккаунт, который на деле даёт 400.
+   * очков» от модели может оказаться пустым. Теперь ответ даёт забор, который мы
+   * делаем в момент выдачи: клетка и номинал — из ответа вендора.
    */
-  it('очки и класс в ответе — из панели, даже когда модель обещает тысячи', async () => {
+  it('очки и класс в ответе — из забора, даже когда модель обещает тысячи', async () => {
     // Модель по датам: три отметки подряд → сегодня клетка 4 → 1000 очков.
     const accountId = await makeAccount('Модель врёт', 'lie@example.test', null, null);
     await makeCheckIn(accountId, '2026-11-10', 1);
     await makeCheckIn(accountId, '2026-11-11', 2);
     await makeCheckIn(accountId, '2026-11-12', 3);
     await makeTokenPair(accountId);
-    // Наш утренний забор взял клетку 2 — 400 очков. Класс карусели берётся из
-    // леджера забора (заказ владельца 19.11, ночь), а панель уточняет клетку.
-    await refs.current!.insert(accountsDailyBonus).values({
-      userId: OWNER_ID,
-      accountId,
-      usedOn: TODAY,
-      dayNo: 2,
-      points: 400,
-      remaining: 400,
-      status: 3,
-      claimResult: 1,
-      claimedAt: NOW.toISOString(),
-    });
+    // Забор вендора: клетка 2 — 400 очков (модель обещала тысячи).
+    claim.claimDailyBonus.mockResolvedValue(claimAnswer({ day_no: 2, points: 400 }));
 
     const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // Панель ответила: сегодня клетка 2, 400 очков.
+    // Забор ответил: сегодня клетка 2, 400 очков.
     expect(result.offer.account?.id).toBe(accountId);
     expect(result.offer.account?.points_next).toBe(400);
     expect(result.offer.tier).toBe('points_400');
@@ -271,45 +290,45 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
   });
 
   /**
-   * Мозг (комната brain) получает тысячные ПЕРВЫМИ — по панели.
-   *
-   * Мандат владельца 14.11: «панели программирования предлагать в приоритете
-   * 1000 токоны». Заказ 16.11: тысячные — это программирование, значит они
-   * должны уходить Мозгу, и в первую очередь.
+   * Клетку забрал НЕ мы — очки у потребителя и потрачены: такой аккаунт в конец
+   * очереди, а потребителю отдаём следующего (заказ владельца 20.11).
    */
-  it('Мозгу (brain) — тысячные по панели идут первыми', async () => {
+  it('клетку забрали не мы — аккаунт уходит в конец очереди, отдаём следующего', async () => {
+    const dead = await makeAccount('Чужая клетка', 'dead@example.test', null, null);
+    const live = await makeAccount('Живая клетка', 'live@example.test', null, null);
+    await makeTokenPair(dead, 'ACCESS-DEAD');
+    await makeTokenPair(live, 'ACCESS-LIVE');
+    // У первого клетку забрал потребитель (claim_result = 2), у второго забрали мы.
+    claim.claimDailyBonus.mockImplementation(async (access: string) =>
+      access === 'ACCESS-DEAD'
+        ? claimAnswer({ claim_result: 2, day_no: 2, points: 400, claim_id: 'claim-theirs' })
+        : claimAnswer({ day_no: 5, points: 1000, claim_id: 'claim-ours' }),
+    );
+
+    const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.offer.account?.id).toBe(live);
+    expect(result.offer.account?.points_next).toBe(1000);
+  });
+
+  /**
+   * Мозг (комната brain) берёт из ТОЙ ЖЕ карусели, что и все остальные.
+   *
+   * Мандат владельца 14.11 («панели программирования предлагать в приоритете 1000
+   * токоны») отменён заказом 20.11: одна карусель без разделения. Класс аккаунта
+   * в ответе — факт забора, а не признак, по которому мы что-то отбираем.
+   */
+  it('Мозг берёт из общей карусели: приоритета по классу нет', async () => {
     await makeRoom('brain', 'brain', BRAIN_TOKEN);
     const thousand = await makeAccount('Тысячник', 'thousand@example.test', null, null);
     const four = await makeAccount('Четырёхсот', 'four@example.test', null, null);
     await makeTokenPair(thousand, 'ACCESS-T');
     await makeTokenPair(four, 'ACCESS-F');
-    // Панель: у тысячника сегодня клетка 4 (1000 очков), у второго клетка 2 (400).
-    await writePanelState(OWNER_ID, thousand, OWNER_TIMEZONE, {
-      cell_no: 4,
-      status: 2,
-      points: 1000,
-      can_claim: true,
-      checked_at: NOW.toISOString(),
-    });
-    await writePanelState(OWNER_ID, four, OWNER_TIMEZONE, {
-      cell_no: 2,
-      status: 2,
-      points: 400,
-      can_claim: true,
-      checked_at: NOW.toISOString(),
-    });
-    oauth.signinStatus.mockImplementation(async (access: string) => {
-      const points = access === 'ACCESS-T' ? 1000 : 400;
-      return {
-        ok: true as const,
-        data: {
-          days: [{ day_no: points === 1000 ? 4 : 2, status: 2, points, is_today: true }],
-          today: { day_no: points === 1000 ? 4 : 2, status: 2, points, is_today: true },
-          canClaim: true,
-          points,
-        },
-      };
-    });
+    // Забор вендора: у тысячника сегодня клетка 4 (1000 очков), у второго клетка 2 (400).
+    claim.claimDailyBonus.mockImplementation(async (access: string) =>
+      access === 'ACCESS-T' ? claimAnswer({ day_no: 4, points: 1000 }) : claimAnswer(),
+    );
 
     const result = await issueAccount(BRAIN_TOKEN, '127.0.0.1', {}, NOW);
     expect(result.ok).toBe(true);
@@ -513,11 +532,10 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     expect(row!.source).toBe('owner');
   });
 
-  it('класс очков — по потребителю: Сарафану 400 первыми, панели программирования 1000', async () => {
-    // Мандат владельца (14.11, 00:30 МСК): «Сарафану в приоритете предлагать 400
-    // очковые токены, если нету то 1000-е предлагать, а панели программирования
-    // предлагать в приоритете 1000 токены, а если нет то 400 очковые». Потребитель
-    // ничего не задаёт — выбор делаем мы.
+  it('класс очков — факт забора, а не предпочтение потребителя', async () => {
+    // Заказ владельца 20.11: класс больше не выбирается по потребителю (ни
+    // «Сарафану 400 первыми», ни «программированию 1000»). Один пул, одна очередь,
+    // а класс в ответе — то, что вендор сказал на забор.
     const thousand = await makeAccount('Тысячник', 'thousand@example.test', null, null);
     await makeCheckIn(thousand, '2026-11-10', 1);
     await makeCheckIn(thousand, '2026-11-11', 2);
@@ -526,24 +544,26 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     const four = await makeAccount('Четырёхсотый', 'four@example.test', null, null);
     await makeCheckIn(four, '2026-11-12', 1);
     await makeTokenPair(four, 'ACCESS-F');
-    // Панель подтверждает модель: у тысячника сегодня 1000, у четырёхсотого 400.
-    oauth.signinStatus.mockImplementation(async (access: string) =>
-      access === 'ACCESS-T' ? panelAnswer(1000, 4) : panelAnswer(400, 2),
+    // Забор вендора: у тысячника 1000, у четырёхсотого 400.
+    claim.claimDailyBonus.mockImplementation(async (access: string) =>
+      access === 'ACCESS-T' ? claimAnswer({ day_no: 4, points: 1000 }) : claimAnswer(),
     );
 
-    // Комната Сарафана (setka) — четырёхсотовые первыми.
+    // Комната Сарафана (setka) — первый по кругу.
     const sarafan = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
     expect(sarafan.ok).toBe(true);
     if (!sarafan.ok) return;
-    expect(sarafan.offer.tier).toBe('points_400');
+    expect(sarafan.offer.account?.id).toBe(thousand);
+    expect(sarafan.offer.tier).toBe('points_1000');
 
-    // Панель программирования (brain) — тысячные первыми.
+    // Панель программирования (brain) — тот же пул, следующий по кругу.
     await makeRoom('brain', 'brain', OTHER_ROOM_TOKEN);
     const forPanel = await issueAccount(OTHER_ROOM_TOKEN, '127.0.0.1', {}, NOW);
     expect(forPanel.ok).toBe(true);
     if (!forPanel.ok) return;
-    expect(forPanel.offer.tier).toBe('points_1000');
-    expect(forPanel.offer.account?.points_next).toBe(1000);
+    expect(forPanel.offer.account?.id).toBe(four);
+    expect(forPanel.offer.tier).toBe('points_400');
+    expect(forPanel.offer.account?.points_next).toBe(400);
   });
 
   it('пара наружу не отдаётся НИКОГДА: цепочка токенов наша', async () => {

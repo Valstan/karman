@@ -85,6 +85,7 @@ export default async function MinimaxPage() {
           handedPoints: bonus.handedPoints,
           spentPoints: bonus.spentPoints,
           leftPoints: bonus.leftPoints,
+          thousands: bonus.thousands,
         }}
         serverNow={now.toISOString()}
       />

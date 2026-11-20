@@ -12,7 +12,7 @@ import {
 import { liveAccessToken } from './account-tokens';
 
 /**
- * Ежесуточный забор бонусов MiniMax (заказ владельца 18.11).
+ * Ежесуточный забор бонусов MiniMax + забор в момент выдачи.
  *
  * ## Задача
  *
@@ -29,10 +29,21 @@ import { liveAccessToken } from './account-tokens';
  *    (`claim_result = 2`, `points` прежние) и потратит их работой.
  * 2. **Леджер.** Каждая строка — «аккаунт + московские сутки»: клетка вендора, номинал
  *    очков, результат забора (кто клетку забрал — мы или потребитель), кому и когда отдали.
- * 3. **Раздача.** Выдача аккаунта берёт из леджера РЕАЛЬНЫЕ очки этого аккаунта (а не
- *    прогноз модели) и записывает, кому и сколько отдала.
+ * 3. **Раздача.** Забор в МОМЕНТ выдачи (`claimForIssue`): клетку забираем прямо тогда,
+ *    когда отдаём аккаунт, и по ответу вендора решаем — отдавать аккаунт или отправить
+ *    его в конец очереди (заказ владельца 20.11).
  * 4. **Статистика.** За сутки: сколько бонусов забрали, сколько очков в банке, сколько
  *    отдали, сколько фактически потрачено, сколько осталось неиспользованным.
+ *
+ * ## Чья это клетка — по идентификатору забора
+ *
+ * У вендора `claim_id` один на вендорские сутки. Он и есть «счётчик» клетки: если в
+ * леджере есть строка с тем же `claim_id` и `claim_result = 1`, значит клетку забрали
+ * МЫ (утренний обход или забор при выдаче) — и очки наши и свежие, если её не отдали.
+ *
+ * Ищем по ВСЕМ датам, а не за текущую: вендорские сутки и наши московские — разные
+ * календари. В окне 00:00–03:00 МСК наши сутки уже сменились, а вендорские (UTC) — ещё
+ * нет, и забор потребителя в это окно бьёт ровно в клетку, которую мы забрали накануне.
  *
  * ## Почему 05:00 МСК
  *
@@ -146,12 +157,6 @@ export async function sweepDailyBonus(
         date,
         dayNo: day_no ?? today?.day_no ?? 0,
         points: points ?? today?.points ?? 0,
-        // Остаток по нашим данным: сколько очков сегодня лежит на аккаунте.
-        //   номинал — забрали МЫ: очки наши и свежие;
-        //   null   — забрал ПОТРЕБИТЕЛЬ: очки у него и потрачены. Сторож при этом
-        //           помечает аккаунт пустым (остаток = 0) — и до 05:00 следующего дня
-        //           не перепроверяет его.
-        remaining: claim_result === CLAIM_RESULT_CLAIMED ? (points ?? today?.points ?? 0) : null,
         status: today?.status ?? 0,
         claimResult: claim_result,
         claimId: claim_id,
@@ -176,33 +181,109 @@ export async function sweepDailyBonus(
   return report;
 }
 
-/** Записать (или обновить) строку леджера за сутки. */
-async function writeBonusRow(row: {
+/** Что записать в строку леджера. */
+type BonusRowWrite = {
   userId: number;
   accountId: number;
+  /** Московская дата суток (ключ строки). */
   date: string;
+  /** Клетка вендора (1..7). */
   dayNo: number;
+  /** Номинал клетки. */
   points: number;
-  remaining: number | null;
+  /** Статус клетки панели: 2 — можно забрать, 3 — забрано. */
   status: number;
+  /** Результат забора: 1 — забрали мы, 2 — клетку забрали до нас. */
   claimResult: number;
+  /** Идентификатор забора вендора (один на вендорские сутки). */
   claimId: string | null;
+  /** До какого момента бонус жив. */
   expireAt: string | null;
   now: Date;
-}): Promise<void> {
-  await db
-    .insert(accountsDailyBonus)
-    .values({
+};
+
+/**
+ * Записать (или обновить) строку леджера.
+ *
+ * ## Правила
+ *
+ * 1. **Одна строка — один забор.** Если строка с тем же `claim_id` уже есть, обновляем
+ *    её (та же клетка); иначе пишем строку за текущую московскую дату. Так в леджере не
+ *    появляется двух строк об одном заборе, и по `claim_id` всегда видно, чья клетка.
+ * 2. **«Забрали мы» не понижается.** Повторный забор в те же сутки возвращает 2, и без
+ *    этой оговорки наши свежие очки считались бы потраченными, а аккаунты выпадали бы
+ *    из выдачи (жалоба владельца 18.11).
+ * 3. **Новая клетка — чистая строка.** Если `claim_id` не совпал, строка описывает
+ *    ДРУГУЮ клетку: отметка о прежней выдаче (кому и когда отдали) обнуляется — иначе
+ *    свежая клетка выглядела бы уже отданной.
+ */
+async function writeBonusRow(row: BonusRowWrite): Promise<void> {
+  // 1. Строка с тем же забором — та же клетка: обновляем её.
+  if (row.claimId) {
+    const [same] = await db
+      .select({
+        id: accountsDailyBonus.id,
+        claimResult: accountsDailyBonus.claimResult,
+        remaining: accountsDailyBonus.remaining,
+      })
+      .from(accountsDailyBonus)
+      .where(
+        and(
+          eq(accountsDailyBonus.accountId, row.accountId),
+          eq(accountsDailyBonus.claimId, row.claimId),
+        ),
+      )
+      .limit(1);
+    if (same) {
+      const ours =
+        row.claimResult === CLAIM_RESULT_CLAIMED || same.claimResult === CLAIM_RESULT_CLAIMED;
+      await db
+        .update(accountsDailyBonus)
+        .set({
+          dayNo: row.dayNo,
+          points: row.points,
+          // Остаток: наша клетка — номинал; чужая — то, что помечено сторожем
+          // (0 = «проверено, пусто»), его не затираем.
+          remaining: ours ? row.points : same.remaining,
+          status: row.status,
+          claimResult: ours ? CLAIM_RESULT_CLAIMED : row.claimResult,
+          claimId: row.claimId,
+          expireAt: row.expireAt,
+          checkedAt: row.now.toISOString(),
+          // Отметка о выдаче — от ЭТОЙ клетки (claim_id тот же), сохраняем.
+        })
+        .where(eq(accountsDailyBonus.id, same.id));
+      return;
+    }
+  }
+
+  // 2. Строки с таким забором нет — пишем строку за московскую дату.
+  const [existing] = await db
+    .select({
+      id: accountsDailyBonus.id,
+      claimId: accountsDailyBonus.claimId,
+      claimResult: accountsDailyBonus.claimResult,
+      remaining: accountsDailyBonus.remaining,
+      handedAt: accountsDailyBonus.handedAt,
+      handedToProjectId: accountsDailyBonus.handedToProjectId,
+      handedPoints: accountsDailyBonus.handedPoints,
+    })
+    .from(accountsDailyBonus)
+    .where(
+      and(
+        eq(accountsDailyBonus.accountId, row.accountId),
+        eq(accountsDailyBonus.usedOn, row.date),
+      ),
+    )
+    .limit(1);
+
+  if (!existing) {
+    await db.insert(accountsDailyBonus).values({
       userId: row.userId,
       accountId: row.accountId,
       usedOn: row.date,
       dayNo: row.dayNo,
       points: row.points,
-      // Остаток по нашим данным: сколько очков сегодня лежит на аккаунте.
-      //   номинал — забрали МЫ: очки наши и свежие;
-      //   null   — забрал ПОТРЕБИТЕЛЬ: очки у него и потрачены. Сторож при этом
-      //           помечает аккаунт пустым (остаток = 0) — и до 05:00 следующего дня
-      //           не перепроверяет его.
       remaining: row.claimResult === CLAIM_RESULT_CLAIMED ? row.points : null,
       status: row.status,
       claimResult: row.claimResult,
@@ -210,31 +291,156 @@ async function writeBonusRow(row: {
       expireAt: row.expireAt,
       claimedAt: row.now.toISOString(),
       checkedAt: row.now.toISOString(),
-    })
-    .onConflictDoUpdate({
-      target: [accountsDailyBonus.accountId, accountsDailyBonus.usedOn],
-      set: {
-        dayNo: row.dayNo,
-        points: row.points,
-        // Остаток обновляем по ПРАВИЛУ, а не «как в этом прогоне»:
-        //   клетку забрали МЫ (claim_result = 1) → остаток = номинал клетки (очки
-        //     наши; повторный забор возвращает 2, и без этого оговорка они бы
-        //     обнулились и аккаунт выпал бы из выдачи);
-        //   иначе → сохраняем то, что помечено сторожем (0 = «проверено, пусто»).
-        remaining: sql`case when ${accountsDailyBonus.claimResult} = ${CLAIM_RESULT_CLAIMED}::smallint then ${row.points}::integer else coalesce(${accountsDailyBonus.remaining}, ${row.remaining}::integer) end`,
-        status: row.status,
-        // Результат забора НЕ понижаем. 1 («забрали мы») — это навсегда наша
-        // сегодняшняя клетка: очки свежие, их можно отдавать. Повторный забор в те
-        // же сутки (обход идёт и по рестарту воркера — 18.11) возвращает 2, и без
-        // этой оговорки «наши» очки терялись бы, а в выдачу попадали бы аккаунты с
-        // давно потраченными очками (жалоба владельца 18.11).
-        claimResult: sql`case when ${accountsDailyBonus.claimResult} = ${CLAIM_RESULT_CLAIMED}::smallint then ${CLAIM_RESULT_CLAIMED}::smallint else ${row.claimResult}::smallint end`,
-        // Идентификатор забора — тот же: он принадлежит НАШЕМУ забору.
-        claimId: sql`case when ${accountsDailyBonus.claimResult} = ${CLAIM_RESULT_CLAIMED} then ${accountsDailyBonus.claimId} else ${row.claimId} end`,
-        expireAt: row.expireAt,
-        checkedAt: row.now.toISOString(),
-      },
     });
+    return;
+  }
+
+  // Та же клетка или другая? От этого зависит, чья отметка о выдаче.
+  const sameCell = existing.claimId === row.claimId;
+  const ours =
+    row.claimResult === CLAIM_RESULT_CLAIMED ||
+    (sameCell && existing.claimResult === CLAIM_RESULT_CLAIMED);
+  await db
+    .update(accountsDailyBonus)
+    .set({
+      dayNo: row.dayNo,
+      points: row.points,
+      remaining: ours ? row.points : sameCell ? existing.remaining : null,
+      status: row.status,
+      claimResult: ours ? CLAIM_RESULT_CLAIMED : row.claimResult,
+      claimId: row.claimId,
+      expireAt: row.expireAt,
+      checkedAt: row.now.toISOString(),
+      // Отметка о выдаче относится к ПРЕЖНЕЙ клетке, если клетка сменилась: чистим.
+      handedAt: sameCell ? existing.handedAt : null,
+      handedToProjectId: sameCell ? existing.handedToProjectId : null,
+      handedPoints: sameCell ? existing.handedPoints : null,
+    })
+    .where(eq(accountsDailyBonus.id, existing.id));
+}
+
+/**
+ * Кому принадлежит клетка по идентификатору забора вендора.
+ *
+ * `ours` — клетку забрали мы (утренний обход или забор при выдаче): очки наши, и если
+ * их ещё не отдавали (`handed === false`) — свежие.
+ *
+ * `handed` — эту клетку уже отдавали потребителю: очки могли быть потрачены, отдавать
+ * аккаунт второй раз нельзя.
+ */
+export type ClaimOwnership = {
+  ours: boolean;
+  handed: boolean;
+};
+
+export async function claimOwnership(
+  accountId: number,
+  claimId: string | null,
+): Promise<ClaimOwnership> {
+  if (!claimId) return { ours: false, handed: false };
+  const rows = await db
+    .select({
+      claimResult: accountsDailyBonus.claimResult,
+      handedAt: accountsDailyBonus.handedAt,
+    })
+    .from(accountsDailyBonus)
+    .where(
+      and(
+        eq(accountsDailyBonus.accountId, accountId),
+        eq(accountsDailyBonus.claimId, claimId),
+      ),
+    );
+  if (rows.length === 0) return { ours: false, handed: false };
+  return {
+    ours: rows.some((row) => row.claimResult === CLAIM_RESULT_CLAIMED),
+    handed: rows.some((row) => row.handedAt !== null),
+  };
+}
+
+/** Факт забора при выдаче — что вендор ответил и чья это клетка. */
+export type IssueClaim = {
+  /** Клетку забрали МЫ и её ещё не отдавали → аккаунт можно отдавать. */
+  ours: boolean;
+  /** Эту клетку уже отдавали потребителю. */
+  handed: boolean;
+  /** Клетка вендора (1..7). */
+  dayNo: number;
+  /** Номинал клетки (400 / 1000). */
+  points: number;
+  /** Идентификатор забора вендора. */
+  claimId: string | null;
+  /** Результат забора вендора: 1 — забрали, 2 — уже было. */
+  claimResult: number;
+  /** До какого момента бонус жив (ISO). */
+  expireAt: string | null;
+};
+
+/**
+ * Забрать бонус аккаунта В МОМЕНТ ВЫДАЧИ и понять, чья это клетка.
+ *
+ * Заказ владельца 20.11: «Просит токен, ты берешь токен, активируешь на нем бонус
+ * какой там есть, и если он активировался, то отдаешь потребителю, а если не
+ * активировался, то аккаунт отправляешь в конец очереди карусели и берешь новый
+ * токен по порядку и снова пытаешься активировать бонус».
+ *
+ * Возвращает `ours: false`, когда клетку забрали не мы (очки у потребителя и потрачены)
+ * или когда её уже отдавали: такой аккаунт уходит в конец очереди, а мы берём следующий.
+ *
+ * Отказ вендора — это «не знаю», а не «очков нет»: вызывающий решает сам.
+ */
+export async function claimForIssue(params: {
+  userId: number;
+  accountId: number;
+  access: string;
+  timezoneId: string;
+  /** Московская дата (ключ строки леджера). */
+  date: string;
+  now?: Date;
+}): Promise<{ ok: true; claim: IssueClaim } | { ok: false; error: 'vendor' }> {
+  const now = params.now ?? new Date();
+  const claim = await claimDailyBonus(params.access, params.timezoneId);
+  if (!claim.ok) return { ok: false, error: 'vendor' };
+
+  const { claim_result, claim_id, day_no, points, expire_at_ms, panel } = claim.data;
+  const today = panel?.days.find((day) => day.is_today) ?? null;
+  const dayNo = day_no ?? today?.day_no ?? 0;
+  const nominal = points ?? today?.points ?? 0;
+  const status = today?.status ?? 0;
+
+  // Забрали сейчас — клетка наша, очки свежие (потребитель их ещё не видел).
+  // Забрали раньше — смотрим леджер: там видно, наша это клетка и отдавали ли её.
+  const ownership =
+    claim_result === CLAIM_RESULT_CLAIMED
+      ? { ours: true, handed: false }
+      : await claimOwnership(params.accountId, claim_id);
+
+  await writeBonusRow({
+    userId: params.userId,
+    accountId: params.accountId,
+    date: params.date,
+    dayNo,
+    points: nominal,
+    status,
+    // «Забрали мы» — навсегда наша клетка: повторный забор возвращает 2, и без
+    // этой оговорки наши свежие очки считались бы потраченными.
+    claimResult: ownership.ours ? CLAIM_RESULT_CLAIMED : CLAIM_RESULT_ALREADY,
+    claimId: claim_id,
+    expireAt: expire_at_ms ? new Date(expire_at_ms).toISOString() : null,
+    now,
+  });
+
+  return {
+    ok: true,
+    claim: {
+      ours: ownership.ours,
+      handed: ownership.handed,
+      dayNo,
+      points: nominal,
+      claimId: claim_id,
+      claimResult: claim_result,
+      expireAt: expire_at_ms ? new Date(expire_at_ms).toISOString() : null,
+    },
+  };
 }
 
 /**
@@ -269,6 +475,11 @@ export async function bonusPointsForAccount(
  *
  * Пишется в ту же строку леджера, что и забор, — вся история аккаунта за сутки в
  * одном месте.
+ *
+ * **Строка — по забору, а не по дате.** Отметку о выдаче пишем в строку с тем же
+ * `claim_id`: вендорские сутки и наши московские — разные календари (в окне
+ * 00:00–03:00 МСК наши сутки уже сменились, а вендорские — ещё нет), и строка «по
+ * дате» оказалась бы не про ту клетку. Без `claimId` — по дате (как раньше).
  */
 export async function markBonusHanded(
   accountId: number,
@@ -276,7 +487,30 @@ export async function markBonusHanded(
   projectId: number | null,
   points: number | null,
   now: Date = new Date(),
+  claimId?: string | null,
 ): Promise<void> {
+  const [row] = claimId
+    ? await db
+        .select({ id: accountsDailyBonus.id })
+        .from(accountsDailyBonus)
+        .where(
+          and(
+            eq(accountsDailyBonus.accountId, accountId),
+            eq(accountsDailyBonus.claimId, claimId),
+          ),
+        )
+        .limit(1)
+    : await db
+        .select({ id: accountsDailyBonus.id })
+        .from(accountsDailyBonus)
+        .where(
+          and(
+            eq(accountsDailyBonus.accountId, accountId),
+            eq(accountsDailyBonus.usedOn, date),
+          ),
+        )
+        .limit(1);
+  if (!row) return;
   await db
     .update(accountsDailyBonus)
     .set({
@@ -286,12 +520,7 @@ export async function markBonusHanded(
       // Остаток НЕ трогаем: это «сколько очков лежит по нашим данным», а не
       // «сколько отдали». Помечать аккаунт пустым (остаток = 0) — дело сторожа.
     })
-    .where(
-      and(
-        eq(accountsDailyBonus.accountId, accountId),
-        eq(accountsDailyBonus.usedOn, date),
-      ),
-    );
+    .where(eq(accountsDailyBonus.id, row.id));
 }
 
 /** Сводка за сутки: забрали / отдали / потрачено / осталось. */
@@ -313,6 +542,11 @@ export type DailyBonusStats = {
   spentPoints: number;
   /** Осталось неиспользованным. */
   leftPoints: number;
+  /**
+   * Сколько аккаунтов несут тысячные очки — по ЛЕДЖЕРУ (правда), а не по модели
+   * клетки: модель с вендором расходилась у 274 строк из 416.
+   */
+  thousands: number;
   /** Клетка → аккаунтов. */
   byCell: { cell: number; accounts: number; points: number }[];
   /** Комната-потребитель → аккаунтов. */
@@ -360,6 +594,8 @@ export async function dailyBonusStats(
     // Очки, ушедшие к потребителю без нашего забора: их клетку забрали и потратили
     // без нас (обычно — ночью, пока аккаунт не использовали).
     spentPoints: theirs.reduce((sum, r) => sum + r.points, 0),
+    // Тысячные — по номиналу клетки из леджера (ответ вендора), а не по модели.
+    thousands: rows.filter((r) => r.points >= 1000).length,
     leftPoints: Math.max(
       0,
       ours.reduce((sum, r) => sum + r.points, 0) -
