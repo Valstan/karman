@@ -62,6 +62,14 @@ curl -sf -X POST "$VAULT_URL/api/secrets/session"   -H "Authorization: Bearer $A
 **не заводится**. Своя интроспекция — `GET /api/secrets/self`, самоотзыв — `DELETE /api/secrets/session`.
 Полный контракт и рецепт — `docs/passport-server.md`.
 
+**Готовый шаг вместо рукописного:** `scripts/vault-passport-step.mjs` (этот репозиторий) —
+копируемая реализация: берёт удостоверение прогона, обменивает его на токен своей комнаты,
+**никогда не печатает токен** (пишет в файл 0600, в журнал — только slug, право и префикс),
+гасит сессию на выходе и падает внятно, если личность не заведена. Гейт —
+`scripts/vault-passport-step.test.ts` (7 кейсов). Шаги волны 0 D-241: `permissions:
+id-token: write` в воркфлоу + одна строка `node scripts/vault-passport-step.mjs --base
+"$VAULT_URL" --out "$RUNNER_TEMP/room-token"`.
+
 Три грабли, на которые наступил второй потребитель паспорта (не первый — первому было очевидно):
 
 - **Токен приходит ответом `/session`, а не из `secrets` репозитория** — GitHub его сам
