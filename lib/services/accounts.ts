@@ -655,28 +655,33 @@ export async function activateAccount(
     const burned = sessionOpen;
     const sessionUsedOn = sessionOpen ? account.usedOn! : moscowToday(now);
     const sessionUsedAt = sessionOpen ? account.usedAt! : usedAt;
-    const [existing] = await tx
-      .select({
-        id: accountsUsage.id,
-        tokens: accountsUsage.tokens,
-        activationIndex: accountsUsage.activationIndex,
-        source: accountsUsage.source,
-      })
-      .from(accountsUsage)
-      .where(
-        and(
-          eq(accountsUsage.accountId, input.id),
-          eq(accountsUsage.usedOn, sessionUsedOn),
-          ownership(user, accountsUsage.userId),
-        ),
-      )
-      .limit(1);
-
-    // Строка журнала от ПРЕДЫДУЩЕЙ выдачи, которую сторож уже вернул в оборот
-    // (сессия снята → `used_at` пуст, а строка журнала осталась: запись выдачи — это
-    // запись, её не стираем; мадат владельца 18.11, 21:40 МСК). Это НОВАЯ выдача, а не
-    // продолжение прежней: метка и проект переписываются, иначе расход уйдёт не туда.
-    const stale = existing !== undefined && account.usedAt === null;
+    // Строка журнала — СОБЫТИЕ («кто, когда и за сколько очков взял этот аккаунт»).
+    //
+    // Сессия открыта → продолжаем ту же работу: обновляем строку ЭТОЙ сессии
+    // (последнюю по дате). Сессия закрыта → НОВОЕ событие: заводим новую строку.
+    // Раньше строка дня была одна (UNIQUE (account_id, used_on)), и повторная выдача
+    // того же аккаунта в те же московские сутки ПЕРЕЗАПИСЫВАЛА прежнюю — статистика
+    // расхода теряла половину выдач (19.11: аудит 118 выдач / 97 000 очков, журнал —
+    // 66 строк / 46 800 очков). Журналом событий он стал после миграции 0036.
+    const [existing] = sessionOpen
+      ? await tx
+          .select({
+            id: accountsUsage.id,
+            tokens: accountsUsage.tokens,
+            activationIndex: accountsUsage.activationIndex,
+            source: accountsUsage.source,
+          })
+          .from(accountsUsage)
+          .where(
+            and(
+              eq(accountsUsage.accountId, input.id),
+              eq(accountsUsage.usedOn, sessionUsedOn),
+              ownership(user, accountsUsage.userId),
+            ),
+          )
+          .orderBy(desc(accountsUsage.createdAt), desc(accountsUsage.id))
+          .limit(1)
+      : [];
 
     // Недельная квота аккаунта — по его журналу. Номер активации: явно
     // заданный владельцем (он смотрит панель MiniMax), иначе посчитанный по
@@ -712,9 +717,11 @@ export async function activateAccount(
       input.activationIndex !== undefined && index !== null
         ? pointsForIndex(index)
         : (tokens ??
-          (existing && !stale ? existing.tokens : undefined) ??
+          (existing ? existing.tokens : undefined) ??
           (index !== null
-            ? (burned || (checkedInToday && !stale) ? 0 : pointsForIndex(index))
+            ? burned || checkedInToday
+              ? 0
+              : pointsForIndex(index)
             : 0));
     const rowIndex =
       existing && input.activationIndex === undefined ? existing.activationIndex : index;
@@ -726,15 +733,18 @@ export async function activateAccount(
     // строки: существующая строка сохраняет свою метку. Иначе выдача аккаунта,
     // отмеченного сегодня владельцем, переписала бы его запись (проект и очки) на
     // проектную — и 400 очков владельца исчезли бы из его статистики.
+    //
+    // С журналом-событиями (миграция 0036) это правило читается проще: у КАЖДОЙ
+    // выдачи своя строка и своя метка — владельца и потребителя не путаем.
     const newSource = input.source ?? 'owner';
-    const source = stale ? newSource : (existing?.source ?? newSource);
+    const source = existing?.source ?? newSource;
 
     // Проект строки — тоже не переписывается, если строка принадлежит другому
     // источнику: запись по запросу проекта (source = 'api') остаётся своей, и
     // программирование владельца не забирает её себе (и наоборот). Внутри одной
     // транзакции — гонки не бывает: «владелец активировал, тут же выдали» решается
     // тем, кто записал строку первым.
-    const sameSource = stale || !existing || existing.source === newSource;
+    const sameSource = !existing || existing.source === newSource;
     const projectPatch =
       input.projectId === undefined || !sameSource ? undefined : projectId;
 

@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   accountsAccount,
@@ -278,6 +278,9 @@ export async function recordObservation(
 
   // Строку дня записывали МЫ при выдаче. Если её нет — мы этот аккаунт сегодня проекту
   // не выдавали, и наблюдать тут нечего.
+  //
+  // Журнал — события (миграция 0036): за день у аккаунта может быть несколько
+  // выдач, поэтому берём ПОСЛЕДНЮЮ строку дня — ту, чья это выдача.
   const [row] = await db
     .select({
       id: accountsUsage.id,
@@ -292,6 +295,7 @@ export async function recordObservation(
         eq(accountsUsage.userId, caller.owner.id),
       ),
     )
+    .orderBy(desc(accountsUsage.createdAt), desc(accountsUsage.id))
     .limit(1);
   if (!row) {
     return {
