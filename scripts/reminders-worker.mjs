@@ -133,13 +133,18 @@ function startDailyBonusLoop() {
       if (shouldSweep()) {
         const res = await postInternal('/api/internal/minimax/daily-bonus', {});
         if (!res.ok) {
-          log('daily-bonus HTTP', res.status, '— повтор через 30 мин');
+          log('daily-bonus HTTP', res.status, '— повтор через 5 мин');
+          // Ровно тот случай, что был 20.11: воркер стартовал вместе с деплоем и не
+          // застал приложение поднятым. Повтор — через 5 минут, а не через полчаса.
+          setTimeout(tick, DAILY_BONUS_RETRY_MS);
           return;
         }
         log('daily-bonus: обход запущен');
       }
     } catch (error) {
-      log('daily-bonus error', String(error), '— повтор через 30 мин');
+      log('daily-bonus error', String(error), '— повтор через 5 мин');
+      setTimeout(tick, DAILY_BONUS_RETRY_MS);
+      return;
     }
   };
 
