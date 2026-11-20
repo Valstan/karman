@@ -73,3 +73,7 @@ vault.sql
 # outbox tape is committed with the normal flow and is visible
 # to the peer via GitHub (the degraded second channel).
 hotline/presence.json
+
+# Черновики сессии (временные скрипты агента). Репозиторий — публичный, а
+# close_session делает `git add -A`: черновики не должны попадать в коммиты.
+tmp/
