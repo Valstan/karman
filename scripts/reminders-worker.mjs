@@ -4,10 +4,7 @@
 // и global fetch, поэтому файл едет в артефакт как есть, без сборки):
 //   1) long-poll Telegram getUpdates → POST /api/telegram/ingest (Bearer);
 //   2) по таймеру POST /api/reminders/dispatch (Bearer);
-//   3) по таймеру POST /api/internal/minimax/reconcile (Bearer) — сверка журнала
-//      активаций с панелью: ошибочно погашенные аккаунты возвращаются в оборот,
-//      а наши предсказания очков уточняются по панели (заказ владельца 17.11);
-//   5) раз в сутки, в 05:00 МСК, POST /api/internal/minimax/daily-bonus (Bearer) —
+//   3) раз в сутки, в 05:00 МСК, POST /api/internal/minimax/daily-bonus (Bearer) —
 //      ежесуточный забор бонусов по всем аккаунтам MiniMax (заказ владельца 18.11):
 //      серия дней подряд не рвётся, а в базе видно, у кого сколько очков сегодня.
 // Вся работа с БД/сервисами — внутри Next-роутов. Запускается systemd-сервисом
@@ -29,12 +26,7 @@ const RELAY_SECRET = process.env.TELEGRAM_RELAY_SECRET || '';
 const TG_HEADERS = RELAY_SECRET ? { 'x-relay-secret': RELAY_SECRET } : {};
 const DISPATCH_INTERVAL_MS = Number(process.env.REMINDERS_DISPATCH_INTERVAL_MS || 25000);
 // Автосверка панели MiniMax: раз в 15 минут (состояние панели живёт полчаса,
-// Сверка журнала активаций с панелью MiniMax: раз в полчаса (заказ владельца 17.11).
-// автосверка; сверка их сама освобождает и уточняет.
-const RECONCILE_INTERVAL_MS = Number(process.env.MINIMAX_RECONCILE_INTERVAL_MS || 30 * 60_000);
-// Повтор забора, если он не удался (воркер после деплою поднимается раньше
-// приложения и первый запрос падает) — иначе сверка пропускала бы полчаса.
-const RECONCILE_RETRY_MS = Number(process.env.MINIMAX_RECONCILE_RETRY_MS || 5 * 60_000);
+// автосверка его обновляет).
 // Проверка ежесуточного забора: как часто смотрим, не нужен ли он (маркер ставит
 // приложение по факту завершения обхода — если обход умер, маркера нет).
 const DAILY_BONUS_CHECK_MS = Number(process.env.MINIMAX_DAILY_BONUS_CHECK_MS || 30 * 60_000);
@@ -111,57 +103,6 @@ function startDispatchLoop() {
  * Хранится в файле состояния рядом с маркером забора: переживает рестарт воркера,
  * а потеря файла не страшна — проверки идемпотентны, просто пройдёт лишний раз.
  */
-function reconcileCursorPath() {
-  return path.join(STATE_DIR, 'reconcile-cursor.txt');
-}
-
-function readReconcileCursor() {
-  try {
-    const value = fs.readFileSync(reconcileCursorPath(), 'utf8').trim();
-    return value || null;
-  } catch {
-    return null;
-  }
-}
-
-function writeReconcileCursor(cursor) {
-  try {
-    fs.mkdirSync(STATE_DIR, { recursive: true });
-    fs.writeFileSync(reconcileCursorPath(), cursor);
-  } catch (error) {
-    log('reconcile cursor error', String(error));
-  }
-}
-
-function startReconcileLoop() {
-  const tick = async () => {
-    try {
-      const cursor = readReconcileCursor();
-      const res = await postInternal(
-        '/api/internal/minimax/reconcile',
-        cursor ? { cursor } : {},
-      );
-      if (!res.ok) {
-        log('reconcile HTTP', res.status, '— повтор через 5 мин');
-        setTimeout(tick, RECONCILE_RETRY_MS);
-        return;
-      }
-      const body = await res.json().catch(() => null);
-      const next = body?.report?.cursor;
-      if (typeof next === 'string' && next) writeReconcileCursor(next);
-    } catch (error) {
-      // Воркер после деплоя поднимается РАНЬШЕ приложения (тот же порядок, что и
-      // у догоняющего забора бонусов) — и первый запрос падает. Раньше это означало
-      // «сверка не случится до следующего тика через полчаса»; теперь повтор через
-      // 5 минут.
-      log('reconcile error', String(error), '— повтор через 5 мин');
-      setTimeout(tick, RECONCILE_RETRY_MS);
-    }
-  };
-  setInterval(tick, RECONCILE_INTERVAL_MS);
-  tick();
-}
-
 /**
  * Ежесуточный забор бонусов MiniMax (заказ владельца 18.11).
  *
@@ -192,28 +133,28 @@ function startDailyBonusLoop() {
       if (shouldSweep()) {
         const res = await postInternal('/api/internal/minimax/daily-bonus', {});
         if (!res.ok) {
-          log('daily-bonus HTTP', res.status, '— повтор через 5 мин');
-          setTimeout(startDailyBonusLoop, DAILY_BONUS_RETRY_MS);
+          log('daily-bonus HTTP', res.status, '— повтор через 30 мин');
           return;
         }
         log('daily-bonus: обход запущен');
       }
     } catch (error) {
-      log('daily-bonus error', String(error), '— повтор через 5 мин');
-      setTimeout(startDailyBonusLoop, DAILY_BONUS_RETRY_MS);
-      return;
+      log('daily-bonus error', String(error), '— повтор через 30 мин');
     }
-    // Маркера нет (обход только запустился — приложение запишет его по факту
-    // завершения) → проверяем снова скоро. Маркер есть → до следующих 05:00 можно спать.
-    setTimeout(
-      startDailyBonusLoop,
-      sweepDoneToday() ? msUntilDailyBonus() : DAILY_BONUS_CHECK_MS,
-    );
   };
 
-  // Первый тик: сразу, если час забора уже наступил (ловим «догон» после рестарта),
-  // иначе — в ближайшие 05:00 МСК.
-  setTimeout(startDailyBonusLoop, dailyBonusTimePassed() ? 0 : msUntilDailyBonus());
+  // Проверяем РАЗ В 30 МИНУТ, а не «спим до следующего 05:00»:
+  //
+  // Живая находка 20.11: воркер, поднятый после часа забора (деплой в 22:40),
+  // засыпал до следующего 05:00 ОДНИМ длинным таймером — и таймер не выстрелил.
+  // Забора за 20.11 не было: сутки клеток вендора потеряны, а две карусели остались
+  // без класса очков (класс берётся из нашего забора).
+  //
+  // Теперь короткий опрос — страховка: маркер ставит приложение по факту завершения
+  // обхода, поэтому обход, который начался и умер, не считается сделанным и будет
+  // повторён. Плюс точный таймер на 05:00 МСК — чтобы обход начинался вовремя.
+  setInterval(tick, DAILY_BONUS_CHECK_MS);
+  setTimeout(tick, dailyBonusTimePassed() ? 0 : msUntilDailyBonus());
 }
 
 /**
@@ -331,9 +272,8 @@ if (isEntryPoint) {
     log('TELEGRAM_BOT_TOKEN / REMINDERS_INTERNAL_SECRET не заданы — простаиваю (настройте env).');
     setInterval(() => log('ожидаю настройки env...'), 10 * 60_000);
   } else {
-    log(`старт: base=${BASE}, dispatch каждые ${DISPATCH_INTERVAL_MS}ms, сверка журнала каждые ${RECONCILE_INTERVAL_MS}ms, забор бонусов в ${DAILY_BONUS_HOUR_MSK}:00 МСК, poll timeout ${POLL_TIMEOUT_S}s`);
+    log(`старт: base=${BASE}, dispatch каждые ${DISPATCH_INTERVAL_MS}ms, забор бонусов в ${DAILY_BONUS_HOUR_MSK}:00 МСК, poll timeout ${POLL_TIMEOUT_S}s`);
     startDispatchLoop();
-    startReconcileLoop();
     startDailyBonusLoop();
     startPollLoop();
   }
@@ -341,6 +281,7 @@ if (isEntryPoint) {
 
 // Чистые помощники расписания — под тест (scripts/reminders-worker.test.ts).
 export {
+  DAILY_BONUS_CHECK_MS,
   dailyBonusTimePassed,
   moscowDate,
   msUntilDailyBonus,

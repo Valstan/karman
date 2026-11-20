@@ -46,7 +46,7 @@ export async function POST(req: Request) {
       });
       const stats = await dailyBonusStats(report.date);
       console.log(
-        '[minimax/daily-bonus] %s: аккаунтов %d, забрали %d, уже было %d, пропущено %d, ошибок %d, очков в банке %d; отдано %d (%d очк.), потрачено %d, осталось %d, вернул сторож %d',
+        '[minimax/daily-bonus] %s: аккаунтов %d, забрали %d, уже было %d, пропущено %d, ошибок %d, очков в банке %d; отдано %d (%d очк.), потрачено %d, осталось %d',
         report.date,
         report.accounts,
         report.claimed,
@@ -58,7 +58,6 @@ export async function POST(req: Request) {
         stats.handedPoints,
         stats.spentPoints,
         stats.leftPoints,
-        stats.returned,
       );
       // МАРКЕР — ПО ФАКТУ ЗАВЕРШЕНИЯ (и только если ошибок нет). Раньше его писал воркер
       // сразу по ответу роута, а ответ уходит мгновенно: обход, который начался и умер

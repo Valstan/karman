@@ -60,7 +60,7 @@
 поэтому гейт «суперпользователь» на операции, возвращающей пароль открытым текстом, не
 удерживал ничего.
 
-## 3. HTTP-роуты — `app/api/**/route.ts` (36 файла, 48 обработчиков, 29 пишущих)
+## 3. HTTP-роуты — `app/api/**/route.ts` (35 файла, 47 обработчиков, 28 пишущих)
 
 | Роут | Методы | Пишет | Авторизация |
 |---|---|---|---|
@@ -81,7 +81,6 @@
 | `/api/secrets/derivations` | GET | — (только чтение: свои производные с родословной; с `?source_key=` — «дома» своего ключа) | `Bearer skm_…` своей комнаты; родословная — чтение, поэтому read-only токен достаточен |
 | `/api/secrets/derivations/restore` | **POST** | `secrets_item` (снимается пометка «источник умер»), аудит | `Bearer skm_…` комнаты, которой принадлежит **копия**, **с правом записи** (снятие пометки меняет состояние записи; RO → 403); комната-источник снять пометку не может — это не её секрет |
 | `/api/reminders/dispatch` | **POST** | `reminder` (слот сработавшего), отправка в Telegram | внутренний Bearer (`REMINDERS_INTERNAL_SECRET`) — зовёт воркер |
-| `/api/internal/minimax/reconcile` | **POST** | `accounts_usage` (фантомные строки журнала за сегодня удаляются), `accounts_account` (снимается отметка дня; клетка и очки уточняются по панели) | внутренний Bearer (`REMINDERS_INTERNAL_SECRET`) — зовёт воркер раз в полчаса; сама сверка уходит в фон (`after`), ответ сразу |
 | `/api/internal/minimax/daily-bonus` | **POST** | `accounts_daily_bonus` (леджер суточных бонусов: клетка, очки, остаток, кому отдали) | внутренний Bearer (`REMINDERS_INTERNAL_SECRET`) — зовёт воркер раз в сутки, в 05:00 МСК; сам обход уходит в фон (`after`), ответ сразу |
 | `/api/telegram/ingest` | **POST** | по команде: `reminder`, привязки, профиль | внутренний Bearer; `proxy.ts` не трогает `/api/*`, поэтому защита здесь |
 | `/api/hotline` | GET, **POST** | `hotline_message` (POST), чтение ленты (GET) | общий секрет relay (`HOTLINE_RELAY_SECRET`, `checkHotlineBearer`, fail-closed 503 без секрета); POST — rate-limit по IP + серверный deny-линт до записи |
@@ -104,12 +103,23 @@
 | Процесс | Что пишет | Чем защищён |
 |---|---|---|
 | `scripts/cloudflare/karman-tg.js` (Cloudflare Worker) | в нашу БД **не пишет**: реле к `api.telegram.org` (обход RKN), allowlist методов | `X-Relay-Secret` без переменной — 503 (fail-closed); деплоит владелец руками |
-| `scripts/reminders-worker.mjs` (systemd `karman-reminders`) | в нашу БД **не пишет**: long-poll Telegram → `POST /api/telegram/ingest`, таймер → `POST /api/reminders/dispatch`, таймер → `POST /api/internal/minimax/reconcile` | `REMINDERS_INTERNAL_SECRET` в Bearer; на боксе запускается юнитом |
 | cron `scripts/backup_vault.sh` (03:30) | `vault.sql` (перечень таблиц явный), `media.tar.gz`, `MANIFEST.txt`, зашифрованные на Диск | pg_dump из env сервиса; права на бэкап — у юнита |
 | cron `scripts/health_watch.sh` (каждые 10 мин) | кэш `chat_id` на диск, сообщение в Telegram **только при смене состояния** | `curl /api/health` + токен бота |
 | `lib/db/migrations/*.sql` | схема + журнал `schema_migrations` | воркфлоу `apply-migration.yml` (psql + запись в журнал одним шагом); `Migration guard (журнал схемы)` в `deploy-prod.yml` не даёт коду уехать раньше схемы — сверка по состоянию БД, а не по дельте коммита |
 | Ручные `psql` по мандату владельца (#025) | любые строки | подтверждение владельца **в том же ходе**; операция обязана оставить след в аудите (`token_revoked`, актор `system`, происхождение в `detail` — образец 02.10) |
 | Синк ЕСА | `auth_oidc_identity`: при входе — автосвязка по почте (`lib/services/oidc-login.ts:86,126`), при привязке — `lib/services/esa-link.ts` | вход — по подписи провайдера + `state`; привязка — сессия + 2FA + явное подтверждение личности человеком |
+
+### 4.1. Внешние процессы (пишут в БД мимо Next)
+
+- **`scripts/reminders-worker.mjs`** — воркер напоминаний: long-poll Telegram
+  (`/api/telegram/ingest`), диспетчер (`/api/reminders/dispatch`) и ежесуточный забор
+  бонусов MiniMax в 05:00 МСК (`/api/internal/minimax/daily-bonus`). Внутренний Bearer
+  (`REMINDERS_INTERNAL_SECRET`). **Сверка журнала активаций с панелью удалена 19.11 (ночь)**
+  вместе со сторожем возврата: выдачу теперь крутит карусель, а не возврат в оборот.
+- **`scripts/karman-tg.js`** — бот Telegram в режиме long polling; пишет через
+  `/api/telegram/ingest`.
+- **`scripts/backup_vault.sh`**, **`scripts/health_watch.sh`** — бэкап vault и сторож
+  свежести бэкапа (пишут вне приложения, в файлы и Telegram).
 
 ## 5. Что нашлось: «authenticated» без роли
 
@@ -144,7 +154,7 @@
 - **Каждая точка входа описана.** Каждый файл `app/api/**/route.ts` и каждый
   `lib/actions/*.ts` обязан встречаться в этом документе: новая точка записи без строки
   в таблице роняет сборку. Считать руками ничего не нужно — тест сам пересчитывает числа
-  из кода (36 роутов / 48 обработчиков / 18 модулей действий / 89 действий) и сверяет их с
+  из кода (35 роутов / 47 обработчиков / 18 модулей действий / 89 действий) и сверяет их с
   числами из заголовка документа.
 - **Каждое действие гейтит сессию.** У каждого экспорта в первых восьми строках обязан быть
   один из вызовов `currentUserOrNull()` / `requireSecretsAccess()` / `requireUser()` /

@@ -19,7 +19,7 @@ import {
   tokenBackedAccountIds,
   type AccessHandover,
 } from '@/lib/services/account-tokens';
-import { isReturnedToPool, moscowToday } from '@/lib/accounts/rotation';
+import { moscowToday } from '@/lib/accounts/rotation';
 import { markBonusHanded } from '@/lib/services/minimax-daily-bonus';
 import {
   dailyStateFor,
@@ -205,9 +205,10 @@ async function resolveCaller(
  * потребитель никакого параметра не передаёт.
  */
 const TIER_PREFERENCE: Record<string, PoolTier> = {
-  /** Сарафан (фильтрация постов ВК): сначала четырёхсотовые. */
+  /** Сарафан (фильтрация постов ВК): четырёхсотковая карусель. */
   setka: 'points_400',
-  /** Панель программирования (Мозг): сначала тысячные. */
+  /** Панель программирования (Мозг): тысячная карусель, а когда она кончилась —
+   *  четырёхсотковая (заказ владельца 19.11, ночь). */
   brain: 'points_1000',
 };
 
@@ -606,10 +607,10 @@ export async function issueAccount(
 
   // В аудит — без токена: что за аккаунт, кому, с каким прогнозом очков.
   //
-  // Возврат сторожем помечаем явно (заказ владельца 19.11): такой аккаунт уже
-  // отдавали сегодня, и очки прежнего потребителя могли быть потрачены — волну
-  // повторных выдач видно в статистике, а не только по жалобам.
-  const returned = isReturnedToPool(account);
+  // Отданный сегодня аккаунт помечаем явно (заказ владельца 19.11): его очки
+  // прежнего потребителя могли быть потрачены, поэтому он стоит в конце
+  // четырёхсотковой карусели.
+  const usedToday = account.weekCheckedInToday === true;
   await logAudit(
     caller.roomId,
     caller.tokenId,
@@ -617,7 +618,7 @@ export async function issueAccount(
     `выдан аккаунт #${account.id} «${account.title}»: класс ${picked.tier ?? '-'}, клетка ${
       offer.account?.activation_index ?? '-'
     }, очки ${offer.account?.points_next ?? '-'}, access отдан${
-      returned ? ', ВОЗВРАТ СТОРОЖЕМ (уже отдавали сегодня)' : ''
+      usedToday ? ', ОТДАН СЕГОДНЯ (в конец четырёхсотковой карусели)' : ''
     }${filters.area ? `, область ${filters.area}` : ''}${
       filters.project ? `, проект ${filters.project}` : ''
     }, приоритет ${preferredTier}, жизнь access ${

@@ -4,6 +4,7 @@ import { and, eq } from 'drizzle-orm';
 import { createTestDb, type TestDb } from '@/lib/db/test-db';
 import {
   accountsAccount,
+  accountsDailyBonus,
   accountsProject,
   accountsUsage,
   accountToken,
@@ -101,12 +102,16 @@ async function makeAccount(title: string, email: string, usedOn: string | null, 
 
 /** Отметка журнала: так аккаунт получает серию дней и клетку. */
 async function makeCheckIn(accountId: number, usedOn: string, activationIndex: number) {
+  // source='api' — отметка о выдаче потребителю. Ручная активация владельца
+  // ('owner') убирает аккаунт из счётчика до следующего забора (заказ владельца
+  // 19.11, ночь) — в обычных кейсах пула её быть не должно.
   await refs.current!.insert(accountsUsage).values({
     userId: OWNER_ID,
     accountId,
     usedOn,
     tokens: 400,
     activationIndex,
+    source: 'api',
   });
 }
 
@@ -208,7 +213,7 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     expect('password' in (result.offer.account ?? {})).toBe(false);
   });
 
-  it('тысячник отдаётся, когда свободных четырёхсотых не осталось', async () => {
+  it('продсерверу тысячник не отдаётся: тысячная карусель только программированию', async () => {
     await makeRoom('gonba', 'GONBA', OTHER_ROOM_TOKEN);
     const thousand = await makeAccount('Тысячник2', 'thousand2@example.test', null, null);
     await makeCheckIn(thousand, '2026-11-10', 1);
@@ -221,9 +226,9 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     const result = await issueAccount(OTHER_ROOM_TOKEN, '127.0.0.1', {}, NOW);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.offer.account?.id).toBe(thousand);
-    expect(result.offer.tier).toBe('points_1000');
-    expect(result.offer.account?.points_next).toBe(1000);
+    // Заказ владельца 19.11 (ночь): «1000 карусель тратим исключительно на
+    // программирование, а 400 карусель крутим на все остальные вызовы».
+    expect(result.offer.account).toBeNull();
   });
 
   /**
@@ -241,6 +246,19 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
     await makeCheckIn(accountId, '2026-11-11', 2);
     await makeCheckIn(accountId, '2026-11-12', 3);
     await makeTokenPair(accountId);
+    // Наш утренний забор взял клетку 2 — 400 очков. Класс карусели берётся из
+    // леджера забора (заказ владельца 19.11, ночь), а панель уточняет клетку.
+    await refs.current!.insert(accountsDailyBonus).values({
+      userId: OWNER_ID,
+      accountId,
+      usedOn: TODAY,
+      dayNo: 2,
+      points: 400,
+      remaining: 400,
+      status: 3,
+      claimResult: 1,
+      claimedAt: NOW.toISOString(),
+    });
 
     const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);
     expect(result.ok).toBe(true);
@@ -474,6 +492,9 @@ describe('пул MiniMax: раздача аккаунта проекту', () =>
       tokens: 1000,
       activationIndex: 4,
       source: 'owner',
+      // Активация была сегодня (в текущих сутках) — аккаунт убран из счётчика до
+      // следующего забора (заказ владельца 19.11, ночь).
+      createdAt: NOW.toISOString(),
     });
 
     const result = await issueAccount(ROOM_TOKEN, '127.0.0.1', {}, NOW);

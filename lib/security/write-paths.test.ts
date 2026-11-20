@@ -182,9 +182,9 @@ describe('таблица путей записи (docs/write-paths.md) опис�
     const writes = handlers.filter((h) => (WRITE_METHODS as readonly string[]).includes(h.method));
     const actions = modules.flatMap((m) => m.exports);
 
-    expect(routes.length, 'роутов').toBe(36);
-    expect(handlers.length, 'обработчиков').toBe(48);
-    expect(writes.length, 'пишущих обработчиков').toBe(29);
+    expect(routes.length, 'роутов').toBe(35);
+    expect(handlers.length, 'обработчиков').toBe(47);
+    expect(writes.length, 'пишущих обработчиков').toBe(28);
     expect(modules.length, 'модулей действий').toBe(18);
     expect(actions.length, 'действий').toBe(89);
 

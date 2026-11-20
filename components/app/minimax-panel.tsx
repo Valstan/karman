@@ -96,8 +96,6 @@ export type BonusStatsView = {
   handedPoints: number;
   spentPoints: number;
   leftPoints: number;
-  /** Сколько аккаунтов сторож вернул в оборот за сегодня (волна повторных выдач). */
-  returned: number;
 };
 
 export function MinimaxPanel({
@@ -485,9 +483,6 @@ export function MinimaxPanel({
                       {bonusStats.spentPoints.toLocaleString('ru-RU')} очк. — в выдачу не идут) · отдано{' '}
                       {bonusStats.handed} ({bonusStats.handedPoints.toLocaleString('ru-RU')} очк.) · на
                       аккаунтах {bonusStats.leftPoints.toLocaleString('ru-RU')}
-                      {bonusStats.returned > 0
-                        ? ` · вернул сторож ${bonusStats.returned} (в конец очереди)`
-                        : ''}
                     </dd>
                   </div>
                 ) : null}

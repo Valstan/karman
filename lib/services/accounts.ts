@@ -203,13 +203,22 @@ async function accountCheckIns(user: SessionUser): Promise<Map<number, WeeklyChe
       accountId: accountsUsage.accountId,
       usedOn: accountsUsage.usedOn,
       activationIndex: accountsUsage.activationIndex,
+      // Источник и момент активации: по ним видно ручную активацию владельца
+      // (заказ владельца 19.11, ночь) — она убирает аккаунт из счётчика.
+      source: accountsUsage.source,
+      createdAt: accountsUsage.createdAt,
     })
     .from(accountsUsage)
     .where(ownership(user, accountsUsage.userId));
   const byAccount = new Map<number, WeeklyCheckIn[]>();
   for (const row of rows) {
     const list = byAccount.get(row.accountId) ?? [];
-    list.push({ date: row.usedOn, index: row.activationIndex });
+    list.push({
+      date: row.usedOn,
+      index: row.activationIndex,
+      source: row.source === 'owner' ? 'owner' : 'api',
+      createdAt: row.createdAt,
+    });
     byAccount.set(row.accountId, list);
   }
   return byAccount;
@@ -282,6 +291,23 @@ async function accountUsageStats(
 }
 
 /**
+ * Последняя ручная активация владельцем (ISO) или null.
+ *
+ * Заказ владельца 19.11 (ночь): «если вручную активированы мною, то они тоже из
+ * счётчика убираются до следующих суток, которые у нас начинаются в 5 утра по
+ * Москве». То есть пока ручная активация позже последнего забора — аккаунт из
+ * счётчика убран (его очки — владельца).
+ */
+function lastOwnerActivation(checkIns: WeeklyCheckIn[]): string | null {
+  let latest: string | null = null;
+  for (const checkIn of checkIns) {
+    if (checkIn.source !== 'owner' || !checkIn.createdAt) continue;
+    if (latest === null || checkIn.createdAt > latest) latest = checkIn.createdAt;
+  }
+  return latest;
+}
+
+/**
  * Остаток очков по нашему леджеру бонусов за московские сутки (заказ владельца
  * 18.11): сколько очков лежало на аккаунте при последней нашей проверке.
  *
@@ -301,6 +327,7 @@ async function dailyBonusStates(
       dayNo: number | null;
       claimResult: number | null;
       handedAt: string | null;
+      claimedAt: string | null;
     }
   >
 > {
@@ -312,6 +339,9 @@ async function dailyBonusStates(
       dayNo: accountsDailyBonus.dayNo,
       claimResult: accountsDailyBonus.claimResult,
       handedAt: accountsDailyBonus.handedAt,
+      // Когда забрали (05:00 МСК): сравнением с ручной активацией понимаем, что
+      // аккаунт занят до следующего забора.
+      claimedAt: accountsDailyBonus.claimedAt,
     })
     .from(accountsDailyBonus)
     .where(and(eq(accountsDailyBonus.userId, userId), eq(accountsDailyBonus.usedOn, today)));
@@ -323,6 +353,7 @@ async function dailyBonusStates(
       dayNo: number | null;
       claimResult: number | null;
       handedAt: string | null;
+      claimedAt: string | null;
     }
   >();
   for (const row of rows) {
@@ -332,6 +363,7 @@ async function dailyBonusStates(
       dayNo: row.dayNo,
       claimResult: row.claimResult,
       handedAt: row.handedAt,
+      claimedAt: row.claimedAt,
     });
   }
   return out;
@@ -378,9 +410,13 @@ export async function listAccounts(
       bonusDayNo: bonus?.dayNo ?? null,
       bonusOurs: bonusOursValue,
       bonusHandedAt: bonus?.handedAt ?? null,
+      bonusClaimedAt: bonus?.claimedAt ?? null,
     };
     return {
       ...withBonus,
+      // Последняя ручная активация владельцем: такой аккаунт уходит из счётчика
+      // до следующего забора (заказ владельца 19.11, ночь).
+      ownerUsedAt: lastOwnerActivation(checkIns.get(row.id) ?? []),
       weekUsed: state?.week.used ?? 0,
       weekExhausted: state?.week.exhausted ?? false,
       // Чек-ин за сегодня уже был → сегодняшнего бонуса у аккаунта нет, и в
@@ -444,10 +480,13 @@ export async function listAccount(
     bonusDayNo: bonus?.dayNo ?? null,
     bonusOurs: bonusOurs(bonus?.claimResult ?? null),
     bonusHandedAt: bonus?.handedAt ?? null,
+    bonusClaimedAt: bonus?.claimedAt ?? null,
   };
   return toListItem(
     {
       ...withBonus,
+      // Последняя ручная активация владельцем (см. listAccounts) — тот же признак.
+      ownerUsedAt: lastOwnerActivation(checkIns.get(accountId) ?? []),
       weekUsed: state?.week.used ?? 0,
       weekExhausted: state?.week.exhausted ?? false,
       weekCheckedInToday: state?.checkedInToday ?? false,

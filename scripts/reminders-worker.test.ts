@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 // @ts-expect-error .mjs без деклараций — импортируем как есть (мандат brain 2026-09-09).
-import { dailyBonusTimePassed, moscowDate, msUntilDailyBonus, shouldSweep, sweepDoneToday, sweepMarkerPath } from './reminders-worker.mjs';
+import { DAILY_BONUS_CHECK_MS, dailyBonusTimePassed, moscowDate, msUntilDailyBonus, shouldSweep, sweepDoneToday, sweepMarkerPath } from './reminders-worker.mjs';
 
 // Расписание ежесуточного забора бонусов MiniMax (живая находка 18.11).
 //
@@ -45,6 +45,13 @@ describe('расписание ежесуточного забора', () => {
     // 22:56 UTC = 01:56 МСК — до забора в 05:00 МСК (02:00 UTC) осталось ~3 часа.
     const night = msUntilDailyBonus(new Date('2026-11-18T22:56:00Z'));
     expect(night).toBe(3 * 60 * 60_000 + 4 * 60_000);
+  });
+
+  it('проверка забора — не реже раза в полчаса', () => {
+    // Живая находка 20.11: воркер спал до следующего 05:00 ОДНИМ длинным таймером,
+    // и таймер не выстрелил — забора за сутки не было, клетки вендора потеряны.
+    // Теперь забор проверяется опросом (не реже получаса) плюс точный таймер на 05:00.
+    expect(DAILY_BONUS_CHECK_MS).toBeLessThanOrEqual(30 * 60_000);
   });
 
   it('московские сутки считаются по UTC+3, а не по дате UTC', () => {

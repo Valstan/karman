@@ -199,48 +199,37 @@ describe('мультиаккаунт: порядок списка', () => {
     expect(sorted.map((a) => a.id)).toEqual([3, 1, 2]);
   });
 
-  it('порядок — по очкам: сначала активация, которая даст 1000', () => {
-    // Заказ владельца 11.11: «предлагай в первую очередь те, у которых больше
-    // всего активаций за цикл» — на практике это значит «сначала те, чья
-    // ближайшая активация даст 1000 очков (клетка 4 или 7)».
+  it('карусель: по времени последней выдачи, а не по очкам', () => {
+    // Заказ владельца 19.11 (ночь): «всегда идти простым перебором, чтобы перебрать
+    // все существующие аккаунты» — порядок задаёт время последней выдачи, а не класс
+    // очков (класс решает выдача: две карусели, см. `lib/accounts/pool.ts`).
     const sorted = sortAccounts(
       [
-        row({ id: 1, weekPointsNext: 400, weekDaysToBonus: 2, weekStreak: 2 }),
-        row({ id: 2, weekPointsNext: 1000, weekDaysToBonus: 1, weekStreak: 3 }),
+        row({ id: 1, usedOn: '2026-10-30', usedAt: '2026-10-30T06:00:00Z', weekPointsNext: 400 }),
+        row({ id: 2, usedOn: '2026-11-02', usedAt: '2026-11-02T06:00:00Z', weekPointsNext: 1000 }),
       ],
       now,
     );
-    expect(sorted.map((a) => a.id)).toEqual([2, 1]);
+    expect(sorted.map((a) => a.id)).toEqual([1, 2]);
   });
 
-  it('при равных очках — ближе к бонусной клетке выше', () => {
+  it('расстояние до бонусной клетки на порядок не влияет', () => {
     const sorted = sortAccounts(
       [
-        row({ id: 1, weekPointsNext: 400, weekDaysToBonus: 4, weekStreak: 0 }),
-        row({ id: 2, weekPointsNext: 400, weekDaysToBonus: 2, weekStreak: 2 }),
-        row({ id: 3, weekPointsNext: 400, weekDaysToBonus: 3, weekStreak: 1 }),
+        row({ id: 1, usedOn: '2026-10-30', usedAt: '2026-10-30T06:00:00Z', weekDaysToBonus: 4 }),
+        row({ id: 2, usedOn: '2026-10-30', usedAt: '2026-10-30T06:00:00Z', weekDaysToBonus: 2 }),
       ],
       now,
     );
-    expect(sorted.map((a) => a.id)).toEqual([2, 3, 1]);
+    expect(sorted.map((a) => a.id)).toEqual([1, 2]);
   });
 
-  it('при равном расстоянии — длиннее серия выше', () => {
+  it('никогда не использованные — в начале карусели', () => {
+    // Их забор уже взял (очки ждут потребителя), и в переборе они идут первыми.
     const sorted = sortAccounts(
       [
-        row({ id: 1, weekPointsNext: 400, weekDaysToBonus: 2, weekStreak: 1 }),
-        row({ id: 2, weekPointsNext: 400, weekDaysToBonus: 2, weekStreak: 5 }),
-      ],
-      now,
-    );
-    expect(sorted.map((a) => a.id)).toEqual([2, 1]);
-  });
-
-  it('свежие аккаунты — в конец: новые в оборот берём по мере надобности', () => {
-    const sorted = sortAccounts(
-      [
-        row({ id: 1, usedOn: null, usedAt: null, weekPointsNext: 400, weekDaysToBonus: 4, weekStreak: 0 }),
-        row({ id: 2, usedOn: '2026-10-30', usedAt: '2026-10-30T06:00:00Z', weekPointsNext: 400, weekDaysToBonus: 2, weekStreak: 2 }),
+        row({ id: 1, usedOn: '2026-10-30', usedAt: '2026-10-30T06:00:00Z' }),
+        row({ id: 2, usedOn: null, usedAt: null }),
       ],
       now,
     );
@@ -267,20 +256,6 @@ describe('мультиаккаунт: порядок списка', () => {
     ];
     sortAccounts(input, now);
     expect(input.map((a) => a.id)).toEqual([2, 1]);
-  });
-
-  it('возвращённый сторожем — в конец доступных (заказ владельца 19.11)', () => {
-    // Сторож снял сессию (`used_at` пуст), но отметка выдачи осталась: раньше такой
-    // аккаунт вставал В ПЕРВЫЙ (как «никогда не активированный»), хотя его уже
-    // отдавали сегодня и очки могли быть потрачены.
-    const sorted = sortAccounts(
-      [
-        row({ id: 1, usedOn: '2026-10-30', usedAt: '2026-10-30T06:00:00Z' }),
-        row({ id: 2, usedOn: null, usedAt: null, bonusHandedAt: '2026-11-03T09:00:00.000Z' }),
-      ],
-      now,
-    );
-    expect(sorted.map((a) => a.id)).toEqual([1, 2]);
   });
 });
 
