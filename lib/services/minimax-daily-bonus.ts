@@ -1,8 +1,8 @@
 import 'server-only';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNotNull, isNull, lt, ne, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { accountsAccount, accountsDailyBonus, accountsProject } from '@/lib/db/schema';
-import { moscowToday } from '@/lib/accounts/rotation';
+import { moscowToday, operationalDayStart } from '@/lib/accounts/rotation';
 import { OWNER_TIMEZONE } from '@/lib/minimax/panel';
 import {
   CLAIM_RESULT_ALREADY,
@@ -10,6 +10,7 @@ import {
   claimDailyBonus,
 } from '@/lib/minimax/claim';
 import { liveAccessToken } from './account-tokens';
+import { PACE_WINDOW_DAYS } from '@/lib/accounts/weekly';
 
 /**
  * Ежесуточный забор бонусов MiniMax + забор в момент выдачи.
@@ -638,4 +639,226 @@ export async function dailyBonusStats(
     .sort((a, b) => b.accounts - a.accounts);
 
   return stats;
+}
+
+/**
+ * Сводка по **операционным суткам** — окну 05:00→05:00 МСК (заказ владельца 21.11).
+ *
+ * ## Почему не календарный день
+ *
+ * У Кармана сутки начинаются в 05:00 МСК: в этот момент утренний обход забирает
+ * бонус по всем аккаунтам, и с этого момента очки на них свежие. Значит «сегодня» у
+ * владельца — это окно `[D 05:00, D+1 05:00)`, а не календарная дата D.
+ *
+ * Панель считала по календарной дате (`dailyBonusStats(moscowToday())`), и из-за
+ * этого в ночные часы показывала «почти пустой» новый день: между 00:00 и 05:00 МСК
+ * календарная дата уже сменилась, а сутки — ещё нет. Владелец цифры не узнавал.
+ *
+ * ## Что считаем по окну, а что — «на сейчас»
+ *
+ * - **Поток** (окно): сколько забрали, сколько отдали, сколько забрал потребитель —
+ *   по времени события (`claimed_at` / `handed_at`).
+ * - **Остаток** (на сейчас, не окно): наши клетки, которые ещё не отдали. Это сток,
+ *   а не поток: он копится сутками и в окно не вписывается.
+ *
+ * ## Почему по времени события, а не по `used_on`
+ *
+ * `used_on` — московская календарная дата строки леджера. У вендора свои сутки
+ * (смена в 21:00 МСК), поэтому забор в 00:00–03:00 МСК попадает в `used_on` следующей
+ * календарной даты, хотя по нашим суткам он ещё внутри текущих. По времени события
+ * окно всегда сходится само с собой: что забрали в окно — то и отдали в окно.
+ *
+ * ## Темп
+ *
+ * Темп — сколько очков мы отдаём за операционные сутки, по срезу последних полных
+ * операционных суток. Источник — леджер (`handed_points`), а не журнал активаций:
+ * журнал считает момент активации, леджер — момент выдачи, и для вопроса «хватает ли
+ * токенов на день» нужен именно расход.
+ */
+export type OperationalBonusStats = {
+  /** Начало окна (ISO) — 05:00 МСК. */
+  from: string;
+  /** Конец окна (ISO) — 05:00 МСК следующих суток. */
+  to: string;
+  /** Московская дата начала суток ('YYYY-MM-DD'). */
+  date: string;
+  /** Подпись окна: '20.11 → 21.11'. */
+  label: string;
+  /** Сколько клеток забрали МЫ за сутки. */
+  collected: number;
+  /** Сколько очков забрали мы за сутки. */
+  collectedPoints: number;
+  /** Сколько клеток забрал потребитель (мимо нас — очки ушли ему). */
+  consumerTaken: number;
+  /** Сколько очков забрал потребитель. */
+  consumerTakenPoints: number;
+  /** Сколько аккаунтов отдали за сутки. */
+  handed: number;
+  /** Сколько очков отдали за сутки. */
+  handedPoints: number;
+  /** Остаток на аккаунтах: наши клетки, которые ещё не отдали (очки). */
+  stockPoints: number;
+  /** Сколько РАЗНЫХ аккаунтов держат эти клетки. */
+  stockAccounts: number;
+  /** Сколько клеток (строк леджера) лежит на аккаунтах. */
+  stockCells: number;
+  /** Сколько тысячных клеток забрали за сутки. */
+  thousands: number;
+  /** Темп: очков в сутки по срезу последних полных операционных суток. */
+  pointsPerDay: number | null;
+  /** Сколько полных суток попало в срез темпа. */
+  sliceDays: number;
+  /** Начало среза темпа (московская дата начала суток). */
+  sliceFrom: string;
+  /** Конец среза темпа (московская дата начала суток) — последние полные сутки. */
+  sliceTo: string;
+  /** Комната-потребитель → очки за сутки. */
+  byProject: { project: string; accounts: number; points: number }[];
+};
+
+const DAY_MS = 24 * 3_600_000;
+
+/** '2026-11-20' → '20.11' (подпись для глаза). */
+function shortDay(date: string): string {
+  return `${date.slice(8, 10)}.${date.slice(5, 7)}`;
+}
+
+export async function operationalBonusStats(
+  now: Date = new Date(),
+): Promise<OperationalBonusStats> {
+  const from = operationalDayStart(now);
+  const to = new Date(from.getTime() + DAY_MS);
+  const fromIso = from.toISOString();
+  const toIso = to.toISOString();
+
+  // Окно суток по времени события: забор (claimed_at) и выдача (handed_at).
+  const claimedInWindow = and(
+    gte(accountsDailyBonus.claimedAt, fromIso),
+    lt(accountsDailyBonus.claimedAt, toIso),
+  );
+  const handedInWindow = and(
+    gte(accountsDailyBonus.handedAt, fromIso),
+    lt(accountsDailyBonus.handedAt, toIso),
+  );
+
+  const [collected, consumer, handed, stock, thousands, projects, paceRows] = await Promise.all([
+    // Забрали мы.
+    db
+      .select({
+        n: sql<number>`count(*)::int`,
+        points: sql<number>`coalesce(sum(${accountsDailyBonus.points}), 0)::int`,
+      })
+      .from(accountsDailyBonus)
+      .where(and(eq(accountsDailyBonus.claimResult, CLAIM_RESULT_CLAIMED), claimedInWindow)),
+    // Клетку забрал потребитель (обычно ночью) — эти очки ушли мимо нас.
+    db
+      .select({
+        n: sql<number>`count(*)::int`,
+        points: sql<number>`coalesce(sum(${accountsDailyBonus.points}), 0)::int`,
+      })
+      .from(accountsDailyBonus)
+      .where(and(ne(accountsDailyBonus.claimResult, CLAIM_RESULT_CLAIMED), claimedInWindow)),
+    // Отдали за сутки.
+    db
+      .select({
+        n: sql<number>`count(*)::int`,
+        points: sql<number>`coalesce(sum(${accountsDailyBonus.handedPoints}), 0)::int`,
+      })
+      .from(accountsDailyBonus)
+      .where(and(isNotNull(accountsDailyBonus.handedAt), handedInWindow)),
+    // Остаток на аккаунтах — НА СЕЙЧАС, не за окно.
+    db
+      .select({
+        points: sql<number>`coalesce(sum(${accountsDailyBonus.points}), 0)::int`,
+        accounts: sql<number>`count(distinct ${accountsDailyBonus.accountId})::int`,
+        cells: sql<number>`count(*)::int`,
+      })
+      .from(accountsDailyBonus)
+      .where(
+        and(eq(accountsDailyBonus.claimResult, CLAIM_RESULT_CLAIMED), isNull(accountsDailyBonus.handedAt)),
+      ),
+    // Тысячные клетки за сутки.
+    db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(accountsDailyBonus)
+      .where(
+        and(
+          eq(accountsDailyBonus.claimResult, CLAIM_RESULT_CLAIMED),
+          sql`${accountsDailyBonus.points} >= 1000`,
+          claimedInWindow,
+        ),
+      ),
+    // Куда ушло по комнатам-потребителям.
+    db
+      .select({
+        projectId: accountsDailyBonus.handedToProjectId,
+        projectName: accountsProject.name,
+        n: sql<number>`count(*)::int`,
+        points: sql<number>`coalesce(sum(${accountsDailyBonus.handedPoints}), 0)::int`,
+      })
+      .from(accountsDailyBonus)
+      .leftJoin(accountsProject, eq(accountsProject.id, accountsDailyBonus.handedToProjectId))
+      .where(and(isNotNull(accountsDailyBonus.handedAt), handedInWindow))
+      .groupBy(accountsDailyBonus.handedToProjectId, accountsProject.name),
+    // Срез темпа: последние полные операционные сутки (текущее окно в срез не входит).
+    db
+      .select({
+        handedAt: accountsDailyBonus.handedAt,
+        points: accountsDailyBonus.handedPoints,
+      })
+      .from(accountsDailyBonus)
+      .where(
+        and(
+          isNotNull(accountsDailyBonus.handedAt),
+          gte(
+            accountsDailyBonus.handedAt,
+            new Date(from.getTime() - PACE_WINDOW_DAYS * DAY_MS).toISOString(),
+          ),
+          lt(accountsDailyBonus.handedAt, fromIso),
+        ),
+      ),
+  ]);
+
+  // Темп: сутки без выдач НЕ считаем (нулевой расход ≠ отсутствие спроса).
+  const sliceStart = from.getTime() - PACE_WINDOW_DAYS * DAY_MS;
+  const byDay = new Map<number, number>();
+  for (const row of paceRows) {
+    if (!row.handedAt) continue;
+    const index = Math.floor((new Date(row.handedAt).getTime() - sliceStart) / DAY_MS);
+    byDay.set(index, (byDay.get(index) ?? 0) + (row.points ?? 0));
+  }
+  let slicePoints = 0;
+  for (const points of byDay.values()) slicePoints += points;
+  const sliceDays = byDay.size;
+
+  const date = moscowToday(from);
+  const toDate = moscowToday(to);
+
+  return {
+    from: fromIso,
+    to: toIso,
+    date,
+    label: `${shortDay(date)} → ${shortDay(toDate)}`,
+    collected: collected[0]?.n ?? 0,
+    collectedPoints: collected[0]?.points ?? 0,
+    consumerTaken: consumer[0]?.n ?? 0,
+    consumerTakenPoints: consumer[0]?.points ?? 0,
+    handed: handed[0]?.n ?? 0,
+    handedPoints: handed[0]?.points ?? 0,
+    stockPoints: stock[0]?.points ?? 0,
+    stockAccounts: stock[0]?.accounts ?? 0,
+    stockCells: stock[0]?.cells ?? 0,
+    thousands: thousands[0]?.n ?? 0,
+    pointsPerDay: sliceDays > 0 ? slicePoints / sliceDays : null,
+    sliceDays,
+    sliceFrom: moscowToday(new Date(sliceStart)),
+    sliceTo: moscowToday(new Date(from.getTime() - DAY_MS)),
+    byProject: projects
+      .map((row) => ({
+        project: row.projectId === null ? '(без комнаты)' : (row.projectName ?? '—'),
+        accounts: row.n,
+        points: row.points,
+      }))
+      .sort((a, b) => b.points - a.points),
+  };
 }

@@ -9,9 +9,8 @@ import {
   projectUsageByDay,
 } from '@/lib/services/accounts';
 import { tokenProgress } from '@/lib/services/account-tokens';
-import { dailyBonusStats } from '@/lib/services/minimax-daily-bonus';
+import { operationalBonusStats } from '@/lib/services/minimax-daily-bonus';
 import { consumerTiers } from '@/lib/services/minimax-consumer-tiers';
-import { moscowToday } from '@/lib/accounts/rotation';
 import { MinimaxPanel } from '@/components/app/minimax-panel';
 
 /**
@@ -50,10 +49,11 @@ export default async function MinimaxPage() {
       consumerTiers(30),
     ]);
 
-  // Сводка по суточным бонусам (заказ владельца 18.11): утренний обход забирает
-  // бонусы по всем аккаунтам, днём аккаунты раздаются, а по этим цифрам видно,
-  // сколько очков в банке, сколько отдано и сколько потрачено.
-  const bonus = await dailyBonusStats(moscowToday(now));
+  // Сводка по бонусам за ОПЕРАЦИОННЫЕ сутки — окно 05:00→05:00 МСК (заказ
+  // владельца 21.11): утренний обход забирает бонусы по всем аккаунтам, днём
+  // аккаунты раздаются, а по этим цифрам видно, сколько очков собрали, сколько
+  // отдали и сколько осталось неиспользованным.
+  const bonus = await operationalBonusStats(now);
 
   return (
     <div className="flex flex-col gap-6">
@@ -76,16 +76,19 @@ export default async function MinimaxPage() {
         tiers={tiers}
         tokenProgress={tokens}
         bonusStats={{
-          date: bonus.date,
-          accounts: bonus.accounts,
-          claimed: bonus.claimed,
-          already: bonus.already,
-          points: bonus.points,
+          label: bonus.label,
+          collected: bonus.collected,
+          collectedPoints: bonus.collectedPoints,
+          consumerTaken: bonus.consumerTaken,
+          consumerTakenPoints: bonus.consumerTakenPoints,
           handed: bonus.handed,
           handedPoints: bonus.handedPoints,
-          spentPoints: bonus.spentPoints,
-          leftPoints: bonus.leftPoints,
+          stockPoints: bonus.stockPoints,
+          stockAccounts: bonus.stockAccounts,
           thousands: bonus.thousands,
+          pointsPerDay: bonus.pointsPerDay,
+          sliceFrom: bonus.sliceFrom,
+          sliceTo: bonus.sliceTo,
         }}
         serverNow={now.toISOString()}
       />

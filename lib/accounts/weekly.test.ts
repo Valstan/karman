@@ -172,7 +172,7 @@ describe('сводка по запасу — строка лимитов', () =>
   const now = '2026-11-09T10:00:00Z';
 
   it('за день: свободны сейчас и освобождающиеся сегодня; отдельно — в ближайшие 5 часов', () => {
-    const stats = weeklyPoolStats([account(1)], [], today, now);
+    const stats = weeklyPoolStats([account(1)], today, now);
     expect(stats.today).toBe(1);
     expect(stats.freeNow).toBe(1);
     expect(stats.freesIn5h).toBe(0);
@@ -185,7 +185,6 @@ describe('сводка по запасу — строка лимитов', () =>
         account(2, { spent: true, releasesAt: '2026-11-09T18:00:00Z' }),
         account(3, { spent: true, releasesAt: '2026-11-10T10:00:00Z' }),
       ],
-      [],
       today,
       now,
     );
@@ -195,15 +194,14 @@ describe('сводка по запасу — строка лимитов', () =>
   });
 
   it('отмеченные сегодня в «за день» не идут', () => {
-    const stats = weeklyPoolStats([account(1, { checkedInToday: true })], [], today, now);
+    const stats = weeklyPoolStats([account(1, { checkedInToday: true })], today, now);
     expect(stats.today).toBe(0);
     expect(stats.week).toBe(7);
   });
 
-  it('за неделю — остаток календарной недели, темп и прогноз в днях', () => {
+  it('за неделю — остаток календарной недели и прогноз в днях', () => {
     const stats = weeklyPoolStats(
       [account(1, { quota: weeklyQuota([checkIn('2026-11-05')], today) }), account(2)],
-      [{ usedOn: '2026-11-08', activations: 4, tokens: 1600 }],
       today,
       now,
     );
@@ -214,65 +212,16 @@ describe('сводка по запасу — строка лимитов', () =>
     expect(stats.daysToWeekEnd).toBe(7);
   });
 
-  it('темп — по срезу 10 полных суток, а не по текущей неделе', () => {
-    // Срез — последние 10 ПОЛНЫХ суток: вчера и раньше (сегодняшние сутки
-    // ещё не закончились, а включение их занизило бы темп).
-    const stats = weeklyPoolStats(
-      [account(1)],
-      [
-        { usedOn: '2026-11-08', activations: 10, tokens: 4000 },
-        { usedOn: '2026-11-07', activations: 10, tokens: 4000 },
-        { usedOn: '2026-11-09', activations: 99, tokens: 99999 },
-      ],
-      today,
-      now,
-    );
-    expect(stats.sliceFrom).toBe('2026-10-30');
-    expect(stats.sliceTo).toBe('2026-11-08');
-    // Сегодняшние сутки в срез не входят, две строки по 4000 — делим на 2 дня.
-    expect(stats.pointsPerDay).toBe(4000);
-    // Неделя потребления: 4000 × 7 = 28 000 очков.
-    expect(stats.weekDemand).toBe(28000);
-  });
-
-  it('строки одного дня по разным проектам — это ОДИН день', () => {
-    // usageByDay приходит по проектам: без сборки по датам темп считался бы
-    // по числу строк и вышел бы заниженным в разы.
-    const stats = weeklyPoolStats(
-      [account(1)],
-      [
-        { usedOn: '2026-11-08', activations: 1, tokens: 400 },
-        { usedOn: '2026-11-08', activations: 1, tokens: 400 },
-      ],
-      today,
-      now,
-    );
-    expect(stats.pointsPerDay).toBe(800);
-  });
-
-  it('без расхода в срезе темп неизвестен — прогноза нет, а не ноль', () => {
-    const stats = weeklyPoolStats([account(1)], [], today, now);
-    expect(stats.pointsPerDay).toBeNull();
-    expect(stats.weekDemand).toBeNull();
-    expect(stats.coversWeek).toBeNull();
-  });
-
-
-  it('«хватит ли на неделю» — запас против недели потребления', () => {
+  it('недельный запас в очках — остаток квоты аккаунтов', () => {
     // Запас недельных квот двух аккаунтов: у каждого 7 дней клеток =
     // 400+400+1000+400+400+1000+400 = 4000 очков, всего 8000.
-    const stats = weeklyPoolStats(
-      [account(1), account(2)],
-      [{ usedOn: '2026-11-08', activations: 10, tokens: 4000 }],
-      today,
-      now,
-    );
-    // Темп 4000 очков в сутки → неделя потребления 28 000 очков.
-    expect(stats.pointsPerDay).toBe(4000);
+    const stats = weeklyPoolStats([account(1), account(2)], today, now);
     expect(stats.weekPoints).toBe(8000);
-    expect(stats.coversWeek).toBe(false);
   });
 
+  // Темп потребления уехал в `operationalBonusStats`
+  // (`lib/services/minimax-daily-bonus.ts`): он считается по операционным суткам
+  // 05:00→05:00 МСК по леджеру выдач, а не по календарным датам журнала.
 });
 
 describe('после седьмой клетки цикл начинается заново (решение владельца 11.11)', () => {

@@ -410,14 +410,6 @@ export type WeeklyAccountInput = {
   quota: WeeklyQuota;
 };
 
-/** Сколько активаций и очков было в каждый московский день. */
-export type WeeklyUsageDay = {
-  usedOn: string;
-  activations: number;
-  /** Очки за день (в БД колонка называется tokens). */
-  tokens: number;
-};
-
 /**
  * Здоровье когорты — стратегия владельца 11.11.
  *
@@ -505,16 +497,6 @@ export type WeeklyPoolStats = {
   week: number;
   /** Очки за эти активации (запас пула до сброса лимитов). */
   weekPoints: number;
-  /** Темп: очков в сутки по срезу последних полных суток (null — среза нет). */
-  pointsPerDay: number | null;
-  /** Начало окна среза (московская дата). */
-  sliceFrom: string;
-  /** Конец окна среза (московская дата) — всегда вчера. */
-  sliceTo: string;
-  /** Сколько очков нужно на неделю при таком темпе (null — темп неизвестен). */
-  weekDemand: number | null;
-  /** Хватает ли недельного запаса на неделю потребления (null — темп неизвестен). */
-  coversWeek: boolean | null;
   /** Сколько дней осталось в текущей московской неделе, включая сегодня. */
   daysToWeekEnd: number;
   /** Дата сброса недельных лимитов (понедельник следующей недели). */
@@ -523,8 +505,7 @@ export type WeeklyPoolStats = {
 
 /**
  * Сводка по недельному запасу (заказ 07.11): сколько активаций
- * возможно сегодня, сколько осталось в неделях и сколько это очков, плюс
- * прогноз по ТЕМПУ ПОТРЕБЛЕНИЯ — хватит ли на неделю (заказ владельца 16.11).
+ * возможно сегодня, сколько осталось в неделях и сколько это очков.
  *
  * Определения (чтобы числа на экране и в голове совпадали):
  *
@@ -536,11 +517,13 @@ export type WeeklyPoolStats = {
  *   сколько дней недели ещё можно отметить. Это сколько активаций ещё есть,
  *   прежде чем у каждого аккаунта своя неделя кончится. В очках — сколько пул
  *   ещё отдаст до сброса лимитов.
- * - **«Темп»** — средние ОЧКИ в сутки по срезу `PACE_WINDOW_DAYS` последних
- *   полных суток (не по текущей неделе: в её первый день срез из одной суток
- *   даёт случайную цифру).
- * - **«Хватит ли на неделю»** — хватит ли недельного запаса (очки до сброса)
- *   покрыть неделю потребления (темп × 7).
+ *
+ * **Темпа здесь нет** (заказ владельца 21.11): темп потребления — сколько очков
+ * мы отдаём за сутки — считается по ОПЕРАЦИОННЫМ суткам 05:00→05:00 МСК по
+ * леджеру выдач (`operationalBonusStats`, `lib/services/minimax-daily-bonus.ts`).
+ * Раньше темп считался здесь по календарным датам журнала активаций, и рядом с
+ * блоком бонусов (уже по операционным суткам) два разных дня в одном разделе
+ * расходились между собой.
  */
 /** Окно «скоро освободятся» — 5 часов (просто срез ближайших часов). */
 const FIVE_HOURS_MS = 5 * 60 * 60_000;
@@ -549,14 +532,13 @@ const FIVE_HOURS_MS = 5 * 60 * 60_000;
  * Окно среза темпа: столько последних ПОЛНЫХ суток берём (заказ владельца
  * 16.11 — «срез использования токенов на 10 дней назад»).
  *
- * Именно полных: сегодняшние сутки ещё не закончились, а включение их в срез
+ * Именно полных: текущие сутки ещё не закончились, а включение их в срез
  * занижало бы темп (и завышало «хватит»).
  */
 export const PACE_WINDOW_DAYS = 10;
 
 export function weeklyPoolStats(
   accounts: WeeklyAccountInput[],
-  usageByDay: WeeklyUsageDay[],
   todayDate: string,
   nowIso: string = new Date().toISOString(),
 ): WeeklyPoolStats {
@@ -585,46 +567,15 @@ export function weeklyPoolStats(
   const daysElapsed = dayNumber(todayDate) - dayNumber(weekStart) + 1;
   const daysToWeekEnd = WEEKLY_CYCLE_DAYS - daysElapsed + 1;
 
-  // Темп потребления — по срезу 10 последних ПОЛНЫХ суток (заказ владельца
-  // 16.11): текущая неделя на своём первом дне даёт мусорный срез (в понедельник
-  // это один день, и «темп» скачет), а прогноз по нему бессмыслен. Срез — в
-  // очках: сколько пул реально отдаёт в сутки.
-  const sliceTo = shiftDate(todayDate, -1);
-  const sliceFrom = shiftDate(sliceTo, -(PACE_WINDOW_DAYS - 1));
-  // usageByDay приходит по проектам: один день — несколько строк. Поэтому
-  // собираем по ДАТАМ, иначе темп посчитался бы по числу строк, а не по
-  // числу суток (и «хватит» вышло бы завышенным).
-  const sliceByDay = new Map<string, number>();
-  for (const day of usageByDay) {
-    if (day.usedOn < sliceFrom || day.usedOn > sliceTo) continue;
-    sliceByDay.set(day.usedOn, (sliceByDay.get(day.usedOn) ?? 0) + day.tokens);
-  }
-  let slicePoints = 0;
-  for (const points of sliceByDay.values()) slicePoints += points;
-  const sliceDays = sliceByDay.size;
-  // Дни без записей в окне НЕ считаем: это дни, когда пул был пуст и спрос не
-  // обслужен (нулевой расход ≠ отсутствие спроса). Считать их нулём значило
-  // бы занизить темп и переоценить запас.
-  const pointsPerDay = sliceDays > 0 ? slicePoints / sliceDays : null;
-
   // Запас — по недельной квоте: сколько очков аккаунты ещё отдадут до сброса
   // лимитов. Это и есть «сколько у нас есть аккаунтов и на какой стадии расхода
   // они находятся»: остаток квоты каждого аккаунта сложен.
-  const weekDemand = pointsPerDay !== null ? pointsPerDay * WEEKLY_CYCLE_DAYS : null;
   return {
     today,
     freeNow,
     freesIn5h,
     week,
     weekPoints,
-    pointsPerDay,
-    sliceFrom,
-    sliceTo,
-    weekDemand,
-    coversWeek:
-      weekDemand === null || weekPoints === null
-        ? null
-        : weekPoints >= weekDemand,
     daysToWeekEnd,
     weekResetsOn: shiftDate(weekStart, WEEKLY_CYCLE_DAYS),
   };
