@@ -235,6 +235,12 @@ describe('порядок проектов в списке выбора', () => {
     const sorted = sortProjectsByUsage(withSynonym, [
       { group: 'Матрица РМЗ', activations: 4, tokens: 900 },
     ]);
-    expect(sorted.map((p) => p.id)).toEqual([1, 5, 3, 4, 2]);
+    // Обе строки одной группы делят счёт группы и стоят рядом. ВНУТРИ пары
+    // порядок не проверяем: при равном счёте решает название самой строки, а
+    // сравнение строк зависит от локали машины (кириллица и латиница меняются
+    // местами между Windows и Linux) — на это опираться нельзя.
+    const ids = sorted.map((p) => p.id);
+    expect(ids.slice(0, 2).sort()).toEqual([1, 5]);
+    expect(ids.slice(2)).toEqual([3, 4, 2]);
   });
 });
