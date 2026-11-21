@@ -259,6 +259,76 @@ describe('мультиаккаунт: порядок списка', () => {
   });
 });
 
+/**
+ * Тысячная клетка — в начало очереди (заказ владельца 21.11).
+ *
+ * «Собирай 1000-ные аккаунты в начале очереди карусели, чтобы их использовать в
+ * первую очередь»: клетка держит очки до следующего забора, к утру вендор сдвинет
+ * её на единицу, и тысяча пропадёт.
+ */
+describe('мультиаккаунт: тысячная клетка — в начало очереди', () => {
+  const now = new Date('2026-11-03T12:00:00Z');
+
+  it('тысячный идёт первым, даже если четырёхсотку давно не выдавали', () => {
+    const thousand = row({
+      id: 1,
+      usedOn: '2026-11-01',
+      usedAt: '2026-11-01T06:00:00Z',
+      bonusOurs: true,
+      bonusPoints: 1000,
+      bonusDayNo: 4,
+    });
+    const four = row({
+      id: 2,
+      usedOn: '2026-10-30',
+      usedAt: '2026-10-30T06:00:00Z',
+      bonusOurs: true,
+      bonusPoints: 400,
+      bonusDayNo: 2,
+    });
+    // По давности первым шёл бы четырёхсотковый — тысячный перебивает его.
+    expect(sortAccounts([four, thousand], now).map((a) => a.id)).toEqual([1, 2]);
+  });
+
+  it('отданная тысячная в начало не идёт: её очки уже у потребителя', () => {
+    // Отданную тысячу вендор сдвинет к утру — но её очки уже сожг потребитель,
+    // поэтому в начало очереди она не встаёт, даже если по давности была первой.
+    const handed = row({
+      id: 1,
+      usedOn: '2026-10-30',
+      usedAt: '2026-10-30T06:00:00Z',
+      bonusOurs: true,
+      bonusPoints: 1000,
+      bonusHandedAt: '2026-10-30T07:00:00.000Z',
+    });
+    const live = row({
+      id: 2,
+      usedOn: '2026-11-01',
+      usedAt: '2026-11-01T06:00:00Z',
+      bonusOurs: true,
+      bonusPoints: 1000,
+    });
+    expect(sortAccounts([handed, live], now).map((a) => a.id)).toEqual([2, 1]);
+  });
+
+  it('клетку забрал потребитель — тысячной она не считается', () => {
+    const theirs = row({ id: 1, bonusOurs: false, bonusPoints: 1000 });
+    const four = row({ id: 2, bonusOurs: true, bonusPoints: 400 });
+    expect(sortAccounts([theirs, four], now).map((a) => a.id)).toEqual([2, 1]);
+  });
+
+  it('верхний слот — тысячный аккаунт', () => {
+    const split = splitAccounts(
+      [
+        row({ id: 1, usedOn: '2026-11-03', usedAt: '2026-11-03T11:00:00Z', bonusOurs: true, bonusPoints: 400 }),
+        row({ id: 2, usedOn: '2026-10-30', usedAt: '2026-10-30T06:00:00Z', bonusOurs: true, bonusPoints: 1000 }),
+      ],
+      now,
+    );
+    expect(split.next?.id).toBe(2);
+  });
+});
+
 describe('мультиаккаунт: разбиение списка на экран', () => {
   const now = new Date('2026-11-03T12:00:00Z');
 

@@ -73,8 +73,44 @@ describe('пул MiniMax: одна карусель (заказ владельц
       bonusDayNo: 2,
     });
     const picked = pickPoolAccount([four, thousand], NOW);
-    // Давность решает: тысячник давно не выдавали — он и идёт первым.
+    // Тысячная клетка — в начало (заказ владельца 21.11): её очки сгорят к
+    // следующему забору, а у четырёхсотки останутся.
     expect(picked.account?.id).toBe(1);
+  });
+
+  it('тысячная клетка перебивает давность: её надо отдать первой', () => {
+    // Четырёхсотку давно не выдавали — по карусели она шла бы первой. Но её
+    // очки переживут ночь, а тысяча сгорит к утреннему забору.
+    const four = account(1, [], {
+      usedAt: '2026-11-10T09:00:00.000Z',
+      bonusOurs: true,
+      bonusPoints: 400,
+      bonusDayNo: 2,
+    });
+    const thousand = account(2, [], {
+      usedAt: '2026-11-12T09:00:00.000Z',
+      bonusOurs: true,
+      bonusPoints: 1000,
+      bonusDayNo: 4,
+    });
+    const picked = pickPoolAccount([four, thousand], NOW);
+    expect(picked.account?.id).toBe(2);
+  });
+
+  it('отданная тысячная в начало не идёт: её очки уже у потребителя', () => {
+    const handed = account(1, [], {
+      usedAt: '2026-11-10T09:00:00.000Z',
+      bonusOurs: true,
+      bonusPoints: 1000,
+      bonusHandedAt: '2026-11-10T10:00:00.000Z',
+    });
+    const live = account(2, [], {
+      usedAt: '2026-11-12T09:00:00.000Z',
+      bonusOurs: true,
+      bonusPoints: 1000,
+    });
+    const picked = pickPoolAccount([handed, live], NOW);
+    expect(picked.account?.id).toBe(2);
   });
 
   it('в очереди — по времени последней выдачи, никогда не выданный первый', () => {

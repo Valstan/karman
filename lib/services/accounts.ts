@@ -22,6 +22,7 @@ import {
   freeBefore,
   isSpent,
   moscowToday,
+  operationalDayStart,
   sortAccounts,
   type AccountRotationRow,
   type ProjectUsage,
@@ -382,6 +383,13 @@ export async function listAccounts(
   options: { timezoneId?: string } = {},
 ): Promise<AccountListItem[]> {
   const today = moscowToday(now);
+  // Клетка бонуса живёт по ОПЕРАЦИОННЫМ суткам (05:00 → 05:00 МСК): забор в 05:00
+  // пишет строки за сутки, которые начались в 05:00. Между 00:00 и 05:00 МСК
+  // календарная дата уже новая, а наши сутки — ещё вчерашние, и леджер за вчера
+  // единственный, где лежит свежий забор. Смотрим по операционным суткам — иначе
+  // ночью (00:00–05:00) список теряет клетку вендора: приоритет тысячных и
+  // «кто забрал клетку» молча выключались бы на пять часов.
+  const bonusDay = moscowToday(operationalDayStart(now));
   const timezoneId = options.timezoneId ?? OWNER_TIMEZONE;
   const [rows, stats, checkIns, panelStates, bonusStates] = await Promise.all([
     db
@@ -392,7 +400,7 @@ export async function listAccounts(
     accountUsageStats(user),
     accountCheckIns(user),
     readPanelStates(user.id, timezoneId),
-    dailyBonusStates(user.id, today),
+    dailyBonusStates(user.id, bonusDay),
   ]);
   const states = weekStates(checkIns, today);
   const enriched = rows.map((row) => {
