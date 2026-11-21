@@ -674,6 +674,17 @@ export async function dailyBonusStats(
  * операционных суток. Источник — леджер (`handed_points`), а не журнал активаций:
  * журнал считает момент активации, леджер — момент выдачи, и для вопроса «хватает ли
  * токенов на день» нужен именно расход.
+ *
+ * **Срез показывает фактические дни с данными**, а не весь окно: леджер живёт с
+ * 18.11, и окно «11.11—20.11» на панели выглядело как десять суток среднего,
+ * хотя среднее считалось по трём (21.11: 40 533 очк./сутки = 121 600 за 18—20.11).
+ *
+ * ## Остаток — раздельно «сегодня» и «с прошлых суток» (заказ владельца 21.11)
+ *
+ * «На аккаунтах 173 200 (141 акк.)» — две разные вещи в одной строке: клетки,
+ * забранные СЕГОДНЯ (свежие очки, их ещё можно отдать потребителю), и клетки
+ * прошлых суток, которые никто не забрал. Владелец читал это как «осталось
+ * сегодня» — и получал число больше дневного забора. Теперь строки две.
  */
 export type OperationalBonusStats = {
   /** Начало окна (ISO) — 05:00 МСК. */
@@ -692,6 +703,8 @@ export type OperationalBonusStats = {
   consumerTaken: number;
   /** Сколько очков забрал потребитель. */
   consumerTakenPoints: number;
+  /** Сколько РАЗНЫХ аккаунтов клетку забрали за сутки (наши и чужие). */
+  claimedAccounts: number;
   /** Сколько аккаунтов отдали за сутки. */
   handed: number;
   /** Сколько очков отдали за сутки. */
@@ -704,19 +717,47 @@ export type OperationalBonusStats = {
   stockCells: number;
   /** Сколько тысячных клеток забрали за сутки. */
   thousands: number;
+  /** Остаток ТЕКУЩИХ суток: наши клетки, забранные в окне и ещё не отданные. */
+  freshPoints: number;
+  /** Сколько таких клеток. */
+  freshCells: number;
+  /** Сколько разных аккаунтов их держат. */
+  freshAccounts: number;
+  /** Сколько тысячных из них ждут в пуле (их надо отдавать первыми). */
+  freshThousands: number;
+  /** Сколько очков в этих тысячных. */
+  freshThousandsPoints: number;
+  /** Остаток ПРОШЛЫХ суток: наши клетки, забранные до окна и не отданные. */
+  olderPoints: number;
+  /** Сколько таких клеток. */
+  olderCells: number;
+  /** Текущая клетка вендора по аккаунтам: клетка → сколько аккаунтов. */
+  cells: { cell: number; points: number; accounts: number }[];
+  /** Сколько серий сгорело: клетка не выросла на 1 за сутки (0 — нить цела). */
+  seriesBroken: number;
   /** Темп: очков в сутки по срезу последних полных операционных суток. */
   pointsPerDay: number | null;
   /** Сколько полных суток попало в срез темпа. */
   sliceDays: number;
-  /** Начало среза темпа (московская дата начала суток). */
+  /** Начало среза темпа (московская дата начала суток) — первый день с данными. */
   sliceFrom: string;
-  /** Конец среза темпа (московская дата начала суток) — последние полные сутки. */
+  /** Конец среза темпа (московская дата начала суток) — последний полный день с данными. */
   sliceTo: string;
   /** Комната-потребитель → очки за сутки. */
   byProject: { project: string; accounts: number; points: number }[];
 };
 
 const DAY_MS = 24 * 3_600_000;
+
+/**
+ * Сколько суток живёт очко клетки (окно сгорания у вендора).
+ *
+ * Ответ вендора на забор отдаёт `expire_at_ms`: клетка 18.11 дожила до 17.12 —
+ * месяц. Значит «осталось на аккаунтах» — это не одно число, а два: клетки
+ * текущих суток (свежие) и клетки прошлых суток (тоже ещё живые, но это уже
+ * вчерашний забор).
+ */
+const CELL_POINTS_LIVE_DAYS = 30;
 
 /** '2026-11-20' → '20.11' (подпись для глаза). */
 function shortDay(date: string): string {
@@ -741,7 +782,17 @@ export async function operationalBonusStats(
     lt(accountsDailyBonus.handedAt, toIso),
   );
 
-  const [collected, consumer, handed, stock, thousands, projects, paceRows] = await Promise.all([
+  const [
+    collected,
+    consumer,
+    claimedAccounts,
+    handed,
+    stock,
+    thousands,
+    projects,
+    paceRows,
+    cellRows,
+  ] = await Promise.all([
     // Забрали мы.
     db
       .select({
@@ -758,6 +809,12 @@ export async function operationalBonusStats(
       })
       .from(accountsDailyBonus)
       .where(and(ne(accountsDailyBonus.claimResult, CLAIM_RESULT_CLAIMED), claimedInWindow)),
+    // Сколько РАЗНЫХ аккаунтов клетку забрали за сутки (наши и чужие): это и есть
+    // «сколько аккаунтов обход обошёл».
+    db
+      .select({ n: sql<number>`count(distinct ${accountsDailyBonus.accountId})::int` })
+      .from(accountsDailyBonus)
+      .where(claimedInWindow),
     // Отдали за сутки.
     db
       .select({
@@ -766,12 +823,21 @@ export async function operationalBonusStats(
       })
       .from(accountsDailyBonus)
       .where(and(isNotNull(accountsDailyBonus.handedAt), handedInWindow)),
-    // Остаток на аккаунтах — НА СЕЙЧАС, не за окно.
+    // Остаток на аккаунтах — НА СЕЙЧАС, не за окно. Свежая часть (клетки,
+    // забранные в текущих операционных сутках) и старая (за прошлые сутки) —
+    // раздельно: «осталось 173 200» без разбора значило две разные вещи.
     db
       .select({
         points: sql<number>`coalesce(sum(${accountsDailyBonus.points}), 0)::int`,
         accounts: sql<number>`count(distinct ${accountsDailyBonus.accountId})::int`,
         cells: sql<number>`count(*)::int`,
+        freshPoints: sql<number>`coalesce(sum(${accountsDailyBonus.points}) filter (where ${accountsDailyBonus.claimedAt} >= ${fromIso}), 0)::int`,
+        freshCells: sql<number>`count(*) filter (where ${accountsDailyBonus.claimedAt} >= ${fromIso})::int`,
+        freshAccounts: sql<number>`count(distinct ${accountsDailyBonus.accountId}) filter (where ${accountsDailyBonus.claimedAt} >= ${fromIso})::int`,
+        freshThousands: sql<number>`count(*) filter (where ${accountsDailyBonus.claimedAt} >= ${fromIso} and ${accountsDailyBonus.points} >= 1000)::int`,
+        freshThousandsPoints: sql<number>`coalesce(sum(${accountsDailyBonus.points}) filter (where ${accountsDailyBonus.claimedAt} >= ${fromIso} and ${accountsDailyBonus.points} >= 1000), 0)::int`,
+        olderPoints: sql<number>`coalesce(sum(${accountsDailyBonus.points}) filter (where ${accountsDailyBonus.claimedAt} < ${fromIso}), 0)::int`,
+        olderCells: sql<number>`count(*) filter (where ${accountsDailyBonus.claimedAt} < ${fromIso})::int`,
       })
       .from(accountsDailyBonus)
       .where(
@@ -817,6 +883,23 @@ export async function operationalBonusStats(
           lt(accountsDailyBonus.handedAt, fromIso),
         ),
       ),
+    // Клетки вендора по аккаунтам — последний забор каждого (текущая клетка) и
+    // проверка, что нить не рвалась. Живёт столько же, сколько живут очки клетки.
+    db
+      .select({
+        accountId: accountsDailyBonus.accountId,
+        dayNo: accountsDailyBonus.dayNo,
+        points: accountsDailyBonus.points,
+        claimedAt: accountsDailyBonus.claimedAt,
+      })
+      .from(accountsDailyBonus)
+      .where(
+        gte(
+          accountsDailyBonus.claimedAt,
+          new Date(from.getTime() - CELL_POINTS_LIVE_DAYS * DAY_MS).toISOString(),
+        ),
+      )
+      .orderBy(accountsDailyBonus.accountId, accountsDailyBonus.claimedAt),
   ]);
 
   // Темп: сутки без выдач НЕ считаем (нулевой расход ≠ отсутствие спроса).
@@ -830,6 +913,34 @@ export async function operationalBonusStats(
   let slicePoints = 0;
   for (const points of byDay.values()) slicePoints += points;
   const sliceDays = byDay.size;
+  // Срез показывает ФАКТИЧЕСКИЕ дни с данными: леджер живёт не с начала окна,
+  // и «11.11—20.11» на панели выглядело как десять суток среднего, хотя среднее
+  // считалось по трём.
+  const dayIndexes = [...byDay.keys()].sort((a, b) => a - b);
+  const firstDay = dayIndexes[0] ?? 0;
+  const lastDay = dayIndexes[dayIndexes.length - 1] ?? 0;
+
+  // Текущая клетка вендора по каждому аккаунту (последний забор) и проверка
+  // нити: клетка растёт на 1 за сутки, пока серия не сгорела.
+  const currentCell = new Map<number, { cell: number; points: number }>();
+  const lastCell = new Map<number, number>();
+  let seriesBroken = 0;
+  const broken = new Set<number>();
+  for (const row of cellRows) {
+    if (row.dayNo <= 0) continue;
+    const previous = lastCell.get(row.accountId);
+    if (previous !== undefined && row.dayNo !== (previous % 7) + 1) broken.add(row.accountId);
+    lastCell.set(row.accountId, row.dayNo);
+    currentCell.set(row.accountId, { cell: row.dayNo, points: row.points });
+  }
+  seriesBroken = broken.size;
+  const cellMap = new Map<number, { cell: number; points: number; accounts: number }>();
+  for (const { cell, points } of currentCell.values()) {
+    const item = cellMap.get(cell) ?? { cell, points, accounts: 0 };
+    item.accounts += 1;
+    cellMap.set(cell, item);
+  }
+  const cells = [...cellMap.values()].sort((a, b) => a.cell - b.cell);
 
   const date = moscowToday(from);
   const toDate = moscowToday(to);
@@ -843,16 +954,26 @@ export async function operationalBonusStats(
     collectedPoints: collected[0]?.points ?? 0,
     consumerTaken: consumer[0]?.n ?? 0,
     consumerTakenPoints: consumer[0]?.points ?? 0,
+    claimedAccounts: claimedAccounts[0]?.n ?? 0,
     handed: handed[0]?.n ?? 0,
     handedPoints: handed[0]?.points ?? 0,
     stockPoints: stock[0]?.points ?? 0,
     stockAccounts: stock[0]?.accounts ?? 0,
     stockCells: stock[0]?.cells ?? 0,
     thousands: thousands[0]?.n ?? 0,
+    freshPoints: stock[0]?.freshPoints ?? 0,
+    freshCells: stock[0]?.freshCells ?? 0,
+    freshAccounts: stock[0]?.freshAccounts ?? 0,
+    freshThousands: stock[0]?.freshThousands ?? 0,
+    freshThousandsPoints: stock[0]?.freshThousandsPoints ?? 0,
+    olderPoints: stock[0]?.olderPoints ?? 0,
+    olderCells: stock[0]?.olderCells ?? 0,
+    cells,
+    seriesBroken,
     pointsPerDay: sliceDays > 0 ? slicePoints / sliceDays : null,
     sliceDays,
-    sliceFrom: moscowToday(new Date(sliceStart)),
-    sliceTo: moscowToday(new Date(from.getTime() - DAY_MS)),
+    sliceFrom: moscowToday(new Date(sliceStart + firstDay * DAY_MS)),
+    sliceTo: moscowToday(new Date(sliceStart + lastDay * DAY_MS)),
     byProject: projects
       .map((row) => ({
         project: row.projectId === null ? '(без комнаты)' : (row.projectName ?? '—'),
