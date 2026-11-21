@@ -69,9 +69,7 @@ export function MinimaxApiUsage({ days }: { days: ApiUsageDay[] }) {
                 {day.projects
                   .map(
                     (project) =>
-                      `${project.projectName ?? 'Без проекта'} — ${project.activations} акк., ${
-                        project.tokens
-                      } очк.`,
+                      `${project.group} — ${project.activations} акк., ${project.tokens} очк.`,
                   )
                   .join('; ')}
               </TableCell>

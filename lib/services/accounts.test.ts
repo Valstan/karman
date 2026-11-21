@@ -474,14 +474,12 @@ describe('мультиаккаунт: проекты и статистика', (
 
     const usage = await projectUsage(owner);
     expect(usage[0]).toEqual({
-      projectId: p2,
-      projectName: 'Сабантуй',
+      group: 'Сабантуй',
       activations: 1,
       tokens: 700,
     });
     expect(usage[1]).toEqual({
-      projectId: p1,
-      projectName: 'Матрица РМЗ',
+      group: 'Матрица РМЗ',
       activations: 2,
       tokens: 350,
     });
@@ -517,13 +515,15 @@ describe('мультиаккаунт: расход по запросам про�
     expect(ownerRow!.source).toBe('owner');
     expect(apiRow!.source).toBe('api');
 
-    // По дням: расход проектов — отдельно, с проектом внутри дня.
+    // По дням: расход проектов — отдельно, с проектом внутри дня. Название
+    // приведено к канону: «SARAFAN» (латиница) — это продсервер Сарафана
+    // (заказ владельца 21.11).
     const apiUsage = await apiUsageByDay(owner);
     expect(apiUsage.length).toBe(1);
     expect(apiUsage[0]!.activations).toBe(1);
     expect(apiUsage[0]!.tokens).toBe(400);
     expect(apiUsage[0]!.projects).toEqual([
-      { projectId: p2, projectName: 'SARAFAN', activations: 1, tokens: 400 },
+      { group: 'Прод САРАФАН', activations: 1, tokens: 400 },
     ]);
   });
 
@@ -578,6 +578,79 @@ describe('мультиаккаунт: расход по запросам про�
       .where(eq(accountsUsage.accountId, b));
     expect(apiRow!.projectId).toBe(p2);
     expect(apiRow!.source).toBe('api');
+  });
+});
+
+/**
+ * Свод по проектам в ГРУППАХ (заказ владельца 21.11): синонимы одного проекта
+ * сливаются, продсервер Сарафана виден отдельно, общие очки («brain» и «без
+ * проекта») делятся поровну между проектами программирования и сами не
+ * показываются.
+ */
+describe('мультиаккаунт: свод по проектам в группах', () => {
+  it('синонимы сливаются, продсервер отделён, общие очки делятся поровну', async () => {
+    const matrix = await createProject(owner, { name: 'Матрица РМЗ' });
+    const matrixRoom = await createProject(owner, { name: 'MatricaRMZ' });
+    const sarafan = await createProject(owner, { name: 'САРАФАН' });
+    const prod = await createProject(owner, { name: 'SARAFAN' });
+    const brain = await createProject(owner, { name: 'brain' });
+
+    const mk = async (email: string) =>
+      createAccount(owner, { title: '', email, password: 'p' });
+
+    // Свои активации владельца и активации комнат.
+    await activateAccount(owner, { id: await mk('a@example.test'), projectId: matrix, tokens: 1000 }, NOW);
+    await activateAccount(
+      owner,
+      { id: await mk('b@example.test'), projectId: matrixRoom, tokens: 400 },
+      NOW,
+    );
+    await activateAccount(
+      owner,
+      { id: await mk('c@example.test'), projectId: sarafan, tokens: 400 },
+      NOW,
+    );
+    await activateAccount(
+      owner,
+      { id: await mk('d@example.test'), projectId: prod, tokens: 400, source: 'api' },
+      NOW,
+    );
+    // Общие: комната Мозга и активация без проекта — 800 очков на двоих.
+    await activateAccount(
+      owner,
+      { id: await mk('e@example.test'), projectId: brain, tokens: 600, source: 'api' },
+      NOW,
+    );
+    await activateAccount(
+      owner,
+      { id: await mk('f@example.test'), projectId: null, tokens: 200 },
+      NOW,
+    );
+
+    const usage = await projectUsage(owner);
+    expect(usage).toEqual([
+      // «Матрица РМЗ» + «MatricaRMZ» = 1400, плюс половина общих (400).
+      { group: 'Матрица РМЗ', activations: 3, tokens: 1800 },
+      // «САРАФАН» — программирование: 400 своих + 400 доли общих.
+      { group: 'САРАФАН', activations: 2, tokens: 800 },
+      // Продсервер: своей доли не получает.
+      { group: 'Прод САРАФАН', activations: 1, tokens: 400 },
+    ]);
+  });
+
+  it('в блоке «Расход по запросам» общих очков нет', async () => {
+    const prod = await createProject(owner, { name: 'setka' });
+    const brain = await createProject(owner, { name: 'brain' });
+    const a = await createAccount(owner, { title: '', email: 'g@example.test', password: 'p' });
+    const b = await createAccount(owner, { title: '', email: 'h@example.test', password: 'p' });
+
+    await activateAccount(owner, { id: a, projectId: prod, tokens: 400, source: 'api' }, NOW);
+    await activateAccount(owner, { id: b, projectId: brain, tokens: 400, source: 'api' }, NOW);
+
+    const apiUsage = await apiUsageByDay(owner);
+    expect(apiUsage[0]!.projects).toEqual([
+      { group: 'Прод САРАФАН', activations: 1, tokens: 400 },
+    ]);
   });
 });
 

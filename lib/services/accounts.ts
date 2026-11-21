@@ -16,7 +16,6 @@ import {
   type DailyUsage,
 } from '@/lib/accounts/stats';
 import {
-  aggregateUsage,
   availableAt,
   dailyResetAfter,
   freeBefore,
@@ -25,8 +24,18 @@ import {
   operationalDayStart,
   sortAccounts,
   type AccountRotationRow,
-  type ProjectUsage,
 } from '@/lib/accounts/rotation';
+import {
+  canonicalProjectName,
+  groupUsage,
+  isCommonProject,
+  summarizeGroups,
+  type GroupDayUsage,
+  type GroupSummary,
+} from '@/lib/accounts/project-groups';
+
+// Типы свода журнала — наружу из сервиса: их читают клиентские блоки статистики.
+export type { GroupDayUsage, GroupSummary };
 import {
   isFreshPanelState,
   markPanelStatesClaimed,
@@ -915,37 +924,30 @@ export async function deleteProject(user: SessionUser, projectId: number): Promi
   return true;
 }
 
-/** Статистика по проектам: сколько активаций и сколько токенов. */
-export async function projectUsage(user: SessionUser): Promise<ProjectUsage[]> {
-  const rows = await db
-    .select({
-      projectId: accountsUsage.projectId,
-      projectName: accountsProject.name,
-      tokens: accountsUsage.tokens,
-    })
-    .from(accountsUsage)
-    .leftJoin(accountsProject, eq(accountsUsage.projectId, accountsProject.id))
-    .where(ownership(user, accountsUsage.userId));
-  return aggregateUsage(rows);
+/**
+ * Статистика по проектам: сколько активаций и сколько очков.
+ *
+ * Журнал сначала сводится в ГРУППЫ проектов (`lib/accounts/project-groups.ts`,
+ * заказ владельца 21.11): синонимы одного проекта сливаются («Матрица РМЗ» и
+ * «MatricaRMZ» — один проект), продсервер Сарафана («SARAFAN» и «setka») виден
+ * отдельно от программирования, а общие очки («brain» и «без проекта») делятся
+ * поровну между проектами программирования и сами не показываются.
+ */
+export async function projectUsage(user: SessionUser): Promise<GroupSummary[]> {
+  return summarizeGroups(await projectUsageByDay(user));
 }
 
 /**
  * Статистика по дням и проектам: «на какой проект в какой день сколько
- * аккаунтов было активировано» (владелец, 03.11).
+ * аккаунтов было активировано» (владелец, 03.11), уже сведённая в группы
+ * проектов (21.11).
  *
  * Считается по журналу активаций, а не по текущему состоянию аккаунтов: у
  * аккаунта хранится только ПОСЛЕДНЯЯ активация, а по дням нужно всё.
  */
-export type ProjectUsageDay = {
-  projectId: number | null;
-  projectName: string | null;
-  /** Москва-дата активации ('YYYY-MM-DD'). */
-  usedOn: string;
-  activations: number;
-  tokens: number;
-};
+export type GroupUsageDay = GroupDayUsage;
 
-export async function projectUsageByDay(user: SessionUser): Promise<ProjectUsageDay[]> {
+export async function projectUsageByDay(user: SessionUser): Promise<GroupUsageDay[]> {
   const rows = await db
     .select({
       projectId: accountsUsage.projectId,
@@ -959,7 +961,16 @@ export async function projectUsageByDay(user: SessionUser): Promise<ProjectUsage
     .where(ownership(user, accountsUsage.userId))
     .groupBy(accountsUsage.projectId, accountsProject.name, accountsUsage.usedOn)
     .orderBy(desc(accountsUsage.usedOn), desc(sql<number>`count(*)`));
-  return rows;
+  return groupUsage(
+    rows.map((row) => ({
+      usedOn: row.usedOn,
+      projectId: row.projectId,
+      projectName: row.projectName,
+      activations: row.activations,
+      tokens: row.tokens,
+    })),
+    { shareCommon: true },
+  );
 }
 
 /**
@@ -974,6 +985,10 @@ export async function projectUsageByDay(user: SessionUser): Promise<ProjectUsage
  * Различаем по МЕТКЕ в строке журнала (`accounts_usage.source = 'api'`), а не по
  * названию проекта: у владельца проект «САРАФАН» (кириллица — программирование), у
  * комнаты «SARAFAN» (латиница) — разница в одном символе, а не различие.
+ *
+ * Общие очки (комната Мозга, «brain») в этот блок НЕ идут: он показывает волны
+ * ПРОЕКТОВ, а расход Мозга — программирование (заказ владельца 21.11; та же
+ * мысль в `CONSUMER_ROLES`, `lib/accounts/consumer-tiers.ts`).
  */
 export type ApiUsageDay = {
   /** Москва-дата активации ('YYYY-MM-DD'). */
@@ -982,10 +997,10 @@ export type ApiUsageDay = {
   activations: number;
   /** Сколько очков на них ушло. */
   tokens: number;
-  /** Проекты, чьи запросы привели к этим активациям. */
+  /** Группы проектов, чьи запросы привели к этим активациям. */
   projects: {
-    projectId: number | null;
-    projectName: string | null;
+    /** Название группы проекта (после сведения синонимов). */
+    group: string;
     activations: number;
     tokens: number;
   }[];
@@ -1006,9 +1021,22 @@ export async function apiUsageByDay(user: SessionUser): Promise<ApiUsageDay[]> {
     .groupBy(accountsUsage.usedOn, accountsUsage.projectId, accountsProject.name)
     .orderBy(desc(accountsUsage.usedOn));
 
-  // Свернуть по дню: внутри дня — проекты (по сколько аккаунтов и очков от каждого).
+  // Сведение в группы: «SARAFAN» и «setka» — один продсервер Сарафана (21.11).
+  const grouped = groupUsage(
+    rows.map((row) => ({
+      usedOn: row.usedOn,
+      projectId: row.projectId,
+      projectName: row.projectName,
+      activations: row.activations,
+      tokens: row.tokens,
+    })),
+    { shareCommon: false },
+  );
+
+  // Свернуть по дню: внутри дня — группы проектов (по сколько аккаунтов и очков
+  // от каждой).
   const byDay = new Map<string, ApiUsageDay>();
-  for (const row of rows) {
+  for (const row of grouped) {
     const day = byDay.get(row.usedOn) ?? {
       usedOn: row.usedOn,
       activations: 0,
@@ -1018,8 +1046,7 @@ export async function apiUsageByDay(user: SessionUser): Promise<ApiUsageDay[]> {
     day.activations += row.activations;
     day.tokens += row.tokens;
     day.projects.push({
-      projectId: row.projectId,
-      projectName: row.projectName,
+      group: row.group,
       activations: row.activations,
       tokens: row.tokens,
     });
@@ -1036,17 +1063,30 @@ export async function apiUsageByDay(user: SessionUser): Promise<ApiUsageDay[]> {
  * ровно той, что покрыта юнит-гейтом `lib/accounts/stats.test.ts`. Считать то
  * же самое дважды (здесь и в компоненте) нельзя: числа на экране разъедутся с
  * проверенными.
+ *
+ * «Проектов» — число РАЗНЫХ ГРУПП за день (заказ владельца 21.11): синонимы одного
+ * проекта — один проект, а общие очки («brain», «без проекта») проектом не
+ * считаются.
  */
 export async function dailyUsage(user: SessionUser): Promise<DailyUsage[]> {
   const rows = await db
     .select({
       usedOn: accountsUsage.usedOn,
-      projectId: accountsUsage.projectId,
+      projectName: accountsProject.name,
       tokens: accountsUsage.tokens,
     })
     .from(accountsUsage)
+    .leftJoin(accountsProject, eq(accountsUsage.projectId, accountsProject.id))
     .where(ownership(user, accountsUsage.userId));
-  return aggregateDailyUsage(rows);
+  return aggregateDailyUsage(
+    rows.map((row) => ({
+      usedOn: row.usedOn,
+      group: isCommonProject(row.projectName)
+        ? null
+        : (canonicalProjectName(row.projectName) ?? null),
+      tokens: row.tokens,
+    })),
+  );
 }
 
 /**

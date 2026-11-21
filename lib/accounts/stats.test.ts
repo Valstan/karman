@@ -20,10 +20,10 @@ import {
 describe('свод по дням', () => {
   it('группирует журнал по московской дате и считает активации, проекты и токены', () => {
     const days = aggregateDailyUsage([
-      { usedOn: '2026-11-03', projectId: 1, tokens: 100 },
-      { usedOn: '2026-11-03', projectId: 1, tokens: 50 },
-      { usedOn: '2026-11-03', projectId: 2, tokens: 25 },
-      { usedOn: '2026-11-04', projectId: 2, tokens: 10 },
+      { usedOn: '2026-11-03', group: 'Матрица РМЗ', tokens: 100 },
+      { usedOn: '2026-11-03', group: 'Матрица РМЗ', tokens: 50 },
+      { usedOn: '2026-11-03', group: 'САРАФАН', tokens: 25 },
+      { usedOn: '2026-11-04', group: 'САРАФАН', tokens: 10 },
     ]);
 
     expect(days).toHaveLength(2);
@@ -42,8 +42,8 @@ describe('свод по дням', () => {
 
   it('активация без проекта не считается проектом', () => {
     const days = aggregateDailyUsage([
-      { usedOn: '2026-11-03', projectId: null, tokens: 5 },
-      { usedOn: '2026-11-03', projectId: null, tokens: 5 },
+      { usedOn: '2026-11-03', group: null, tokens: 5 },
+      { usedOn: '2026-11-03', group: null, tokens: 5 },
     ]);
 
     expect(days[0]!.activations).toBe(2);
@@ -126,17 +126,17 @@ describe('сортировка таблицы сумм', () => {
 describe('чемпионат по проектам', () => {
   const rows: ProjectDayPoints[] = [
     // 18.11: А потратил больше всех (3), Б — второй (2), В — третий (1).
-    { usedOn: '2026-11-18', projectId: 1, projectName: 'А', points: 2000 },
-    { usedOn: '2026-11-18', projectId: 2, projectName: 'Б', points: 1000 },
-    { usedOn: '2026-11-18', projectId: 3, projectName: 'В', points: 400 },
+    { usedOn: '2026-11-18', group: 'А', points: 2000 },
+    { usedOn: '2026-11-18', group: 'Б', points: 1000 },
+    { usedOn: '2026-11-18', group: 'В', points: 400 },
     // 19.11: Б обошёл А (теперь Б первый), В выбыл из тройки.
-    { usedOn: '2026-11-19', projectId: 2, projectName: 'Б', points: 1600 },
-    { usedOn: '2026-11-19', projectId: 1, projectName: 'А', points: 800 },
+    { usedOn: '2026-11-19', group: 'Б', points: 1600 },
+    { usedOn: '2026-11-19', group: 'А', points: 800 },
   ];
 
   it('за сутки даёт 3, 2 и 1 балл лидерам по потраченным очкам', () => {
     const table = buildChampionship(rows);
-    const byName = new Map(table.map((row) => [row.projectName, row]));
+    const byName = new Map(table.map((row) => [row.group, row]));
     // 18.11: А (2000) — 3 балла, Б (1000) — 2, В (400) — 1.
     // 19.11: Б (1600) — 3 балла, А (800) — 2 (В в тот день ничего не тратил).
     expect(byName.get('Б')?.points).toBe(5); // 2 (18.11) + 3 (19.11)
@@ -147,12 +147,12 @@ describe('чемпионат по проектам', () => {
   it('таблицу строит по набранным баллам, при равенстве — по потраченным очкам', () => {
     const table = buildChampionship(rows);
     // Б и А набрали по 4 балла. Потратили А — 2800, Б — 2600, значит выше А.
-    expect(table.map((row) => row.projectName)).toEqual(['А', 'Б', 'В']);
+    expect(table.map((row) => row.group)).toEqual(['А', 'Б', 'В']);
   });
 
   it('считает потраченные очки, сутки в тройке и победы', () => {
     const table = buildChampionship(rows);
-    const a = table.find((row) => row.projectName === 'А')!;
+    const a = table.find((row) => row.group === 'А')!;
     expect(a.spent).toBe(2800);
     expect(a.topDays).toBe(2);
     expect(a.wins).toBe(1);
@@ -162,17 +162,17 @@ describe('чемпионат по проектам', () => {
   it('проект без очков в сутки баллов не получает, а активация без проекта не участвует', () => {
     const table = buildChampionship([
       ...rows,
-      { usedOn: '2026-11-19', projectId: 4, projectName: 'Г', points: 0 },
-      { usedOn: '2026-11-19', projectId: null, projectName: null, points: 5000 },
+      { usedOn: '2026-11-19', group: 'Г', points: 0 },
+      { usedOn: '2026-11-19', group: null, points: 5000 },
     ]);
-    expect(table.find((row) => row.projectName === 'Г')).toBeUndefined();
+    expect(table.find((row) => row.group === 'Г')).toBeUndefined();
     expect(table).toHaveLength(3);
   });
 
   it('лидеры последних суток — по очкам этого дня', () => {
     const { usedOn, leaders } = championshipLeaders(rows);
     expect(usedOn).toBe('2026-11-19');
-    expect(leaders.map((leader) => [leader.projectName, leader.score, leader.points])).toEqual([
+    expect(leaders.map((leader) => [leader.group, leader.score, leader.points])).toEqual([
       ['Б', 3, 1600],
       ['А', 2, 800],
     ]);
@@ -202,34 +202,39 @@ describe('порядок проектов в списке выбора', () => {
 
   it('чаще используемые — сверху', () => {
     const sorted = sortProjectsByUsage(projects, [
-      { projectId: 3, activations: 9, tokens: 100 },
-      { projectId: 1, activations: 4, tokens: 900 },
-      { projectId: 2, activations: 4, tokens: 50 },
+      { group: 'Казанская', activations: 9, tokens: 100 },
+      { group: 'Матрица РМЗ', activations: 4, tokens: 900 },
+      { group: 'Сабантуй', activations: 4, tokens: 50 },
     ]);
     expect(sorted.map((p) => p.id)).toEqual([3, 1, 2, 4]);
   });
 
   it('при равном числе активаций решают токены', () => {
     const sorted = sortProjectsByUsage(projects, [
-      { projectId: 2, activations: 4, tokens: 50 },
-      { projectId: 1, activations: 4, tokens: 900 },
+      { group: 'Сабантуй', activations: 4, tokens: 50 },
+      { group: 'Матрица РМЗ', activations: 4, tokens: 900 },
     ]);
     expect(sorted.map((p) => p.id)).toEqual([1, 2, 3, 4]);
   });
 
-  it('проект без активаций уходит вниз, а «без проекта» в список не попадает', () => {
-    const sorted = sortProjectsByUsage(projects, [
-      { projectId: null, activations: 100, tokens: 1000 },
-    ]);
+  it('проект без активаций уходит вниз', () => {
+    const sorted = sortProjectsByUsage(projects, []);
     // Ни у кого активаций нет — порядок по названию: Казанская, Матрица РМЗ,
     // Новый, Сабантуй.
     expect(sorted.map((p) => p.id)).toEqual([3, 1, 4, 2]);
-    expect(sorted.map((p) => p.id)).not.toContain(null);
   });
 
   it('исходный массив не трогается', () => {
     const copy = [...projects];
-    sortProjectsByUsage(projects, [{ projectId: 3, activations: 9, tokens: 100 }]);
+    sortProjectsByUsage(projects, [{ group: 'Казанская', activations: 9, tokens: 100 }]);
     expect(projects).toEqual(copy);
+  });
+
+  it('синонимы одного проекта стоят рядом и делят его счёт (заказ 21.11)', () => {
+    const withSynonym = [...projects, { id: 5, name: 'MatricaRMZ' }];
+    const sorted = sortProjectsByUsage(withSynonym, [
+      { group: 'Матрица РМЗ', activations: 4, tokens: 900 },
+    ]);
+    expect(sorted.map((p) => p.id)).toEqual([1, 5, 3, 4, 2]);
   });
 });
