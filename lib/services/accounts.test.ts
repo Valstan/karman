@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PGlite } from '@electric-sql/pglite';
 import { eq } from 'drizzle-orm';
 import { createTestDb, type TestDb } from '@/lib/db/test-db';
-import { accountsAccount, accountsUsage, authUser } from '@/lib/db/schema';
+import { accountsAccount, accountsDailyBonus, accountsUsage, authUser } from '@/lib/db/schema';
 import {
   accountPassword,
   activateAccount,
@@ -335,6 +335,83 @@ describe('мультиаккаунт: верхний слот и порядок 
     expect(found?.email).toBe('a@example.test');
     expect(await listAccount(stranger, a, NOW)).toBeNull();
     expect(await listAccount(owner, 999999, NOW)).toBeNull();
+  });
+});
+
+/**
+ * Клетка бонуса — по ОПЕРАЦИОННЫМ суткам (05:00 → 05:00 МСК), а не по календарной
+ * дате (заказ владельца 21.11: тысячные — в начало очереди карусели).
+ *
+ * Между 00:00 и 05:00 МСК календарная дата уже новая, а наши сутки — ещё вчерашние:
+ * леджер за вчера (забор в 05:00) — единственное место, где лежит свежая клетка.
+ * По календарной дате список в это окно её терял, и приоритет тысячных молча
+ * выключался на пять часов — как раз на ночь, когда потребители просят аккаунты.
+ */
+describe('мультиаккаунт: клетка бонуса — по операционным суткам', () => {
+  /** 03:30 МСК 18.11 — наши сутки ещё вчерашние (смена в 05:00). */
+  const NIGHT = new Date('2026-11-18T00:30:00Z');
+  /** Дата суток, которые сейчас идут: 17.11 → 18.11. */
+  const OPERATIONAL_DATE = '2026-11-17';
+
+  it('в ночном окне клетка видна: забор вчерашнего утра — это наша свежая клетка', async () => {
+    const id = await createAccount(owner, { title: 'A', email: 'a@example.test', password: 'p' });
+    await refs.current!.insert(accountsDailyBonus).values({
+      userId: owner.id,
+      accountId: id,
+      usedOn: OPERATIONAL_DATE,
+      dayNo: 4,
+      points: 1000,
+      remaining: 1000,
+      status: 3,
+      claimResult: 1,
+      claimId: 'claim-night',
+      claimedAt: '2026-11-17T02:00:00.000Z',
+      checkedAt: '2026-11-17T02:00:00.000Z',
+    });
+
+    const [row] = await listAccounts(owner, NIGHT);
+
+    expect(row!.bonusOurs).toBe(true);
+    expect(row!.bonusPoints).toBe(1000);
+    expect(row!.bonusDayNo).toBe(4);
+  });
+
+  it('тысячная клетка встаёт в начало очереди и ночью', async () => {
+    const four = await createAccount(owner, { title: 'Четыре', email: 'four@example.test', password: 'p' });
+    const thousand = await createAccount(owner, { title: 'Тысяча', email: 'thousand@example.test', password: 'p' });
+    // Забор вчерашнего утра: у «тысячи» клетка 4 (1000 очков), у «четырёхсотки» — 5.
+    await refs.current!.insert(accountsDailyBonus).values([
+      {
+        userId: owner.id,
+        accountId: four,
+        usedOn: OPERATIONAL_DATE,
+        dayNo: 5,
+        points: 400,
+        remaining: 400,
+        status: 3,
+        claimResult: 1,
+        claimId: 'claim-four',
+        claimedAt: '2026-11-17T02:00:00.000Z',
+        checkedAt: '2026-11-17T02:00:00.000Z',
+      },
+      {
+        userId: owner.id,
+        accountId: thousand,
+        usedOn: OPERATIONAL_DATE,
+        dayNo: 4,
+        points: 1000,
+        remaining: 1000,
+        status: 3,
+        claimResult: 1,
+        claimId: 'claim-thousand',
+        claimedAt: '2026-11-17T02:00:00.000Z',
+        checkedAt: '2026-11-17T02:00:00.000Z',
+      },
+    ]);
+
+    const split = splitAccounts(await listAccounts(owner, NIGHT), NIGHT);
+
+    expect(split.next?.id).toBe(thousand);
   });
 });
 

@@ -42,6 +42,7 @@
 
 import {
   accountPoolSummary,
+  hasThousandCell,
   isUnavailable,
   sortAccounts,
   type AccountRotationRow,
@@ -271,6 +272,14 @@ export function availableCount(
  * Давность выдачи: чем дольше аккаунт не выдавался, тем он «свежее» для выдачи.
  * Никогда не выдававшийся — самый свежий.
  *
+ * **Тысячная клетка — в начало** (заказ владельца 21.11: «собирай 1000-ные
+ * аккаунты в начале очереди карусели, чтобы их использовать в первую очередь»).
+ * Клетка — это номинал сегодняшнего чек-ина: 1000 у клеток 4 и 7, 400 у остальных.
+ * Эти очки лежат на аккаунте до выдачи и тратятся в его недельном окне, поэтому
+ * тысячный аккаунт отдаём первым: за то же число выданных аккаунтов потребитель
+ * получает больше очков. Номинал — из леджера (`bonusPoints`), это ответ вендора на
+ * забор в 05:00, а не модель клетки.
+ *
  * **Клетку забрал потребитель — аккаунт в конец очереди** (заказ владельца 20.11:
  * «если не активировался, то аккаунт отправляешь в конец очереди карусели»).
  * Очки такого аккаунта уже потрачены, и до следующих суток он в заборе не
@@ -280,6 +289,9 @@ function stalenessCompare(a: PoolRow, b: PoolRow): number {
   const aDead = a.bonusOurs === false;
   const bDead = b.bonusOurs === false;
   if (aDead !== bDead) return aDead ? 1 : -1;
+  const aThousand = hasThousandCell(a);
+  const bThousand = hasThousandCell(b);
+  if (aThousand !== bThousand) return aThousand ? -1 : 1;
   if (a.usedAt === null && b.usedAt === null) return a.id - b.id;
   if (a.usedAt === null) return -1;
   if (b.usedAt === null) return 1;
