@@ -9,10 +9,7 @@ import {
   daysToBonus,
   moscowWeekStart,
   pointsForIndex,
-  cohortStats,
-  weeklyPoolStats,
   weeklyQuota,
-  type WeeklyAccountInput,
   type WeeklyCheckIn,
 } from '@/lib/accounts/weekly';
 
@@ -157,73 +154,6 @@ describe('недельная квота — календарная неделя 
   });
 });
 
-describe('сводка по запасу — строка лимитов', () => {
-  function account(id: number, over: Partial<WeeklyAccountInput> = {}): WeeklyAccountInput {
-    return {
-      id,
-      spent: false,
-      releasesAt: null,
-      checkedInToday: false,
-      quota: weeklyQuota([], today),
-      ...over,
-    };
-  }
-
-  const now = '2026-11-09T10:00:00Z';
-
-  it('за день: свободны сейчас и освобождающиеся сегодня; отдельно — в ближайшие 5 часов', () => {
-    const stats = weeklyPoolStats([account(1)], today, now);
-    expect(stats.today).toBe(1);
-    expect(stats.freeNow).toBe(1);
-    expect(stats.freesIn5h).toBe(0);
-  });
-
-  it('аккаунт, освобождающийся через 2 часа, попадает в «в ближайшие 5 часов»', () => {
-    const stats = weeklyPoolStats(
-      [
-        account(1, { spent: true, releasesAt: '2026-11-09T12:00:00Z' }),
-        account(2, { spent: true, releasesAt: '2026-11-09T18:00:00Z' }),
-        account(3, { spent: true, releasesAt: '2026-11-10T10:00:00Z' }),
-      ],
-      today,
-      now,
-    );
-    expect(stats.today).toBe(2);
-    expect(stats.freeNow).toBe(0);
-    expect(stats.freesIn5h).toBe(1);
-  });
-
-  it('отмеченные сегодня в «за день» не идут', () => {
-    const stats = weeklyPoolStats([account(1, { checkedInToday: true })], today, now);
-    expect(stats.today).toBe(0);
-    expect(stats.week).toBe(7);
-  });
-
-  it('за неделю — остаток календарной недели и прогноз в днях', () => {
-    const stats = weeklyPoolStats(
-      [account(1, { quota: weeklyQuota([checkIn('2026-11-05')], today) }), account(2)],
-      today,
-      now,
-    );
-    // Оба аккаунта могут отметить все семь дней недели.
-    expect(stats.week).toBe(14);
-    // Сброс недельных лимитов — в ночь на понедельник следующей недели.
-    expect(stats.weekResetsOn).toBe('2026-11-16');
-    expect(stats.daysToWeekEnd).toBe(7);
-  });
-
-  it('недельный запас в очках — остаток квоты аккаунтов', () => {
-    // Запас недельных квот двух аккаунтов: у каждого 7 дней клеток =
-    // 400+400+1000+400+400+1000+400 = 4000 очков, всего 8000.
-    const stats = weeklyPoolStats([account(1), account(2)], today, now);
-    expect(stats.weekPoints).toBe(8000);
-  });
-
-  // Темп потребления уехал в `operationalBonusStats`
-  // (`lib/services/minimax-daily-bonus.ts`): он считается по операционным суткам
-  // 05:00→05:00 МСК по леджеру выдач, а не по календарным датам журнала.
-});
-
 describe('после седьмой клетки цикл начинается заново (решение владельца 11.11)', () => {
   // Неделя чек-инов MiniMax: семь дней подряд — 4000 очков, дальше неделя
   // начинается заново. Значит 8-й день подряд — снова первая клетка (400), а не
@@ -287,68 +217,7 @@ describe('после седьмой клетки цикл начинается �
     expect(quota.pointsLeft).toBe(1000 + 400 + 400 + 400 + 1000);
   });
 });
-
-describe('здоровье когорты (стратегия владельца 11.11)', () => {
-  function account(id: number, dates: string[], over: Partial<WeeklyAccountInput> = {}): WeeklyAccountInput {
-    const checkIns = dates.map((d) => checkIn(d));
-    const quota = weeklyQuota(checkIns, today);
-    return {
-      id,
-      spent: false,
-      releasesAt: null,
-      checkedInToday: dates.includes(today),
-      quota,
-      ...over,
-    };
-  }
-
-  it('живая вчера и продолжена сегодня — серия цела', () => {
-    const stats = cohortStats([account(1, ['2026-11-08', '2026-11-09'])], today);
-    expect(stats.liveYesterday).toBe(1);
-    expect(stats.continuedToday).toBe(1);
-    expect(stats.atRisk).toBe(0);
-  });
-
-  it('живая вчера, но не отмечен сегодня — под риском, серия сгорит', () => {
-    // Отмечен 08.11 → серия длиной 1, следующая клетка вторая (400 очков):
-    // пропуск сегодня стоит 400 − 400 = 0.
-    const stats = cohortStats([account(1, ['2026-11-08'])], today);
-    expect(stats.liveYesterday).toBe(1);
-    expect(stats.continuedToday).toBe(0);
-    expect(stats.atRisk).toBe(1);
-    expect(stats.pointsAtRisk).toBe(400);
-    expect(stats.pointsLostIfSkipped).toBe(0);
-  });
-
-  it('клетка 4 сегодня: пропуск стоит 600 очков', () => {
-    // Отмечен 06, 07, 08.11 → серия длиной 3, следующая клетка четвёртая (1000).
-    const stats = cohortStats([account(1, ['2026-11-06', '2026-11-07', '2026-11-08'])], today);
-    expect(stats.atRisk).toBe(1);
-    expect(stats.pointsAtRisk).toBe(1000);
-    expect(stats.pointsLostIfSkipped).toBe(600);
-    // И этот же аккаунт — доступная тысячная сегодня.
-    expect(stats.bonusToday).toBe(1);
-  });
-
-  it('свежий аккаунт (первый чек-ин сегодня) в когорту не входит', () => {
-    const stats = cohortStats([account(1, ['2026-11-09'])], today);
-    expect(stats.liveYesterday).toBe(0);
-    expect(stats.continuedToday).toBe(0);
-    expect(stats.atRisk).toBe(0);
-  });
-
-  it('никогда не отмеченный — тоже вне когорты', () => {
-    const stats = cohortStats([account(1, [])], today);
-    expect(stats.liveYesterday).toBe(0);
-    expect(stats.atRisk).toBe(0);
-  });
-
-  it('тысячные считаются только по доступным сегодня аккаунтам', () => {
-    const busy = account(1, ['2026-11-06', '2026-11-07', '2026-11-08'], {
-      spent: true,
-      releasesAt: '2026-11-20T00:00:00.000Z',
-    });
-    expect(cohortStats([busy], today).bonusToday).toBe(0);
-    expect(cohortStats([account(1, ['2026-11-06', '2026-11-07', '2026-11-08'])], today).bonusToday).toBe(1);
-  });
-});
+// Сводок по запасу и «здоровья когорты» больше нет (заказ владельца 21.11):
+// обе считали не бонусы, а наш журнал выдач, и стояли рядом с блоком бонусов —
+// из-за них две строки выглядели противоречивыми. Правда о бонусах — в леджере
+// забора (`lib/services/minimax-daily-bonus.ts`, `operationalBonusStats`).

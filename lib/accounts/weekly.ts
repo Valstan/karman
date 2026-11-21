@@ -395,138 +395,24 @@ function dayNumber(date: string): number {
   return Date.UTC(year, month - 1, day) / 86_400_000;
 }
 
-// --- Сводка по запасу (заказ владельца 07.11) ---------------------------------
+// --- Сводки по запасу больше нет (заказ владельца 21.11) ---------------------
 
-/** Аккаунт во входе сводки: занятость окна + недельная квота. */
-export type WeeklyAccountInput = {
-  id: number;
-  /** Занят ли аккаунт (окно простоя не истекло). */
-  spent: boolean;
-  /** Когда освободится (ISO) или null — уже свободен. */
-  releasesAt: string | null;
-  /** Был ли сегодня (по Москве) чек-ин у этого аккаунта. */
-  checkedInToday: boolean;
-  /** Недельная квота аккаунта. */
-  quota: WeeklyQuota;
-};
-
-/**
- * Здоровье когорты — стратегия владельца 11.11.
- *
- * Когорта — это аккаунты, которые активируются КАЖДЫЙ день: у них живая серия
- * дней подряд, и только она даёт бонусные клетки (4-ю и 7-ю, по 1000 очков).
- * Пропущенные сутки обнуляют серию, поэтому цену пропуска надо видеть каждый
- * день — иначе когорта незаметно рассыпается, а очки падают до 400.
- *
- * Числа считаются по журналу чек-инов и по окну простоя, ничего не зная о
- * MiniMax, кроме её же правил (см. docs/minimax.md).
- */
-export type CohortStats = {
-  /** Сколько аккаунтов имели живую серию вчера (отмечены вчера). */
-  liveYesterday: number;
-  /** Сколько из них продолжены сегодня. */
-  continuedToday: number;
-  /**
-   * Сколько живых вчера ещё НЕ отмечены сегодня — их надо активировать до
-   * конца дня, иначе серия сгорит.
-   */
-  atRisk: number;
-  /** Сколько очков они дадут, если активировать сегодня. */
-  pointsAtRisk: number;
-  /** Сколько очков на них потеряется, если сегодня пропустить (то, что не 400). */
-  pointsLostIfSkipped: number;
-  /** Сколько доступных сегодня аккаунтов дадут 1000 очков (клетка 4 или 7). */
-  bonusToday: number;
-};
-
-/**
- * Здоровье когорты по аккаунтам: сколько живых серий вчера, сколько продолжено
- * сегодня, сколько под риском и сколько это стоит.
- *
- * Считается по тому же журналу, что и недельная квота, поэтому числа в строке
- * статистики и в этом своде не могут разойтись.
- */
-export function cohortStats(accounts: WeeklyAccountInput[], todayDate: string): CohortStats {
-  let liveYesterday = 0;
-  let continuedToday = 0;
-  let atRisk = 0;
-  let pointsAtRisk = 0;
-  let bonusToday = 0;
-
-  for (const account of accounts) {
-    const { streak, nextIndex, pointsToday, exhausted } = account.quota;
-    const aliveYesterday = account.checkedInToday ? streak >= 2 : streak >= 1;
-    if (aliveYesterday) liveYesterday += 1;
-
-    // Сегодня доступны тысячные — цель на день. Считаем и для тех, кто в зоне
-    // риска: если активировать сегодня, бонус будет.
-    if (!exhausted && pointsToday === 1000 && activatableToday(account, todayDate)) {
-      bonusToday += 1;
-    }
-
-    if (account.checkedInToday && streak >= 2) {
-      // Живая вчера и продолжена сегодня — серия цела.
-      continuedToday += 1;
-    } else if (!account.checkedInToday && streak >= 1) {
-      // Живая вчера, но сегодня ещё не отмечен: серия держится на волоске —
-      // если не активировать сегодня, она сгорит.
-      atRisk += 1;
-      if (nextIndex !== null) pointsAtRisk += pointsForIndex(nextIndex);
-    }
-  }
-
-  return {
-    liveYesterday,
-    continuedToday,
-    atRisk,
-    pointsAtRisk,
-    pointsLostIfSkipped: pointsAtRisk - 400 * atRisk,
-    bonusToday,
-  };
-}
-
-/** Сводка по недельному запасу — то, что стоит в строке статистики. */
-export type WeeklyPoolStats = {
-  /** Сколько активаций ещё можно сделать сегодня. */
-  today: number;
-  /** Сколько из них можно сделать прямо сейчас (окно уже истекло). */
-  freeNow: number;
-  /** Сколько освободятся в ближайшие 5 часов (сброс 5-часового окна MiniMax). */
-  freesIn5h: number;
-  /** Сколько активаций осталось в текущей календарной неделе. */
-  week: number;
-  /** Очки за эти активации (запас пула до сброса лимитов). */
-  weekPoints: number;
-  /** Сколько дней осталось в текущей московской неделе, включая сегодня. */
-  daysToWeekEnd: number;
-  /** Дата сброса недельных лимитов (понедельник следующей недели). */
-  weekResetsOn: string;
-};
-
-/**
- * Сводка по недельному запасу (заказ 07.11): сколько активаций
- * возможно сегодня, сколько осталось в неделях и сколько это очков.
- *
- * Определения (чтобы числа на экране и в голове совпадали):
- *
- * - **«За день»** — активации, которые ещё можно сделать сегодня: аккаунты,
- *   которые свободны сейчас ИЛИ освобождаются сегодня, у которых не выбрана
- *   неделя (не 7 из 7) и которые сегодня ещё не чекинились (чек-ин в сутки
- *   один, повторный чек-ин очков не даёт).
- * - **«За неделю»** — сумма остатков недельных квот всех аккаунтов: у каждого
- *   сколько дней недели ещё можно отметить. Это сколько активаций ещё есть,
- *   прежде чем у каждого аккаунта своя неделя кончится. В очках — сколько пул
- *   ещё отдаст до сброса лимитов.
- *
- * **Темпа здесь нет** (заказ владельца 21.11): темп потребления — сколько очков
- * мы отдаём за сутки — считается по ОПЕРАЦИОННЫМ суткам 05:00→05:00 МСК по
- * леджеру выдач (`operationalBonusStats`, `lib/services/minimax-daily-bonus.ts`).
- * Раньше темп считался здесь по календарным датам журнала активаций, и рядом с
- * блоком бонусов (уже по операционным суткам) два разных дня в одном разделе
- * расходились между собой.
- */
-/** Окно «скоро освободятся» — 5 часов (просто срез ближайших часов). */
-const FIVE_HOURS_MS = 5 * 60 * 60_000;
+// Раньше здесь жили две модельные сводки, обе считали не то, что показывают
+// бонусы, и обе стояли рядом с блоком бонусов (уже по операционным суткам):
+//
+// - `cohortStats` — «Серии: вчера живых 68 · продолжено сегодня 0 · под риском
+//   68». Это журнал НАШИХ выдач (кому аккаунт когда отдали), а не серия бонусов
+//   вендора. Из-за неё строка «забрали 135 клеток» (обход в 05:00) выглядела
+//   противоречивой: на деле нить бонусов жива — клетка у каждого аккаунта
+//   растёт на 1 в сутки (проверено по леджеру 21.11: 141 аккаунт, ни одного
+//   пропуска).
+// - `weeklyPoolStats` — «за день 127 · за неделю 268 (113 800 очк., сброс
+//   23.11)» и «на неделю НЕ хватает». Прогноз по заказу владельца убран: очки
+//   не копятся на неделю, каждый день аккаунты активируются заново, и недельный
+//   запас нельзя потратить разом.
+//
+// Правда о бонусах — в леджере забора (`lib/services/minimax-daily-bonus.ts`),
+// и показывает её `operationalBonusStats`.
 
 /**
  * Окно среза темпа: столько последних ПОЛНЫХ суток берём (заказ владельца
@@ -537,70 +423,9 @@ const FIVE_HOURS_MS = 5 * 60 * 60_000;
  */
 export const PACE_WINDOW_DAYS = 10;
 
-export function weeklyPoolStats(
-  accounts: WeeklyAccountInput[],
-  todayDate: string,
-  nowIso: string = new Date().toISOString(),
-): WeeklyPoolStats {
-  let today = 0;
-  let freeNow = 0;
-  let freesIn5h = 0;
-  let week = 0;
-  let weekPoints = 0;
-  const nowMs = new Date(nowIso).getTime();
-  for (const account of accounts) {
-    if (account.quota.exhausted) continue;
-    week += account.quota.remaining;
-    weekPoints += account.quota.pointsLeft;
-    if (!account.checkedInToday && activatableToday(account, todayDate)) {
-      today += 1;
-      if (!account.spent) {
-        freeNow += 1;
-      } else if (account.releasesAt !== null) {
-        const inMs = new Date(account.releasesAt).getTime() - nowMs;
-        if (inMs > 0 && inMs <= FIVE_HOURS_MS) freesIn5h += 1;
-      }
-    }
-  }
-
-  const weekStart = moscowWeekStart(todayDate);
-  const daysElapsed = dayNumber(todayDate) - dayNumber(weekStart) + 1;
-  const daysToWeekEnd = WEEKLY_CYCLE_DAYS - daysElapsed + 1;
-
-  // Запас — по недельной квоте: сколько очков аккаунты ещё отдадут до сброса
-  // лимитов. Это и есть «сколько у нас есть аккаунтов и на какой стадии расхода
-  // они находятся»: остаток квоты каждого аккаунта сложен.
-  return {
-    today,
-    freeNow,
-    freesIn5h,
-    week,
-    weekPoints,
-    daysToWeekEnd,
-    weekResetsOn: shiftDate(weekStart, WEEKLY_CYCLE_DAYS),
-  };
-}
-
-/**
- * Можно ли активировать аккаунт сегодня: он либо уже свободен, либо
- * освобождается сегодня (московская дата освобождения — сегодняшняя).
- */
-function activatableToday(account: WeeklyAccountInput, todayDate: string): boolean {
-  if (!account.spent) return true;
-  if (account.releasesAt === null) return true;
-  return moscowDateOf(account.releasesAt) === todayDate;
-}
-
-/** Московская дата момента (ISO) — 'YYYY-MM-DD'. */
-export function moscowDateOf(iso: string): string {
-  return new Date(new Date(iso).getTime() + MOSCOW_OFFSET_MINUTES * 60_000).toISOString().slice(0, 10);
-}
-
 /** Понедельник текущей московской недели. */
 export function moscowWeekStart(todayDate: string): string {
   const dow = new Date(dayNumber(todayDate) * 86_400_000).getUTCDay(); // 0 — воскресенье
   const offsetToMonday = (dow + 6) % 7;
   return shiftDate(todayDate, -offsetToMonday);
 }
-
-const MOSCOW_OFFSET_MINUTES = 180;
