@@ -13,7 +13,12 @@
  * Даты — МОСКОВСКИЕ календарные метки ('YYYY-MM-DD'): журнал пишет `used_on` как
  * московскую дату сессии. Арифметика по датам здесь календарная (сдвиг на сутки
  * через Date.UTC), а не часовая: московская дата — это метка, а не инстант.
+ *
+ * Проекты здесь — ГРУППЫ (заказ владельца 21.11, `lib/accounts/project-groups.ts`):
+ * синонимы одного проекта — одна строка, продсервер Сарафана виден отдельно.
  */
+
+import { canonicalProjectName } from '@/lib/accounts/project-groups';
 
 /** Метрика, по которой сортируют таблицу сумм. */
 export type DailyMetric = 'activations' | 'projects' | 'tokens';
@@ -33,7 +38,11 @@ export type DailyUsage = {
 /** Строка журнала активаций в том виде, в котором нужна статистике. */
 export type UsageRecord = {
   usedOn: string;
-  projectId: number | null;
+  /**
+   * Группа проекта (после сведения синонимов). null — общие очки («brain» и «без
+   * проекта»): проектом они не считаются (заказ владельца 21.11).
+   */
+  group: string | null;
   tokens: number;
 };
 
@@ -45,10 +54,13 @@ export type UsageRecord = {
  *
  * Очки за сутки — это `tokens` из журнала активаций в сумме по проекту за московский
  * день (то же число, что в разделе «Расход по проектам»).
+ *
+ * Учитываются ГРУППЫ проектов (заказ владельца 21.11): синонимы одного проекта
+ * («Матрица РМЗ» и «MatricaRMZ») — одна строка турнирной таблицы, а не две.
  */
 export type ChampionshipRow = {
-  projectId: number;
-  projectName: string;
+  /** Название группы проекта. */
+  group: string;
   /** Баллы чемпионата: 3 за первое место в сутках, 2 за второе, 1 за третье. */
   points: number;
   /** Очки, потраченные проектом суммарно (за все учтённые сутки). */
@@ -64,8 +76,8 @@ export type ChampionshipRow = {
 /** Строка «проект × сутки» — вход для подсчёта чемпионата. */
 export type ProjectDayPoints = {
   usedOn: string;
-  projectId: number | null;
-  projectName: string | null;
+  /** Название группы проекта (null — проект в чемпионате не участвует). */
+  group: string | null;
   /** Очки, потраченные проектом за этот день. */
   points: number;
 };
@@ -75,7 +87,8 @@ export const CHAMPIONSHIP_SCORES = [3, 2, 1] as const;
 
 /** Лидер одного дня: проект, его очки и набранный балл. */
 export type ChampionshipDayLeader = {
-  projectName: string;
+  /** Название группы проекта. */
+  group: string;
   /** Очки, потраченные проектом за сутки. */
   points: number;
   /** Балл за место в этот день. */
@@ -87,27 +100,26 @@ export type ChampionshipDayLeader = {
  * проекты дня: больше очков — выше; при равенстве — по названию (чтобы порядок не
  * прыгал между прогонами).
  */
-function groupChampionshipByDay(rows: ProjectDayPoints[]): Map<string, { id: number; name: string; points: number }[]> {
-  const byDay = new Map<string, Map<number, { id: number; name: string; points: number }>>();
+function groupChampionshipByDay(rows: ProjectDayPoints[]): Map<string, { group: string; points: number }[]> {
+  const byDay = new Map<string, Map<string, { group: string; points: number }>>();
   for (const row of rows) {
-    // Проект без проекта (активация владельца) в чемпионате не участвует, и день без
-    // очков никому балла не приносит.
-    if (row.projectId === null || row.points <= 0) continue;
-    const day = byDay.get(row.usedOn) ?? new Map();
-    const current = day.get(row.projectId) ?? {
-      id: row.projectId,
-      name: row.projectName ?? '—',
+    // Проект без очков балла не приносит, и активация без проекта в чемпионате
+    // не участвует.
+    if (row.group === null || row.points <= 0) continue;
+    const day = byDay.get(row.usedOn) ?? new Map<string, { group: string; points: number }>();
+    const current = day.get(row.group) ?? {
+      group: row.group,
       points: 0,
     };
     current.points += row.points;
-    day.set(row.projectId, current);
+    day.set(row.group, current);
     byDay.set(row.usedOn, day);
   }
-  const ranked = new Map<string, { id: number; name: string; points: number }[]>();
+  const ranked = new Map<string, { group: string; points: number }[]>();
   for (const [usedOn, day] of byDay) {
     ranked.set(
       usedOn,
-      [...day.values()].sort((a, b) => b.points - a.points || a.name.localeCompare(b.name)),
+      [...day.values()].sort((a, b) => b.points - a.points || a.group.localeCompare(b.group)),
     );
   }
   return ranked;
@@ -122,13 +134,12 @@ function groupChampionshipByDay(rows: ProjectDayPoints[]): Map<string, { id: num
  */
 export function buildChampionship(rows: ProjectDayPoints[]): ChampionshipRow[] {
   const ranked = groupChampionshipByDay(rows);
-  const totals = new Map<number, ChampionshipRow>();
+  const totals = new Map<string, ChampionshipRow>();
 
   for (const day of ranked.values()) {
     day.forEach((project, index) => {
-      const row = totals.get(project.id) ?? {
-        projectId: project.id,
-        projectName: project.name,
+      const row = totals.get(project.group) ?? {
+        group: project.group,
         points: 0,
         spent: 0,
         topDays: 0,
@@ -143,7 +154,7 @@ export function buildChampionship(rows: ProjectDayPoints[]): ChampionshipRow[] {
         row.topDays += 1;
         if (index === 0) row.wins += 1;
       }
-      totals.set(project.id, row);
+      totals.set(project.group, row);
     });
   }
 
@@ -151,7 +162,7 @@ export function buildChampionship(rows: ProjectDayPoints[]): ChampionshipRow[] {
     (a, b) =>
       b.points - a.points ||
       b.spent - a.spent ||
-      a.projectName.localeCompare(b.projectName),
+      a.group.localeCompare(b.group),
   );
 }
 
@@ -168,7 +179,7 @@ export function championshipLeaders(rows: ProjectDayPoints[]): {
   const usedOn = days[0];
   if (!usedOn) return { usedOn: '', leaders: [] };
   const leaders = ranked.get(usedOn)!.slice(0, CHAMPIONSHIP_SCORES.length).map((project, index) => ({
-    projectName: project.name,
+    group: project.group,
     points: project.points,
     score: CHAMPIONSHIP_SCORES[index]!,
   }));
@@ -186,12 +197,18 @@ export function championshipLeaders(rows: ProjectDayPoints[]): {
  * Дни без активаций в выдаче НЕ появляются: их дорисует `fillDailySeries`.
  */
 export function aggregateDailyUsage(rows: UsageRecord[]): DailyUsage[] {
-  const days = new Map<string, { activations: number; tokens: number; projects: Set<number> }>();
+  const days = new Map<string, { activations: number; tokens: number; projects: Set<string> }>();
   for (const row of rows) {
-    const day = days.get(row.usedOn) ?? { activations: 0, tokens: 0, projects: new Set<number>() };
+    const day = days.get(row.usedOn) ?? {
+      activations: 0,
+      tokens: 0,
+      projects: new Set<string>(),
+    };
     day.activations += 1;
     day.tokens += row.tokens;
-    if (row.projectId !== null) day.projects.add(row.projectId);
+    // Общие очки (комната Мозга, «без проекта») проектом не считаются: их счёт
+    // размазан по проектам программирования, но «проектом» Мозг не является.
+    if (row.group !== null) day.projects.add(row.group);
     days.set(row.usedOn, day);
   }
   return [...days.entries()]
@@ -258,9 +275,10 @@ function byDateDesc(a: DailyUsage, b: DailyUsage): number {
 /** Проект для выпадающего списка: id и название. */
 export type ProjectChoice = { id: number; name: string };
 
-/** Сколько раз проект попал в активации (по журналу). */
+/** Сколько раз группа проекта попала в активации (по журналу). */
 export type ProjectUsageCount = {
-  projectId: number | null;
+  /** Название группы проекта (после сведения синонимов, см. `project-groups.ts`). */
+  group: string;
   activations: number;
   tokens: number;
 };
@@ -273,6 +291,9 @@ export type ProjectUsageCount = {
  * Порядок: число активаций (как часто берут), при равенстве — токены (куда уходит
  * больше), потом название — чтобы список не прыгал между прогонами.
  *
+ * Считается по ГРУППАМ проектов (заказ владельца 21.11): «Матрица РМЗ» и
+ * «MatricaRMZ» — один проект, и в списке выбора они стоят рядом.
+ *
  * Проект без единой активации уходит вниз (нули), «Без проекта» в список не
  * входит вовсе — его владелец ставит первым вручную.
  */
@@ -280,14 +301,13 @@ export function sortProjectsByUsage<T extends ProjectChoice>(
   projects: T[],
   usage: ProjectUsageCount[],
 ): T[] {
-  const counts = new Map<number, { activations: number; tokens: number }>();
+  const counts = new Map<string, { activations: number; tokens: number }>();
   for (const row of usage) {
-    if (row.projectId === null) continue;
-    counts.set(row.projectId, { activations: row.activations, tokens: row.tokens });
+    counts.set(row.group, { activations: row.activations, tokens: row.tokens });
   }
   return [...projects].sort((a, b) => {
-    const left = counts.get(a.id);
-    const right = counts.get(b.id);
+    const left = counts.get(canonicalProjectName(a.name) ?? '');
+    const right = counts.get(canonicalProjectName(b.name) ?? '');
     const leftActivations = left?.activations ?? 0;
     const rightActivations = right?.activations ?? 0;
     if (leftActivations !== rightActivations) return rightActivations - leftActivations;

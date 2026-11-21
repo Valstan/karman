@@ -4,7 +4,6 @@ import {
   DAILY_RESET_HOURS,
   SOON_RELEASE_WINDOW_MS,
   accountPoolSummary,
-  aggregateUsage,
   availableAt,
   dailyResetAfter,
   isSpent,
@@ -417,26 +416,6 @@ describe('мультиаккаунт: разбиение списка на эк�
     expect(split.next?.id).toBe(2);
     expect(split.activated.map((a) => a.id)).toEqual([1]);
     expect(split.queued.map((a) => a.id)).toEqual([]);
-  });
-});
-
-describe('мультиаккаунт: свод по проектам', () => {
-  it('складывает активации и токены по проектам и сортирует по токенам', () => {
-    const usage = aggregateUsage([
-      { projectId: 1, projectName: 'Матрица РМЗ', tokens: 100 },
-      { projectId: 2, projectName: 'Сабантуй', tokens: 500 },
-      { projectId: 1, projectName: 'Матрица РМЗ', tokens: 250 },
-      { projectId: null, projectName: null, tokens: 10 },
-    ]);
-    expect(usage).toEqual([
-      { projectId: 2, projectName: 'Сабантуй', activations: 1, tokens: 500 },
-      { projectId: 1, projectName: 'Матрица РМЗ', activations: 2, tokens: 350 },
-      { projectId: null, projectName: null, activations: 1, tokens: 10 },
-    ]);
-  });
-
-  it('пустой журнал — пустой свод', () => {
-    expect(aggregateUsage([])).toEqual([]);
   });
 });
 

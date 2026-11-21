@@ -10,7 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import type { ProjectUsageDay } from '@/lib/services/accounts';
+import type { GroupUsageDay } from '@/lib/services/accounts';
 
 /**
  * «Активации по дням» — сколько аккаунтов активировалось в какой день на какой
@@ -23,18 +23,21 @@ import type { ProjectUsageDay } from '@/lib/services/accounts';
 /** Сколько дней видно по умолчанию (заказ владельца 05.11: «только за последние три дня»). */
 export const ACTIVATIONS_BY_DAY_PREVIEW = 3;
 
-export function MinimaxActivationsByDay({ rows }: { rows: ProjectUsageDay[] }) {
+export function MinimaxActivationsByDay({ rows }: { rows: GroupUsageDay[] }) {
   const [expanded, setExpanded] = useState(false);
 
   const visible = useMemo(() => {
-    if (expanded) return rows;
+    // Строка без активаций — не строка этого блока: очки могли прийти в проект
+    // долей общих (заказ 21.11), а активаций у него в этот день не было.
+    const withActivations = rows.filter((row) => row.activations > 0);
+    if (expanded) return withActivations;
     // Три последних ДНЯ, а не три строки: в одном дне может быть несколько
     // проектов, и три строки одного дня — это не «три дня».
-    const recent = [...new Set(rows.map((row) => row.usedOn))].slice(
+    const recent = [...new Set(withActivations.map((row) => row.usedOn))].slice(
       0,
       ACTIVATIONS_BY_DAY_PREVIEW,
     );
-    return rows.filter((row) => recent.includes(row.usedOn));
+    return withActivations.filter((row) => recent.includes(row.usedOn));
   }, [rows, expanded]);
 
   return (
@@ -59,9 +62,9 @@ export function MinimaxActivationsByDay({ rows }: { rows: ProjectUsageDay[] }) {
             </TableRow>
           ) : null}
           {visible.map((row) => (
-            <TableRow key={`${row.usedOn}-${row.projectId ?? 'none'}`}>
+            <TableRow key={`${row.usedOn}-${row.group}`}>
               <TableCell className="font-mono text-xs">{row.usedOn}</TableCell>
-              <TableCell>{row.projectName ?? 'Без проекта'}</TableCell>
+              <TableCell>{row.group}</TableCell>
               <TableCell className="text-right">{row.activations}</TableCell>
             </TableRow>
           ))}

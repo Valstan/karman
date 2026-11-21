@@ -719,43 +719,9 @@ export function splitAccounts<T extends AccountRotationRow>(
   return { next: next ?? null, activated, queued };
 }
 
-/** Строка журнала активаций. */
-export type UsageRow = {
-  projectId: number | null;
-  projectName: string | null;
-  tokens: number;
-};
-
-/** Сводка по проекту: сколько активаций и сколько токенов. */
-export type ProjectUsage = {
-  projectId: number | null;
-  projectName: string | null;
-  activations: number;
-  tokens: number;
-};
-
 /**
- * Свод по проектам: «на какой проект больше токенов». Считается по журналу
- * активаций, а не по текущему состоянию аккаунтов — иначе повторное
- * использование того же аккаунта затирало бы прошлый расход.
- *
- * Порядок — по токенам (главный вопрос владельца), при равенстве — по числу
- * активаций.
+ * Свод по проектам журнала уехал в `lib/accounts/project-groups.ts`: считать его
+ * надо по ГРУППАМ проектов (синонимы одного проекта — одна строка, общие очки
+ * «brain» и «без проекта» делятся между проектами программирования), а не по
+ * id строки журнала. Заказ владельца 21.11.
  */
-export function aggregateUsage(rows: UsageRow[]): ProjectUsage[] {
-  const byProject = new Map<number | null, ProjectUsage>();
-  for (const row of rows) {
-    const current = byProject.get(row.projectId) ?? {
-      projectId: row.projectId,
-      projectName: row.projectName,
-      activations: 0,
-      tokens: 0,
-    };
-    current.activations += 1;
-    current.tokens += row.tokens;
-    byProject.set(row.projectId, current);
-  }
-  return [...byProject.values()].sort(
-    (a, b) => b.tokens - a.tokens || b.activations - a.activations || (a.projectName ?? '').localeCompare(b.projectName ?? ''),
-  );
-}

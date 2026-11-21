@@ -10,7 +10,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { buildChampionship, championshipLeaders } from '@/lib/accounts/stats';
-import type { ProjectUsageDay } from '@/lib/services/accounts';
+import type { GroupUsageDay } from '@/lib/services/accounts';
 
 /**
  * «Чемпионат по очкам» — турнирная таблица проектов (заказ владельца 19.11).
@@ -25,14 +25,13 @@ import type { ProjectUsageDay } from '@/lib/services/accounts';
  * же число, что в разделе «Расход по проектам»). Считает чистая функция
  * `buildChampionship` — она же и покрыта юнит-гейтом; компонент только показывает.
  */
-export function MinimaxChampionship({ rows }: { rows: ProjectUsageDay[] }) {
+export function MinimaxChampionship({ rows }: { rows: GroupUsageDay[] }) {
   // Журнал отдаёт «очки» в поле tokens — для чемпионата это те же самые очки.
   const points = useMemo(
     () =>
       rows.map((row) => ({
         usedOn: row.usedOn,
-        projectId: row.projectId,
-        projectName: row.projectName,
+        group: row.group,
         points: row.tokens,
       })),
     [rows],
@@ -57,9 +56,9 @@ export function MinimaxChampionship({ rows }: { rows: ProjectUsageDay[] }) {
         <p className="text-sm">
           <span className="text-muted-foreground">{usedOn}: </span>
           {leaders.map((leader, index) => (
-            <span key={`${leader.projectName}-${index}`}>
+            <span key={`${leader.group}-${index}`}>
               {index > 0 ? ' · ' : ''}
-              {leader.projectName} — {leader.score} ({leader.points.toLocaleString('ru-RU')}{' '}
+              {leader.group} — {leader.score} ({leader.points.toLocaleString('ru-RU')}{' '}
               очк.)
             </span>
           ))}
@@ -78,9 +77,9 @@ export function MinimaxChampionship({ rows }: { rows: ProjectUsageDay[] }) {
         </TableHeader>
         <TableBody>
           {table.map((row, index) => (
-            <TableRow key={row.projectId}>
+            <TableRow key={row.group}>
               <TableCell className="text-muted-foreground">{index + 1}</TableCell>
-              <TableCell>{row.projectName}</TableCell>
+              <TableCell>{row.group}</TableCell>
               <TableCell className="text-right font-medium">{row.points}</TableCell>
               <TableCell className="text-right">{row.spent.toLocaleString('ru-RU')}</TableCell>
               <TableCell className="text-right">{row.topDays}</TableCell>

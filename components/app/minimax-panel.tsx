@@ -47,14 +47,14 @@ import { useNowTick } from './use-now';
 import type {
   AccountListItem,
   ApiUsageDay,
+  GroupUsageDay,
+  GroupSummary,
   ProjectListItem,
-  ProjectUsageDay,
 } from '@/lib/services/accounts';
 import type { TokenProgress } from '@/lib/services/account-tokens';
 import type { ConsumerTiers } from '@/lib/accounts/consumer-tiers';
 import type { DailyUsage } from '@/lib/accounts/stats';
 import { sortProjectsByUsage } from '@/lib/accounts/stats';
-import type { ProjectUsage } from '@/lib/accounts/rotation';
 
 /**
  * «Минимакс» — мультиаккаунт (задача владельца 2026-11-03, экран перестроен 04.11,
@@ -91,8 +91,8 @@ export function MinimaxPanel({
 }: {
   accounts: AccountListItem[];
   projects: ProjectListItem[];
-  usage: ProjectUsage[];
-  usageByDay: ProjectUsageDay[];
+  usage: GroupSummary[];
+  usageByDay: GroupUsageDay[];
   /** Суммы по дням: активации, задействованные проекты, очки (заказ 05.11). */
   daily: DailyUsage[];
   /** Расход по запросам проектов по дням — отдельно от расхода на программирование (14.11). */
@@ -407,8 +407,8 @@ export function MinimaxPanel({
                     </TableRow>
                   ) : null}
                   {usage.map((row) => (
-                    <TableRow key={row.projectId ?? 'none'}>
-                      <TableCell>{row.projectName ?? 'Без проекта'}</TableCell>
+                    <TableRow key={row.group}>
+                      <TableCell>{row.group}</TableCell>
                       <TableCell className="text-right">{row.activations}</TableCell>
                       <TableCell className="text-right">{row.tokens}</TableCell>
                     </TableRow>
