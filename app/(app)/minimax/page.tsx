@@ -10,6 +10,7 @@ import {
 } from '@/lib/services/accounts';
 import { tokenProgress } from '@/lib/services/account-tokens';
 import { operationalBonusStats } from '@/lib/services/minimax-daily-bonus';
+import { trafficStats } from '@/lib/services/minimax-traffic';
 import { consumerTiers } from '@/lib/services/minimax-consumer-tiers';
 import { MinimaxPanel } from '@/components/app/minimax-panel';
 
@@ -55,6 +56,11 @@ export default async function MinimaxPage() {
   // отдали и сколько осталось неиспользованным.
   const bonus = await operationalBonusStats(now);
 
+  // «Текучка» (заказ владельца 23.11): поток аккаунтов за те же операционные
+  // сутки — сколько всего, сколько потрачено, и последние выдачи (кому, какой
+  // проект, сколько очков). Окно то же, что у блока «Пул и бонусы».
+  const traffic = await trafficStats(user, now);
+
   return (
     <div className="flex flex-col gap-6">
       <div>
@@ -75,6 +81,7 @@ export default async function MinimaxPage() {
         apiUsage={apiUsage}
         tiers={tiers}
         tokenProgress={tokens}
+        traffic={traffic}
         bonusStats={{
           label: bonus.label,
           collected: bonus.collected,
