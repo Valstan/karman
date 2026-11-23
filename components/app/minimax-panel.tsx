@@ -21,6 +21,7 @@ import {
 import { accountPoolSummary, isSpent, splitAccounts } from '@/lib/accounts/rotation';
 import { availableCount } from '@/lib/accounts/pool';
 import { poolBonusLines, type BonusStatsView } from '@/lib/accounts/pool-stats';
+import { issuableCounts, type TrafficStats } from '@/lib/accounts/traffic';
 import { centeredWindowFeatures } from '@/lib/accounts/window-features';
 import { MinimaxFormDialog } from './minimax-form-dialog';
 import { MinimaxActivateDialog } from './minimax-activate-dialog';
@@ -31,6 +32,7 @@ import {
 import { MinimaxToolbar } from './minimax-toolbar';
 import { MinimaxAllAccountsDialog } from './minimax-all-accounts-dialog';
 import { MinimaxStatisticsGrid } from './minimax-statistics-grid';
+import { MinimaxTraffic } from './minimax-traffic';
 import { useMinimaxTokenFlow } from './minimax-token-flow';
 import { MinimaxActivationsByDay } from './minimax-activations-by-day';
 import { MinimaxDailySums } from './minimax-daily-sums';
@@ -87,6 +89,7 @@ export function MinimaxPanel({
   tiers,
   tokenProgress,
   bonusStats,
+  traffic,
   serverNow,
 }: {
   accounts: AccountListItem[];
@@ -104,6 +107,8 @@ export function MinimaxPanel({
 
   /** Сводка по суточным бонусам (заказ владельца 18.11): забрали / отдали / потратили. */
   bonusStats: BonusStatsView;
+  /** «Текучка»: поток аккаунтов за операционные сутки (заказ владельца 23.11). */
+  traffic: TrafficStats;
   /** Момент, на котором сервер посчитал список (ISO) — для гидрации. */
   serverNow: string;
 }) {
@@ -141,12 +146,25 @@ export function MinimaxPanel({
   // 20.11: одна карусель без разделения, значит и кнопка одна). В счёт идут
   // только аккаунты с добытой парой токенов: без пары отдавать нечего (вход в
   // MiniMax делает владелец).
-  const available = useMemo(() => {
-    const ready = [...tokenStates.values()]
-      .filter((row) => row.state === 'obtained')
-      .map((row) => row.account_id);
-    return availableCount(accounts, new Date(clockMs), ready);
-  }, [accounts, clockMs, tokenStates]);
+  const tokenReadyIds = useMemo(
+    () =>
+      [...tokenStates.values()]
+        .filter((row) => row.state === 'obtained')
+        .map((row) => row.account_id),
+    [tokenStates],
+  );
+  const available = useMemo(
+    () => availableCount(accounts, new Date(clockMs), tokenReadyIds),
+    [accounts, clockMs, tokenReadyIds],
+  );
+
+  // «Текучка» (заказ владельца 23.11): сколько аккаунтов ещё можно выдать —
+  // и сколько из них с целыми очками. Счёт тот же, что у кнопки выдачи, плюс
+  // очки: аккаунт может быть свободен, а его очки уже сожжены потребителем.
+  const issuable = useMemo(
+    () => issuableCounts(accounts, new Date(clockMs), tokenReadyIds),
+    [accounts, clockMs, tokenReadyIds],
+  );
 
   // Ни недельной сводки, ни «здоровья когорты» больше нет (заказ владельца
   // 21.11): прогноз «хватит на неделю» убран, а строка «Серии» считала не то —
@@ -375,6 +393,11 @@ export function MinimaxPanel({
                 ))}
               </dl>
             ),
+          },
+          {
+            id: 'traffic',
+            title: 'Текучка',
+            node: <MinimaxTraffic stats={traffic} issuable={issuable} />,
           },
           {
             id: 'championship',
