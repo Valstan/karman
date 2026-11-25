@@ -1222,3 +1222,24 @@ export const promptProject = pgTable('prompt_project', {
 });
 
 export type PromptProjectRow = typeof promptProject.$inferSelect;
+
+/**
+ * Слияние пар «начитка + план» (заказ владельца 24.11).
+ *
+ * Задача в хранилище промтов — ОДИН промт: тело начитки, пустая строка, тело
+ * плана. Таблица помнит, какая запись влита в какой промт: по ней и «у этого
+ * промта уже есть план» проверяется без догадок по тексту, и ссылка «плану
+ * id 55» внутри продолжения задачи разрешается точно.
+ *
+ * part_id — id слитой записи (плана или продолжения задачи): сама строка после
+ * слияния удаляется, поэтому внешнего ключа на part_id нет (на prompt_id — есть).
+ */
+export const promptPart = pgTable('prompt_part', {
+  partId: bigint('part_id', { mode: 'number' }).primaryKey(),
+  promptId: bigint('prompt_id', { mode: 'number' })
+    .notNull()
+    .references(() => prompt.id, { onDelete: 'cascade' }),
+  mergedAt: tstz('merged_at').notNull().defaultNow(),
+});
+
+export type PromptPartRow = typeof promptPart.$inferSelect;
