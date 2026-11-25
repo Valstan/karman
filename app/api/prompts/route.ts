@@ -73,13 +73,26 @@ export async function POST(req: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: 'bad prompt', issues: parsed.error.issues }, { status: 400 });
   }
-  const created = await createPrompt(owner, parsed.data, 'brain');
+  const created = await createPrompt(
+    owner,
+    {
+      project: parsed.data.project,
+      title: parsed.data.title,
+      body: parsed.data.body,
+      partOf: parsed.data.part_of,
+    },
+    'brain',
+  );
   return NextResponse.json(
     {
       id: created.id,
       project: created.project,
       title: created.title,
       created_at: created.createdAt,
+      // План, влитый в начитку: id — промт-начитка, part_id — id слитой записи
+      // (его можно цитировать в продолжениях задачи).
+      merged: created.merged ?? false,
+      part_id: created.partId ?? null,
     },
     { status: 201 },
   );

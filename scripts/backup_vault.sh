@@ -205,7 +205,7 @@ pg_dump "$PG_DSN_NOPASS" --no-owner --no-privileges \
   -t hotline_message -t hotline_presence \
   -t accounts_account -t accounts_project -t accounts_usage \
   -t account_token -t account_panel_state -t accounts_daily_bonus \
-  -t prompt -t prompt_project \
+  -t prompt -t prompt_project -t prompt_part \
   > "$WORK/vault.sql"
 
 # --- 2. Частота: снимок media/ — раз в неделю --------------------------------
@@ -259,7 +259,7 @@ write_manifest() {
 KARMAN vault backup
 created_utc: ${STAMP}
 kind: ${kind}
-includes: vault.sql (secrets_*/passport_*/auth_oidc_identity/auth_totp/auth_recovery_code/auth_audit/person_profile/documents_*/document_field/document_file/circle*/family_*/hotline_*/accounts_*/prompt/prompt_project), media.tar.gz
+includes: vault.sql (secrets_*/passport_*/auth_oidc_identity/auth_totp/auth_recovery_code/auth_audit/person_profile/documents_*/document_field/document_file/circle*/family_*/hotline_*/accounts_*/prompt/prompt_project/prompt_part), media.tar.gz
 excludes: credits_* (кредиты и платежи — восстановимы из выписок банка)
 excludes: SECRETS_MASTER_KEY (корень доверия — хранится у владельца отдельно, pool #008)
 excludes: passport_jwks_cache (кеш чужих публичных ключей — восстанавливается фетчем)

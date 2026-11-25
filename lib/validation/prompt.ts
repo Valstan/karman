@@ -39,6 +39,14 @@ export const promptCreateSchema = z.object({
   project: projectName,
   title: promptTitle,
   body: promptBody,
+  /**
+   * Явная привязка: id промта, к которому присоединить этот текст.
+   *
+   * Нужна, когда Мозг знает, к какой задаче относится план, и не хочет
+   * полагаться на узнавание по заголовку (заказ владельца 24.11: пара «начитка
+   * + план» лежит одним промтом).
+   */
+  part_of: z.coerce.number().int().positive('Некорректный id промта').optional(),
 });
 
 export const promptIdSchema = z.coerce.number().int().positive('Некорректный id промта');

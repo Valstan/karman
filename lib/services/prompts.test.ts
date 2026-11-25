@@ -327,3 +327,95 @@ describe('машинный доступ раздела (проект читае�
     expect(await listSectionPrompts('MatricaRMZ', { archived: false })).toHaveLength(1);
   });
 });
+
+/**
+ * Пара «начитка + план» — один промт (заказ владельца 24.11).
+ *
+ * Главное здесь — НЕ создать лишнюю запись: план Мозга приходит отдельным
+ * POST'ом, а в хранилище должен остаться один промт на задачу.
+ */
+describe('пара «начитка + план» в хранилище', () => {
+  const начитка = 'Вывод ПП в разные места идёт по-разному: если в Excel — двойная нумерация, общая и по контракту, сохраняется, а если на печать выводишь — нумерации по контрактам пропадает.';
+
+  it('план Мозга присоединяется к своей начитке — запись остаётся одна', async () => {
+    const первая = await createPrompt(owner, { project: 'MatricaRMZ', body: начитка }, 'brain');
+    const план = await createPrompt(
+      owner,
+      {
+        project: 'MatricaRMZ',
+        title: 'План: ПП — нумерация по контракту доходит до печати',
+        body: `> **Основание:** промт владельца: «${начитка}»\n\n## Цель\n\nНумерация должна совпадать.`,
+      },
+      'brain',
+    );
+
+    expect(план.merged).toBe(true);
+    expect(план.id).toBe(первая.id);
+    const живые = await listPrompts(owner, { archived: false });
+    expect(живые).toHaveLength(1);
+    expect(живые[0]!.body).toBe(`${начитка}\n\n> **Основание:** промт владельца: «${начитка}»\n\n## Цель\n\nНумерация должна совпадать.`);
+  });
+
+  it('план без начитки остаётся отдельной записью — лучше лишняя, чем чужой', async () => {
+    const план = await createPrompt(
+      owner,
+      { project: 'SARAFAN', title: 'План: одиночный план', body: 'Текст плана' },
+      'brain',
+    );
+    expect(план.merged).toBeUndefined();
+    const живые = await listPrompts(owner, { archived: false });
+    expect(живые).toHaveLength(1);
+    expect(живые[0]!.title).toBe('План: одиночный план');
+  });
+
+  it('продолжение задачи («по плану id N») вливается в ту же задачу', async () => {
+    const первая = await createPrompt(owner, { project: 'MatricaRMZ', body: начитка }, 'brain');
+    const план = await createPrompt(
+      owner,
+      { project: 'MatricaRMZ', title: 'План: нумерация', body: `Основание: «${начитка}»` },
+      'brain',
+    );
+    expect(план.partId).toBeDefined();
+
+    const ответ = await createPrompt(
+      owner,
+      {
+        project: 'MatricaRMZ',
+        title: 'Ответы владельца по плану',
+        body: `Ответы владельца 21.11 по плану id ${план.partId}: порядок верхний уровень, потом карточки.`,
+      },
+      'brain',
+    );
+    expect(ответ.merged).toBe(true);
+    expect(ответ.id).toBe(первая.id);
+    const живые = await listPrompts(owner, { archived: false });
+    expect(живые).toHaveLength(1);
+    expect(живые[0]!.body).toContain('порядок верхний уровень');
+  });
+
+  it('явная привязка part_of важнее узнавания по заголовку', async () => {
+    const первая = await createPrompt(owner, { project: 'MatricaRMZ', body: 'Начитка' }, 'brain');
+    const чужой = await createPrompt(owner, { project: 'MatricaRMZ', body: 'Другая начитка' }, 'brain');
+    const план = await createPrompt(
+      owner,
+      { project: 'MatricaRMZ', title: 'План: вообще без тем', body: 'Текст плана', partOf: первая.id },
+      'brain',
+    );
+    expect(план.id).toBe(первая.id);
+    expect(план.id).not.toBe(чужой.id);
+    const живые = await listPrompts(owner, { archived: false });
+    expect(живые).toHaveLength(2);
+    expect(живые.find((p) => p.id === первая.id)!.body).toContain('Текст плана');
+  });
+
+  it('запись владельца вручную не сливается с начиткой', async () => {
+    await createPrompt(owner, { project: 'MatricaRMZ', body: начитка }, 'brain');
+    const вручную = await createPrompt(
+      owner,
+      { project: 'MatricaRMZ', title: 'План: вручную', body: 'Текст плана' },
+      'manual',
+    );
+    expect(вручную.merged).toBeUndefined();
+    expect(await listPrompts(owner, { archived: false })).toHaveLength(2);
+  });
+});

@@ -1,10 +1,18 @@
 import 'server-only';
 
-import { and, asc, desc, eq, isNotNull, isNull, lt, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
-import { authUser, prompt, promptProject } from '@/lib/db/schema';
+import { authUser, prompt, promptPart, promptProject } from '@/lib/db/schema';
 import { ownership, type SessionUser } from '@/lib/auth/rbac';
 import { derivePromptTitle, normalizePromptText } from '@/lib/prompts/normalize';
+import {
+  citedIds,
+  citedPlanIds,
+  isPlanTitle,
+  mergePromptBodies,
+  quotedPromptId,
+  titleOverlapWords,
+} from '@/lib/prompts/pairing';
 import type {
   PromptItem,
   PromptProjectSummary,
@@ -214,20 +222,39 @@ export async function renamePromptProject(
  * Тело нормализуется детерминированно (lib/prompts/normalize.ts): CRLF → LF,
  * висячие пробелы, лишние пустые строки. Смысл текста не трогается — этим
  * занимался Мозг до отправки.
+ *
+ * ПАРА «НАЧИТКА + ПЛАН» (заказ владельца 24.11): задача лежит одним промтом —
+ * тело начитки, пустая строка, тело плана. Поэтому машинный канал (Мозг)
+ * присылает план отдельной записью, а хранилище присоединяет его к начитке;
+ * вторая строка не появляется. Продолжение задачи («Ответы владельца по плану
+ * id 65») присоединяется туда же. Явная привязка — `partOf`: id промта, к
+ * которому присоединить текст.
+ *
+ * Если начитку найти не удалось — план остаётся отдельной записью: молча
+ * приклеить план чужой задачи хуже, чем показать владельцу лишнюю запись.
  */
 export async function createPrompt(
   user: SessionUser,
-  input: { project: string; title?: string; body: string },
+  input: { project: string; title?: string; body: string; partOf?: number },
   source: PromptSource = 'manual',
-): Promise<PromptItem> {
+): Promise<CreatedPrompt> {
   const body = normalizePromptText(input.body);
   const title = input.title?.trim() ? input.title.trim() : derivePromptTitle(body);
-  await ensurePromptProject(user, input.project);
+  const project = input.project.trim();
+  await ensurePromptProject(user, project);
+
+  if (source === 'brain') {
+    const target = await resolveMergeTarget(user, project, title, body, input.partOf);
+    if (target) {
+      return mergeIntoPrompt(user, project, title, body, source, target.id);
+    }
+  }
+
   const [row] = await db
     .insert(prompt)
     .values({
       userId: user.id,
-      project: input.project.trim(),
+      project,
       title,
       body,
       source,
@@ -237,6 +264,161 @@ export async function createPrompt(
     throw new Error('промт не записался');
   }
   return toItem(row);
+}
+
+/** Промт с признаком «влит в другой промт». */
+export type CreatedPrompt = PromptItem & { merged?: boolean; partId?: number };
+
+/**
+ * Окно, в котором начитка ещё считается свежей для подбора пары.
+ *
+ * План Мозг присылает сразу после начитки; если начитка старше — это уже
+ * другая задача, и приклеивать к ней план нельзя.
+ */
+const PAIRING_WINDOW_MS = 3 * 60 * 60 * 1000;
+
+/** Минимум общих слов в заголовках, чтобы считать начитку своей. */
+const TITLE_OVERLAP_MIN = 2;
+
+/**
+ * К кому присоединить текст: план — к своей начитке, продолжение — к задаче,
+ * чей план оно цитирует.
+ *
+ * Порядок признаков — от точного к осторожному:
+ *   1. явная привязка `partOf`;
+ *   2. ссылка на запись: id плана (уже влитого) → промт-владелец; id начитки → она;
+ *   3. дословная цитата начитки в теле плана;
+ *   4. заголовки: самая близкая по общим словам (в окне свежести).
+ */
+async function resolveMergeTarget(
+  user: SessionUser,
+  project: string,
+  title: string,
+  body: string,
+  explicitId?: number,
+): Promise<{ id: number } | null> {
+  if (explicitId) {
+    const [row] = await db
+      .select({ id: prompt.id })
+      .from(prompt)
+      .where(and(eq(prompt.id, explicitId), eq(prompt.userId, user.id), eq(prompt.project, project)))
+      .limit(1);
+    if (row) return row;
+  }
+
+  const ids = citedIds(body);
+  const planIds = citedPlanIds(body);
+
+  if (ids.length > 0) {
+    // План, уже влитый в промт: продолжение задачи — идём в тот же промт.
+    const [merged] = await db
+      .select({ promptId: promptPart.promptId })
+      .from(promptPart)
+      .where(inArray(promptPart.partId, ids))
+      .limit(1);
+    if (merged) return { id: merged.promptId };
+
+    // Прямая ссылка на начитку (а не на план) — присоединяем к ней.
+    const cited = await db
+      .select({ id: prompt.id, title: prompt.title })
+      .from(prompt)
+      .where(and(inArray(prompt.id, ids), eq(prompt.userId, user.id), eq(prompt.project, project)));
+    for (const row of cited) {
+      if (!isPlanTitle(row.title)) return { id: row.id };
+    }
+  }
+
+  // Продолжение задачи: «Ответы владельца по плану id 65».
+  if (planIds.length > 0) {
+    const [merged] = await db
+      .select({ promptId: promptPart.promptId })
+      .from(promptPart)
+      .where(inArray(promptPart.partId, planIds))
+      .limit(1);
+    if (merged) return { id: merged.promptId };
+  }
+
+  const candidates = await freshUnmergedPrompts(user, project);
+  if (candidates.length === 0) return null;
+
+  const quoted = quotedPromptId(body, candidates);
+  if (quoted) return { id: quoted };
+
+  let best: { id: number } | null = null;
+  let bestScore = 0;
+  for (const candidate of candidates) {
+    const score = titleOverlapWords(title, candidate.title);
+    if (score > bestScore) {
+      best = { id: candidate.id };
+      bestScore = score;
+    }
+  }
+  return bestScore >= TITLE_OVERLAP_MIN ? best : null;
+}
+
+/**
+ * Начитки проекта, у которых ещё нет плана, — живые и свежие.
+ *
+ * «Нет плана» проверяется по таблице слияний, а не по тексту: правило хранения
+ * должно быть проверяемым (иначе одна опечатка в заголовке разъезжает пары).
+ */
+async function freshUnmergedPrompts(
+  user: SessionUser,
+  project: string,
+): Promise<{ id: number; title: string; body: string }[]> {
+  const since = new Date(Date.now() - PAIRING_WINDOW_MS).toISOString();
+  const rows = await db
+    .select({ id: prompt.id, title: prompt.title, body: prompt.body })
+    .from(prompt)
+    .where(
+      and(
+        eq(prompt.userId, user.id),
+        eq(prompt.project, project),
+        isNull(prompt.archivedAt),
+        gte(prompt.createdAt, since),
+      ),
+    )
+    .orderBy(asc(prompt.createdAt));
+  const merged = await db.select({ promptId: promptPart.promptId }).from(promptPart);
+  const busy = new Set(merged.map((row) => row.promptId));
+  return rows.filter((row) => !busy.has(row.id) && !isPlanTitle(row.title));
+}
+
+/**
+ * Влить текст в чужой промт: запись-план создаётся и сразу уходит, а её текст
+ * встаёт в тело промта-начитки. Всё одной транзакцией: полуслитая пара видна
+ * владельцу как полуслитая.
+ */
+async function mergeIntoPrompt(
+  user: SessionUser,
+  project: string,
+  title: string,
+  body: string,
+  source: PromptSource,
+  targetId: number,
+): Promise<CreatedPrompt> {
+  return db.transaction(async (tx) => {
+    const [target] = await tx
+      .select()
+      .from(prompt)
+      .where(and(eq(prompt.id, targetId), eq(prompt.userId, user.id)))
+      .limit(1);
+    if (!target) throw new Error('промт-начитка не найден');
+
+    const [part] = await tx
+      .insert(prompt)
+      .values({ userId: user.id, project, title, body, source })
+      .returning();
+    if (!part) throw new Error('промт не записался');
+
+    await tx.insert(promptPart).values({ partId: part.id, promptId: target.id });
+
+    const mergedBody = mergePromptBodies(target.body, body);
+    await tx.update(prompt).set({ body: mergedBody }).where(eq(prompt.id, target.id));
+    await tx.delete(prompt).where(eq(prompt.id, part.id));
+
+    return { ...toItem(target), body: mergedBody, merged: true, partId: part.id };
+  });
 }
 
 /**
