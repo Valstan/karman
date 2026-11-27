@@ -255,6 +255,81 @@ describe('двусторонние выдачи', () => {
     });
   });
 
+  it('выдача отдаёт значение только из СВОЕЙ записи источника, а не из того, что источник сам получил по выдаче', async () => {
+    /**
+     * Живой случай (27.11): комната-«перекрёсток» предлагает ключ, который
+     * получила по чужой выдаче. Выдача оформляется и принимается, а значения
+     * не приносит: источник отдаёт только из своей записи, а своей у него нет.
+     *
+     * Ловушка молчаливая: выдача «active», обе стороны её видят, а ключа нет.
+     * И она ещё и занимает имя: вторая выдача под тем же именем в ту же
+     * комнату получит 409 — то есть перекрёсток блокирует правильный путь.
+     */
+    const origin = await makeRoom('relay-origin');
+    const relay = await makeRoom('relay-middle');
+    const target = await makeRoom('relay-target');
+
+    // источник владеет ключом
+    await pushByToken(origin.rwToken, null, { SHARED: 's3cr3t' });
+    // перекрёсток получает его по выдаче (своей записи у него нет)
+    const first = await propose(origin, 'relay-middle', 'SHARED');
+    if (!first.ok) throw new Error('propose failed');
+    expect(await acceptGrantByToken(relay.rwToken, null, first.id)).toEqual({
+      ok: true,
+      id: first.id,
+    });
+    // перекрёсток читает ключ — через выдачу, это работает
+    expect(await pullByToken(relay.rwToken, null, ['SHARED'])).toEqual({
+      ok: true,
+      secrets: { SHARED: 's3cr3t' },
+    });
+
+    // а теперь перекрёсток предлагает этот ключ дальше
+    const second = await propose(relay, 'relay-target', 'SHARED');
+    expect(second.ok).toBe(true);
+    if (!second.ok) throw new Error('propose failed');
+    expect(await acceptGrantByToken(target.rwToken, null, second.id)).toEqual({
+      ok: true,
+      id: second.id,
+    });
+
+    // значение НЕ пришло: у перекрёстка нет своей записи, а чужая выдача
+    // значения не выдаёт.
+    const got = await pullByToken(target.rwToken, null, ['SHARED']);
+    expect(got.ok).toBe(false);
+    if (got.ok) throw new Error('значение не должно было прийти');
+    if (got.status !== 404) throw new Error(`ожидался 404, получено: ${got.status}`);
+    expect(got.missing).toEqual(['SHARED']);
+  });
+
+  it('выдача от перекрёстка занимает имя и блокирует правильный путь (409)', async () => {
+    /** Тот же случай, вид с другой стороны: имя занято — прямой путь закрыт. */
+    const origin = await makeRoom('block-origin');
+    const relay = await makeRoom('block-middle');
+    const target = await makeRoom('block-target');
+    await pushByToken(origin.rwToken, null, { SHARED: 's3cr3t' });
+    const toRelay = await propose(origin, 'block-middle', 'SHARED');
+    if (!toRelay.ok) throw new Error('propose failed');
+    expect(await acceptGrantByToken(relay.rwToken, null, toRelay.id)).toEqual({
+      ok: true,
+      id: toRelay.id,
+    });
+    const toTarget = await propose(relay, 'block-target', 'SHARED');
+    if (!toTarget.ok) throw new Error('propose failed');
+    expect(await acceptGrantByToken(target.rwToken, null, toTarget.id)).toEqual({
+      ok: true,
+      id: toTarget.id,
+    });
+
+    // теперь настоящий источник предлагает свой ключ напрямую — а имя занято
+    // действующей выдачей перекрёстка, и предложение отклоняется сразу.
+    const direct = await propose(origin, 'block-target', 'SHARED');
+    expect(direct.ok).toBe(false);
+    if (direct.ok) throw new Error('имя занято — propose обязан отказать');
+    expect(direct.status).toBe(409);
+    expect(direct.error).toContain('SHARED');
+  });
+
   it('своё имя поверх выдачи не занять (push 403) — отрезало бы от чужого значения', async () => {
     const src = await makeRoom('src-e');
     const dst = await makeRoom('dst-e');
